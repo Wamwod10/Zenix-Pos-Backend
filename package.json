@@ -13,6 +13,7 @@
     "db:verify": "node src/db/verifySchema.js",
     "check": "node --check src/server.js && node --check src/app.js && node --check src/db/config.js && node --check src/db/startup.js && node --check src/db/verifySchema.js",
     "telegram:webhook": "node scripts/setTelegramWebhook.js",
+    "telegram:payment:webhook": "node scripts/setPaymentTelegramWebhook.js",
     "platform:admin": "node scripts/createPlatformAdmin.js",
     "test": "node --test tests/*.test.mjs"
   },

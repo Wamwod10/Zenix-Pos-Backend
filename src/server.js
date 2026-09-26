@@ -3,6 +3,7 @@ import { assertServerEnvironment, env } from "./config/env.js";
 import { pool } from "./db/pool.js";
 import { assertDatabaseConnection } from "./db/startup.js";
 import { startNotificationWorker } from "./services/notificationWorker.js";
+import { startPaymentNotificationWorker } from "./services/paymentNotificationWorker.js";
 
 assertServerEnvironment();
 
@@ -15,6 +16,6 @@ try{
   process.exit(1);
 }
 
-const server=app.listen(env.port,()=>{console.log(`Zenix POS API listening on :${env.port}`);startNotificationWorker();});
+const server=app.listen(env.port,()=>{console.log(`Zenix POS API listening on :${env.port}`);startNotificationWorker();startPaymentNotificationWorker();});
 const shutdown=async()=>{server.close(async()=>{await pool.end().catch(()=>{});process.exit(0)});setTimeout(()=>process.exit(1),10_000).unref();};
 process.on("SIGTERM",shutdown);process.on("SIGINT",shutdown);

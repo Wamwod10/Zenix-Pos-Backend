@@ -11,6 +11,7 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "006_return_business_day.sql",
   "007_registration_throttle.sql",
   "008_serial_case_insensitive_unique.sql",
+  "009_payment_telegram_approval.sql",
 ]);
 
 export const REQUIRED_TABLES = Object.freeze([
@@ -136,6 +137,7 @@ export const REQUIRED_INDEXES = Object.freeze([
   "sale_returns_business_day_idx",
   "auth_registration_attempts_ip_created_idx",
   "product_serials_org_serial_ci_unique",
+  "billing_payments_telegram_token_unique",
 ]);
 
 const missing = (required, actual) => {

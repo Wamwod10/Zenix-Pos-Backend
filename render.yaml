@@ -22,5 +22,15 @@ services:
         sync: false
       - key: TELEGRAM_BOT_USERNAME
         value: zenixposbot
+      - key: ZENIX_PAYMENT_BOT_TOKEN
+        sync: false
+      - key: ZENIX_PAYMENT_ADMIN_CHAT_ID
+        sync: false
+      - key: ZENIX_PAYMENT_ADMIN_USER_IDS
+        sync: false
+      - key: ZENIX_PAYMENT_WEBHOOK_SECRET
+        sync: false
+      - key: ZENIX_PAYMENT_BOT_USERNAME
+        value: zenixpaymentbot
       - key: PUBLIC_API_URL
         sync: false

@@ -129,12 +129,12 @@ test('license expiry is inclusive and evaluated in the organization timezone',()
   const auth=read('src/middleware/auth.js');
   const bootstrap=read('src/routes/bootstrap.js');
   const billing=read('src/routes/billing.js');
-  const platform=read('src/routes/platform.js');
+  const billingReview=read('src/services/billingReview.js');
   assert.match(auth,/AT TIME ZONE COALESCE\(NULLIF\(o\.timezone,''\),'Asia\/Tashkent'\)/);
   assert.match(auth,/licenseDateValid:row\.license_date_valid!==false/);
   assert.match(bootstrap,/license_date_valid/);
   assert.match(billing,/organizationCalendarDateISO\(org\)/);
-  assert.match(platform,/currentExpiry&&currentExpiry>=today/);
+  assert.match(billingReview,/currentExpiry && currentExpiry >= today/);
 });
 
 

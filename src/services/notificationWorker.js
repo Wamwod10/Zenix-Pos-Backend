@@ -30,11 +30,11 @@ async function claimEvents(){
     WITH candidates AS (
       SELECT id
       FROM notification_outbox
-      WHERE (
+      WHERE event_type <> 'billing.payment_review' AND ((
         status IN ('pending','retry') AND next_attempt_at<=now()
       ) OR (
         status='processing' AND next_attempt_at<=now()-interval '10 minutes'
-      )
+      ))
       ORDER BY created_at
       LIMIT $1
       FOR UPDATE SKIP LOCKED

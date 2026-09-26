@@ -108,6 +108,10 @@ test("production server variables are validated at server startup instead of mig
       telegramBotToken: "",
       telegramWebhookSecret: "",
       publicApiUrl: "",
+      paymentBotToken: "payment-token",
+      paymentAdminChatId: "-1001234567890",
+      paymentAdminUserIds: ["123456789"],
+      paymentWebhookSecret: "payment-secret-strong",
     }),
     /FRONTEND_ORIGIN, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, PUBLIC_API_URL are required/,
   );
@@ -124,6 +128,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     "006_return_business_day.sql",
     "007_registration_throttle.sql",
     "008_serial_case_insensitive_unique.sql",
+    "009_payment_telegram_approval.sql",
   ]);
 
   for (const table of [
@@ -150,11 +155,11 @@ test("schema verification covers all migrations and core backend domains", () =>
     foreignKeyTables: complete.foreignKeyTables.filter((name) => name !== "sale_items"),
     uniqueConstraintTables: complete.uniqueConstraintTables.filter((name) => name !== "users"),
     indexes: complete.indexes.filter((name) => name !== "products_org_sku_unique"),
-    migrations: complete.migrations.filter((name) => name !== "008_serial_case_insensitive_unique.sql"),
+    migrations: complete.migrations.filter((name) => name !== "009_payment_telegram_approval.sql"),
   };
   const issues = schemaModule.findSchemaIssues(incomplete).join("\n");
   assert.match(issues, /missing tables: sales/);
-  assert.match(issues, /missing migration records: 008_serial_case_insensitive_unique.sql/);
+  assert.match(issues, /missing migration records: 009_payment_telegram_approval.sql/);
   assert.match(issues, /missing foreign keys on tables: sale_items/);
   assert.match(issues, /missing unique constraints on tables: users/);
   assert.match(issues, /missing indexes: products_org_sku_unique/);

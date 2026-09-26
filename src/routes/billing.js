@@ -10,6 +10,7 @@ import {
 } from "../config/billing.js";
 import { organizationCalendarDateISO } from "../lib/businessDate.js";
 import { writeAudit } from "../services/audit.js";
+import { enqueuePaymentReviewNotification } from "../services/paymentNotifications.js";
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -157,6 +158,7 @@ router.post("/payments",requirePermission("billingWrite"),asyncRoute(async(req,r
       req.user.organizationId,draft.id,draft.order_id,draft.type,draft.plan,draft.total_amount,draft.current_end_date,draft.selected_end_date,draft.extension_days,draft.extra_store_count,
       receipt.id,receipt.file_name,receipt.mime_type,req.user.id,
     ])).rows[0];
+    await enqueuePaymentReviewNotification(client,p);
     await client.query("UPDATE billing_drafts SET status='submitted',updated_at=now() WHERE id=$1",[draft.id]);
     await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,action:"submit",entityType:"billing_payment",entityId:p.id,title:"To‘lov tekshiruvga yuborildi",description:`${p.order_id} · ${Number(p.amount)}`});
     return p;

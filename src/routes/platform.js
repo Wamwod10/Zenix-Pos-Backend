@@ -1,12 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { withTransaction } from "../db/tx.js";
 import { BILLING_PLANS } from "../config/billing.js";
-import { organizationCalendarDateISO } from "../lib/businessDate.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
-import { writeAudit } from "../services/audit.js";
+import { reviewBillingPayment } from "../services/billingReview.js";
 
 const router=Router();
 router.use(requireAuth,requirePermission("platformAdmin"));
@@ -42,31 +40,9 @@ router.get("/receipts/:id",asyncRoute(async(req,res)=>{
 router.post("/payments/:id/review",asyncRoute(async(req,res)=>{
   const input=z.object({status:z.enum(["APPROVED","REJECTED"]),reason:z.string().trim().max(1000).default("")}).parse(req.body);
   if(input.status==="REJECTED"&&!input.reason)throw new HttpError(400,"Rad etish sababini kiriting","REJECT_REASON_REQUIRED");
-  const payment=await withTransaction(async(client)=>{
-    const row=(await client.query("SELECT bp.*,o.license_status,o.expiry_date,o.store_limit,o.timezone FROM billing_payments bp JOIN organizations o ON o.id=bp.organization_id WHERE bp.id=$1 FOR UPDATE OF bp,o",[req.params.id])).rows[0];
-    if(!row)throw new HttpError(404,"To‘lov topilmadi");
-    if(row.status!=="REVIEW")throw new HttpError(409,"Bu to‘lov allaqachon ko‘rib chiqilgan","PAYMENT_ALREADY_REVIEWED");
-    const reviewed=(await client.query("UPDATE billing_payments SET status=$2,reject_reason=$3,reviewed_at=now() WHERE id=$1 RETURNING *",[row.id,input.status,input.status==="REJECTED"?input.reason:""])).rows[0];
-    if(input.status==="APPROVED"){
-      if(row.type==="EXTRA"){
-        await client.query("UPDATE organizations SET store_limit=store_limit+$2,updated_at=now() WHERE id=$1",[row.organization_id,Math.max(1,Number(row.extra_store_count||1))]);
-      }else{
-        const plan=BILLING_PLANS[row.plan]?row.plan:"ANNUAL";
-        const included=BILLING_PLANS[plan].includedStores;
-        const extras=Math.max(0,Number(row.extra_store_count||0));
-        await client.query("UPDATE organizations SET plan=$2,license_status='ACTIVE',expiry_date=$3,store_limit=$4,updated_at=now() WHERE id=$1",[row.organization_id,plan,row.service_period_to,included+extras]);
-      }
-    }else{
-      const currentExpiry=row.expiry_date?String(row.expiry_date).slice(0,10):null;
-      const today=organizationCalendarDateISO({timezone:row.timezone});
-      const nextStatus=currentExpiry&&currentExpiry>=today?"ACTIVE":"REJECTED";
-      await client.query("UPDATE organizations SET license_status=$2,updated_at=now() WHERE id=$1",[row.organization_id,nextStatus]);
-    }
-    await writeAudit(client,{organizationId:row.organization_id,userId:req.user.id,action:input.status==="APPROVED"?"approve":"reject",entityType:"billing_payment",entityId:row.id,title:input.status==="APPROVED"?"To‘lov tasdiqlandi":"To‘lov rad etildi",description:`${row.order_id}${input.reason?` · ${input.reason}`:""}`});
-    const orgName=(await client.query("SELECT name FROM organizations WHERE id=$1",[row.organization_id])).rows[0]?.name||"";
-    return {...reviewed,organization_name:orgName};
-  });
-  ok(res,{payment:paymentView(payment)});
+  const result=await reviewBillingPayment({paymentId:req.params.id,decision:input.status,reason:input.reason,actor:{source:"platform",internalUserId:req.user.id}});
+  if(result.outcome==="alreadyReviewed")throw new HttpError(409,"Bu to‘lov allaqachon ko‘rib chiqilgan","PAYMENT_ALREADY_REVIEWED");
+  ok(res,{payment:paymentView(result.payment)});
 }));
 
 export default router;
