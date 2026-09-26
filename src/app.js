@@ -1,0 +1,55 @@
+import express from "express";
+import helmet from "helmet";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import { env } from "./config/env.js";
+import authRoutes from "./routes/auth.js";
+import usersRoutes from "./routes/users.js";
+import bootstrapRoutes from "./routes/bootstrap.js";
+import storeRoutes from "./routes/stores.js";
+import productRoutes from "./routes/products.js";
+import inventoryRoutes from "./routes/inventory.js";
+import saleRoutes from "./routes/sales.js";
+import shiftRoutes from "./routes/shifts.js";
+import supplierRoutes from "./routes/suppliers.js";
+import expenseRoutes from "./routes/expenses.js";
+import billingRoutes from "./routes/billing.js";
+import telegramRoutes from "./routes/telegram.js";
+import settingsRoutes from "./routes/settings.js";
+import platformRoutes from "./routes/platform.js";
+import fileRoutes from "./routes/files.js";
+import { errorHandler, notFound } from "./middleware/error.js";
+import { requireTrustedClient } from "./middleware/clientGuard.js";
+import { pool } from "./db/pool.js";
+import { HttpError } from "./lib/http.js";
+
+export const app=express();
+app.set("trust proxy",1);
+app.use(helmet({crossOriginResourcePolicy:{policy:"cross-origin"}}));
+app.use(cors({origin(origin,cb){if(!origin||env.frontendOrigins.includes(origin))return cb(null,true);return cb(new HttpError(403,"So‘rov manbasi ruxsat etilmagan","CORS_FORBIDDEN"));},credentials:true}));
+app.use(express.json({limit:"2mb"}));
+app.use(cookieParser());
+app.use("/api",(_req,res,next)=>{res.setHeader("Cache-Control","no-store");next();});
+app.use(requireTrustedClient);
+app.get("/health",(_req,res)=>res.json({ok:true,service:"zenix-pos-api",time:new Date().toISOString()}));
+app.get("/ready",async(_req,res)=>{
+  try{await pool.query("SELECT 1");res.json({ok:true,service:"zenix-pos-api",database:"ready",time:new Date().toISOString()});}
+  catch(error){res.status(503).json({ok:false,service:"zenix-pos-api",database:"unavailable",time:new Date().toISOString()});}
+});
+app.use("/api/auth",authRoutes);
+app.use("/api/users",usersRoutes);
+app.use("/api/bootstrap",bootstrapRoutes);
+app.use("/api/stores",storeRoutes);
+app.use("/api/products",productRoutes);
+app.use("/api/inventory",inventoryRoutes);
+app.use("/api/sales",saleRoutes);
+app.use("/api/shifts",shiftRoutes);
+app.use("/api/suppliers",supplierRoutes);
+app.use("/api/expenses",expenseRoutes);
+app.use("/api/billing",billingRoutes);
+app.use("/api/telegram",telegramRoutes);
+app.use("/api/settings",settingsRoutes);
+app.use("/api/platform",platformRoutes);
+app.use("/api/files",fileRoutes);
+app.use(notFound);
+app.use(errorHandler);

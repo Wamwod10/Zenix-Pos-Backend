@@ -1,0 +1,12 @@
+import pg from "pg";
+import { env } from "../config/env.js";
+import { createPoolConfig } from "./config.js";
+
+const { Pool } = pg;
+export const pool = new Pool(createPoolConfig({
+  databaseUrl: env.databaseUrl,
+  isProduction: env.isProduction,
+  poolMax: env.databasePoolMax,
+}));
+
+pool.on("error", (error) => console.error("[db] idle client error", error));
