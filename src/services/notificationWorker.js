@@ -25,6 +25,15 @@ const enabledForEvent=(eventType,settings={})=>{
   return !key||settings?.[key]!==false;
 };
 
+export function normalizeScheduledBusinessDate(value,timezone="Asia/Tashkent"){
+  if(typeof value==="string"&&/^\d{4}-\d{2}-\d{2}/.test(value))return value.slice(0,10);
+  const date=value instanceof Date?value:new Date(value);
+  if(Number.isNaN(date.getTime()))throw new Error("Scheduled report business date is invalid");
+  const parts=new Intl.DateTimeFormat("en",{timeZone:timezone,year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(date);
+  const part=(type)=>parts.find((entry)=>entry.type===type)?.value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 async function claimEvents(){
   const {rows}=await pool.query(`
     WITH candidates AS (
@@ -196,7 +205,7 @@ async function enqueueScheduledDailyReports(){
       AND COALESCE((c.settings->>'dailyReport')::boolean,true)=true
       AND (now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::time >= COALESCE(NULLIF(c.settings->>'dailyReportTime','')::time,time '21:00')`);
   for(const target of targets){
-    const date=String(target.business_date).slice(0,10);
+    const date=normalizeScheduledBusinessDate(target.business_date,target.timezone);
     const storeKey=target.store_id||'all';
     const eventId=`scheduled:${target.organization_id}:${storeKey}:${date}`;
     const exists=(await pool.query("SELECT 1 FROM notification_outbox WHERE event_type='daily.report' AND event_id=$1 LIMIT 1",[eventId])).rowCount>0;
@@ -217,11 +226,17 @@ async function enqueueScheduledDailyReports(){
     await pool.query(`INSERT INTO notification_outbox(organization_id,store_id,event_type,event_id,payload) VALUES($1,$2,'daily.report',$3,$4) ON CONFLICT DO NOTHING`,[target.organization_id,target.store_id,eventId,{businessDate:date,storeName,saleCount:Number(summary?.sale_count||0),total:Number(summary?.total||0),cash:Number(summary?.cash||0),card:Number(summary?.card||0),transfer:Number(summary?.transfer||0)}]);
   }
 }
+
+export async function runScheduledReportsSafely(run=enqueueScheduledDailyReports,onError=(error)=>console.error("[telegram-worker:daily-report]",error)){
+  try{await run()}
+  catch(error){onError(error)}
+}
+
 export async function processNotificationOutbox(){
   if(running)return;
   running=true;
   try{
-    await enqueueScheduledDailyReports();
+    await runScheduledReportsSafely();
     const events=await claimEvents();
     for(const event of events){
       try{await prepareDeliveries(event)}
