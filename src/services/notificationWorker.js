@@ -185,10 +185,43 @@ async function deliver(delivery){
   }
 }
 
+
+async function enqueueScheduledDailyReports(){
+  const {rows:targets}=await pool.query(`
+    SELECT DISTINCT c.organization_id,c.store_id,o.timezone,
+      (now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date AS business_date
+    FROM telegram_connections c
+    JOIN organizations o ON o.id=c.organization_id
+    WHERE c.enabled=true
+      AND COALESCE((c.settings->>'dailyReport')::boolean,true)=true
+      AND (now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::time >= COALESCE(NULLIF(c.settings->>'dailyReportTime','')::time,time '21:00')`);
+  for(const target of targets){
+    const date=String(target.business_date).slice(0,10);
+    const storeKey=target.store_id||'all';
+    const eventId=`scheduled:${target.organization_id}:${storeKey}:${date}`;
+    const exists=(await pool.query("SELECT 1 FROM notification_outbox WHERE event_type='daily.report' AND event_id=$1 LIMIT 1",[eventId])).rowCount>0;
+    if(exists)continue;
+    const params=[target.organization_id,date];
+    const storeSql=target.store_id?` AND s.store_id=$3`:'';if(target.store_id)params.push(target.store_id);
+    const summary=(await pool.query(`WITH scoped AS (
+        SELECT s.id,s.total,s.returned_amount FROM sales s WHERE s.organization_id=$1 AND s.business_date=$2${storeSql}
+      ), payment_totals AS (
+        SELECT sp.method,sum(sp.amount)::numeric amount FROM sale_payments sp JOIN scoped s ON s.id=sp.sale_id GROUP BY sp.method
+      )
+      SELECT (SELECT count(*)::int FROM scoped) AS sale_count,
+        COALESCE((SELECT sum(total-returned_amount) FROM scoped),0)::numeric AS total,
+        COALESCE((SELECT amount FROM payment_totals WHERE method='cash'),0)::numeric AS cash,
+        COALESCE((SELECT amount FROM payment_totals WHERE method='card'),0)::numeric AS card,
+        COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)::numeric AS transfer` ,params)).rows[0];
+    const storeName=target.store_id?(await pool.query("SELECT name FROM stores WHERE id=$1 AND organization_id=$2",[target.store_id,target.organization_id])).rows[0]?.name||'Filial':'Barcha filiallar';
+    await pool.query(`INSERT INTO notification_outbox(organization_id,store_id,event_type,event_id,payload) VALUES($1,$2,'daily.report',$3,$4) ON CONFLICT DO NOTHING`,[target.organization_id,target.store_id,eventId,{businessDate:date,storeName,saleCount:Number(summary?.sale_count||0),total:Number(summary?.total||0),cash:Number(summary?.cash||0),card:Number(summary?.card||0),transfer:Number(summary?.transfer||0)}]);
+  }
+}
 export async function processNotificationOutbox(){
   if(running)return;
   running=true;
   try{
+    await enqueueScheduledDailyReports();
     const events=await claimEvents();
     for(const event of events){
       try{await prepareDeliveries(event)}

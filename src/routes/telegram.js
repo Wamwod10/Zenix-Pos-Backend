@@ -8,14 +8,30 @@ import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission, requireActiveLicense } from "../middleware/auth.js";
 import { isBranchLocked, scopedStoreId } from "../lib/storeScope.js";
 import { sendTelegramMessage } from "../services/telegram.js";
+import { assertTelegramWebhookReady, normalizeTelegramWebhookSecret } from "../services/telegramWebhook.js";
 
 const router=Router();
 const protectedRouter=Router();protectedRouter.use(requireAuth,requireOrganization,requireActiveLicense);
-const TELEGRAM_SETTING_KEYS=new Set(["sale","dailyReport","shiftClose","returns","expenses","transfers","inventoryReceived","lowStock","outOfStock","supplierDebt"]);
+const TELEGRAM_SETTING_KEYS=new Set(["sale","dailyReport","dailyReportTime","shiftClose","returns","expenses","transfers","inventoryReceived","lowStock","outOfStock","supplierDebt"]);
 const escapeHtml=(value)=>String(value??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
 const connectionScope=(req)=>isBranchLocked(req.user)?scopedStoreId(req.user,null):null;
 const connectionScopeSql=(req,paramIndex)=>isBranchLocked(req.user)?` AND store_id=$${paramIndex}`:"";
 const connectionScopeParams=(req)=>isBranchLocked(req.user)?[connectionScope(req)]:[];
+
+export function parseTelegramLinkCommand(value){
+  const match=String(value||"").trim().match(/^\/(start|connect)(?:@\w+)?(?:\s+([A-Za-z0-9_-]{1,64}))?$/i);
+  return match?{command:match[1].toLowerCase(),token:match[2]||""}:null;
+}
+
+export function telegramLinkPayload({raw,botUsername}){
+  const username=String(botUsername||"").trim().replace(/^@/,"");
+  return {
+    deepLink:`https://t.me/${username}?startgroup=${encodeURIComponent(raw)}`,
+    fallbackCommand:`/connect@${username} ${raw}`,
+    botUsername:`@${username}`,
+    expiresInSeconds:900,
+  };
+}
 
 protectedRouter.get("/connections",requirePermission("moduleSettings"),asyncRoute(async(req,res)=>{
   const scopeParams=connectionScopeParams(req);
@@ -29,6 +45,8 @@ protectedRouter.post("/link",requirePermission("settingsWrite"),asyncRoute(async
     const store=await pool.query("SELECT 1 FROM stores WHERE id=$1 AND organization_id=$2 AND active=true",[effectiveStoreId,req.user.organizationId]);
     if(!store.rowCount)throw new HttpError(404,"Faol filial topilmadi","STORE_NOT_FOUND");
   }
+  try{await assertTelegramWebhookReady()}
+  catch(error){console.error(`[telegram] link preflight failed: ${error.cause?.message||error.message}`);throw new HttpError(503,error.message,error.code)}
   const raw=randomToken(18);
   await withTransaction(async(client)=>{
     // A user should never have several valid group-link URLs at once. Invalidating
@@ -36,8 +54,7 @@ protectedRouter.post("/link",requirePermission("settingsWrite"),asyncRoute(async
     await client.query("UPDATE telegram_link_tokens SET consumed_at=now() WHERE organization_id=$1 AND created_by=$2 AND consumed_at IS NULL",[req.user.organizationId,req.user.id]);
     await client.query(`INSERT INTO telegram_link_tokens(organization_id,store_id,created_by,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+interval '15 minutes')`,[req.user.organizationId,effectiveStoreId,req.user.id,sha256(raw)]);
   });
-  const deepLink=`https://t.me/${env.telegramBotUsername}?startgroup=${encodeURIComponent(raw)}`;
-  ok(res,{deepLink,expiresInSeconds:900,botUsername:`@${env.telegramBotUsername}`},201);
+  ok(res,telegramLinkPayload({raw,botUsername:env.telegramBotUsername}),201);
 }));
 protectedRouter.post("/connections/:id/disconnect",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
   const params=[req.params.id,req.user.organizationId,...connectionScopeParams(req)];
@@ -46,9 +63,13 @@ protectedRouter.post("/connections/:id/disconnect",requirePermission("settingsWr
   ok(res,{connection:row});
 }));
 protectedRouter.patch("/connections/:id/settings",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
-  const input=z.object({settings:z.record(z.string(),z.boolean())}).parse(req.body||{});
+  const input=z.object({settings:z.record(z.string(),z.union([z.boolean(),z.string()]))}).parse(req.body||{});
   const invalid=Object.keys(input.settings).filter((key)=>!TELEGRAM_SETTING_KEYS.has(key));
   if(invalid.length)throw new HttpError(400,"Noma’lum Telegram bildirishnoma sozlamasi","INVALID_TELEGRAM_SETTING",{keys:invalid});
+  for(const [key,value] of Object.entries(input.settings)){
+    if(key==="dailyReportTime"){if(typeof value!=="string"||!/^([01]\d|2[0-3]):[0-5]\d$/.test(value))throw new HttpError(400,"Kunlik hisobot vaqti HH:MM formatida bo‘lishi kerak","INVALID_TELEGRAM_SETTING");}
+    else if(typeof value!=="boolean")throw new HttpError(400,"Telegram bildirishnoma sozlamasi true/false bo‘lishi kerak","INVALID_TELEGRAM_SETTING");
+  }
   const scopeParams=connectionScopeParams(req);
   const settingsIndex=3+scopeParams.length;
   const params=[req.params.id,req.user.organizationId,...scopeParams,JSON.stringify(input.settings)];
@@ -64,7 +85,7 @@ protectedRouter.post("/connections/:id/test",requirePermission("settingsWrite"),
   ok(res,{sent:true});
 }));
 router.post("/webhook",asyncRoute(async(req,res)=>{
-  if(env.telegramWebhookSecret){const secret=req.get("x-telegram-bot-api-secret-token");if(secret!==env.telegramWebhookSecret)throw new HttpError(403,"Webhook secret noto‘g‘ri","BAD_WEBHOOK_SECRET");}
+  if(env.telegramWebhookSecret){const secret=req.get("x-telegram-bot-api-secret-token");if(secret!==normalizeTelegramWebhookSecret(env.telegramWebhookSecret))throw new HttpError(403,"Webhook secret noto‘g‘ri","BAD_WEBHOOK_SECRET");}
 
   // Telegram reports when the bot is removed from a group. Disable the connection
   // immediately so the notification worker does not keep retrying a dead chat.
@@ -105,8 +126,8 @@ router.post("/webhook",asyncRoute(async(req,res)=>{
     });
     return ok(res,{accepted:true});
   }
-  const start=text.match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i);const token=start?.[1]?.trim();
-  if(start&&["group","supergroup"].includes(chat.type)&&token){
+  const linkCommand=parseTelegramLinkCommand(text);const token=linkCommand?.token;
+  if(linkCommand&&["group","supergroup"].includes(chat.type)&&token){
     const linked=await withTransaction(async(client)=>{
       const tokenHash=sha256(token);
       const link=(await client.query("SELECT * FROM telegram_link_tokens WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>now() FOR UPDATE",[tokenHash])).rows[0];
@@ -136,7 +157,7 @@ router.post("/webhook",asyncRoute(async(req,res)=>{
     if(linked)await sendTelegramMessage(chat.id,`✅ <b>Zenix POS muvaffaqiyatli ulandi</b>\n\nGuruh: <b>${escapeHtml(chat.title||"Telegram guruhi")}</b>\nEndi Zenix POS bildirishnomalari shu guruhga keladi.`);else await sendTelegramMessage(chat.id,"⚠️ Ulanish havolasi eskirgan yoki allaqachon ishlatilgan. Zenix POS ichidan yangi ulash havolasini oching.");
     return ok(res,{accepted:true});
   }
-  if(start&&chat.type==="private")await sendTelegramMessage(chat.id,`<b>Zenix POS</b>\n\nGuruh ulash uchun Zenix POS → Sozlamalar → Telegram bo‘limidagi “Guruhni ulash” tugmasidan foydalaning.`);
+  if(linkCommand?.command==="start"&&chat.type==="private")await sendTelegramMessage(chat.id,`<b>Zenix POS</b>\n\nGuruh ulash uchun Zenix POS → Sozlamalar → Telegram bo‘limidagi “Guruhni ulash” tugmasidan foydalaning.`);
   return ok(res,{accepted:true});
 }));
 

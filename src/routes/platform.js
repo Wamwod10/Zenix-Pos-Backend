@@ -18,15 +18,19 @@ const paymentView=(row)=>({
 });
 
 router.get("/bootstrap",asyncRoute(async(_req,res)=>{
-  const [orgs,payments]=await Promise.all([
+  const [orgs,payments,users,stores]=await Promise.all([
     pool.query(`SELECT o.*,owner.name AS owner_name,owner.phone AS owner_phone,
       (SELECT count(*)::int FROM stores st WHERE st.organization_id=o.id AND st.active=true) AS store_count
       FROM organizations o LEFT JOIN LATERAL (SELECT u.name,u.phone FROM users u WHERE u.organization_id=o.id AND u.app_role='OWNER' ORDER BY u.created_at LIMIT 1) owner ON true
       ORDER BY o.created_at DESC`),
     pool.query(`SELECT bp.*,o.name AS organization_name FROM billing_payments bp JOIN organizations o ON o.id=bp.organization_id ORDER BY bp.submitted_at DESC LIMIT 5000`),
+    pool.query(`SELECT id,organization_id,store_id,name,username,phone,app_role,active,created_at FROM users WHERE organization_id IS NOT NULL ORDER BY created_at DESC`),
+    pool.query(`SELECT id,organization_id,name,active,created_at FROM stores ORDER BY created_at DESC`),
   ]);
+  const usersByOrg=new Map();for(const row of users.rows){const key=String(row.organization_id);const list=usersByOrg.get(key)||[];list.push({id:row.id,storeId:row.store_id,name:row.name,username:row.username,phone:row.phone,role:row.app_role,active:row.active,createdAt:row.created_at});usersByOrg.set(key,list)}
+  const storesByOrg=new Map();for(const row of stores.rows){const key=String(row.organization_id);const list=storesByOrg.get(key)||[];list.push({id:row.id,name:row.name,active:row.active,createdAt:row.created_at});storesByOrg.set(key,list)}
   ok(res,{
-    organizations:orgs.rows.map((row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,storeLimit:Number(row.store_limit||0),createdAt:row.created_at})),
+    organizations:orgs.rows.map((row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),storeLimit:Number(row.store_limit||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,createdAt:row.created_at,users:usersByOrg.get(String(row.id))||[],storeRows:storesByOrg.get(String(row.id))||[]})),
     payments:payments.rows.map(paymentView),
   });
 }));
