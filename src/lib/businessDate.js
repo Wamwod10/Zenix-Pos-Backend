@@ -8,6 +8,14 @@ const shiftISODate=(dateISO,days)=>{
   return date.toISOString().slice(0,10);
 };
 
+export function databaseDateISO(value){
+  if(typeof value==="string"&&/^\d{4}-\d{2}-\d{2}/.test(value))return value.slice(0,10);
+  const date=value instanceof Date?value:new Date(value);
+  if(Number.isNaN(date.getTime()))throw new Error("Invalid database date value");
+  const pad=(part)=>String(part).padStart(2,"0");
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`;
+}
+
 export function organizationCalendarDateISO(organization,now=new Date()){
   const timeZone=organization?.timezone||"Asia/Tashkent";
   const parts=partsInZone(now,timeZone);

@@ -122,7 +122,7 @@ test('daily reports keep returns on the business day the refund was processed',(
   assert.match(sales,/INSERT INTO sale_returns[\s\S]*business_date/);
   assert.match(sales,/day_returns[\s\S]*business_date=\$3/);
   assert.match(sales,/BUSINESS_DAY_CLOSED/);
-  assert.match(bootstrap,/businessDateISO:String\(row\.business_date\|\|parts\.dateISO\)/);
+  assert.match(bootstrap,/businessDateISO:databaseDateISO\(row\.business_date\|\|parts\.dateISO\)/);
 });
 
 test('manual supplier invoices persist their initial payment in the payment ledger',()=>{
