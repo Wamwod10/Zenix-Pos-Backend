@@ -3,7 +3,7 @@ services:
     name: zenix-pos-api
     env: node
     rootDir: backend
-    buildCommand: npm install
+    buildCommand: npm ci
     preDeployCommand: npm run migrate && npm run db:verify
     startCommand: npm start
     healthCheckPath: /ready
@@ -32,5 +32,37 @@ services:
         sync: false
       - key: ZENIX_PAYMENT_BOT_USERNAME
         value: zenixpaymentbot
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: RUN_NOTIFICATION_WORKERS
+        value: false
+
+  - type: worker
+    name: zenix-pos-worker
+    env: node
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_POOL_MAX
+        value: 3
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: ZENIX_PAYMENT_BOT_TOKEN
+        sync: false
+      - key: ZENIX_PAYMENT_ADMIN_CHAT_ID
+        sync: false
+      - key: ZENIX_PAYMENT_ADMIN_USER_IDS
+        sync: false
+      - key: ZENIX_PAYMENT_WEBHOOK_SECRET
+        sync: false
       - key: PUBLIC_API_URL
         sync: false

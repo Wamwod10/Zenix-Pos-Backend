@@ -9,11 +9,14 @@ const shiftISODate=(dateISO,days)=>{
 };
 
 export function databaseDateISO(value){
-  if(typeof value==="string"&&/^\d{4}-\d{2}-\d{2}/.test(value))return value.slice(0,10);
+  if(typeof value==="string"&&/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value)){
+    const dateISO=value.slice(0,10);
+    const parsed=new Date(`${dateISO}T12:00:00Z`);
+    if(!Number.isNaN(parsed.getTime())&&parsed.toISOString().slice(0,10)===dateISO) return dateISO;
+  }
   const date=value instanceof Date?value:new Date(value);
   if(Number.isNaN(date.getTime()))throw new Error("Invalid database date value");
-  const pad=(part)=>String(part).padStart(2,"0");
-  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`;
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
 }
 
 export function organizationCalendarDateISO(organization,now=new Date()){

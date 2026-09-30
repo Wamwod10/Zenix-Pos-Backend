@@ -42,3 +42,15 @@ export async function assertTelegramWebhookReady({configure=configureTelegramWeb
   }
 }
 
+
+export async function configurePaymentTelegramWebhook({config=env,fetchImpl=fetch}={}){
+  const token=String(config.paymentBotToken||"").trim();
+  const publicApiUrl=normalizePublicApiUrl(config.publicApiUrl);
+  const secret=normalizeTelegramWebhookSecret(config.paymentWebhookSecret);
+  if(!token)throw new Error("ZENIX_PAYMENT_BOT_TOKEN is required");
+  const url=`${publicApiUrl}/api/telegram/payment/webhook`;
+  const response=await fetchImpl(`https://api.telegram.org/bot${token}/setWebhook`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({url,secret_token:secret,allowed_updates:["callback_query"],drop_pending_updates:false}),signal:AbortSignal.timeout(15000)});
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok||!payload.ok)throw new Error(`Payment Telegram setWebhook failed (${response.status}): ${String(payload.description||"unknown error").slice(0,300)}`);
+  return {configured:true,url};
+}

@@ -16,7 +16,8 @@
     "telegram:payment:webhook": "node scripts/setPaymentTelegramWebhook.js",
     "platform:admin": "node scripts/createPlatformAdmin.js",
     "seed:zenix-market": "node scripts/seedZenixMarket.js",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "worker": "node src/worker.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

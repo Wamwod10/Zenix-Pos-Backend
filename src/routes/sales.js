@@ -285,10 +285,15 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
 router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res)=>{
   const input=z.object({
     productId:z.string().uuid(),quantity:z.coerce.number().positive(),reason:z.string().trim().min(2).max(500),refundMethod:z.enum(["original","cash","card","transfer"]).default("original"),
-    refundShiftId:z.string().uuid().optional().nullable(),refundBreakdown:z.object({cash:z.coerce.number().min(0).default(0),card:z.coerce.number().min(0).default(0),transfer:z.coerce.number().min(0).default(0)}).optional(),metadata:z.record(z.string(),z.any()).default({}),
+    refundShiftId:z.string().uuid().optional().nullable(),refundBreakdown:z.object({cash:z.coerce.number().min(0).default(0),card:z.coerce.number().min(0).default(0),transfer:z.coerce.number().min(0).default(0)}).optional(),clientReference:z.string().trim().max(120).default(""),metadata:z.record(z.string(),z.any()).default({}),
   }).parse(req.body);
   const result=await withTransaction(async(client)=>{
-    const orgId=req.user.organizationId;const sale=(await client.query("SELECT * FROM sales WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,orgId])).rows[0];
+    const orgId=req.user.organizationId;
+    if(input.clientReference){
+      const duplicate=(await client.query("SELECT * FROM sale_returns WHERE organization_id=$1 AND client_reference=$2 LIMIT 1",[orgId,input.clientReference])).rows[0];
+      if(duplicate)return duplicate;
+    }
+    const sale=(await client.query("SELECT * FROM sales WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,orgId])).rows[0];
     if(!sale)throw new HttpError(404,"Savdo topilmadi");assertStoreScope(req.user,sale.store_id);await assertOrganizationStore(client,orgId,sale.store_id);
     const organization=(await client.query("SELECT timezone,settings FROM organizations WHERE id=$1",[orgId])).rows[0]||{};
     const returnBusinessDate=organizationBusinessDateISO(organization);
@@ -324,7 +329,7 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     await client.query(`INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,0,0) ON CONFLICT(store_id,product_id) DO NOTHING`,[orgId,sale.store_id,input.productId]);
     const balance=(await client.query("SELECT * FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 FOR UPDATE",[orgId,sale.store_id,input.productId])).rows[0];
     const before=Number(balance.quantity),after=before+Number(input.quantity);
-    const ret=(await client.query(`INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,reason,refund_method,business_date,metadata,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[orgId,sale.id,sale.store_id,input.productId,input.quantity,amount,input.reason,input.refundMethod,returnBusinessDate,{...input.metadata,refundBreakdown:breakdown,refundShiftId:input.refundShiftId||null},req.user.id])).rows[0];
+    const ret=(await client.query(`INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,reason,refund_method,business_date,metadata,created_by,client_reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[orgId,sale.id,sale.store_id,input.productId,input.quantity,amount,input.reason,input.refundMethod,returnBusinessDate,{...input.metadata,refundBreakdown:breakdown,refundShiftId:input.refundShiftId||null},req.user.id,input.clientReference||null])).rows[0];
     await client.query("UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3",[orgId,sale.store_id,input.productId,after]);
     await client.query("UPDATE sales SET returned_amount=returned_amount+$2 WHERE id=$1",[sale.id,amount]);
     await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by) VALUES($1,$2,$3,'return',$4,$5,$6,'return',$7,$8,$9)`,[orgId,sale.store_id,input.productId,input.quantity,before,after,ret.id,input.reason,req.user.id]);

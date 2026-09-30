@@ -23,7 +23,7 @@ router.get("/bootstrap",asyncRoute(async(_req,res)=>{
       (SELECT count(*)::int FROM stores st WHERE st.organization_id=o.id AND st.active=true) AS store_count
       FROM organizations o LEFT JOIN LATERAL (SELECT u.name,u.phone FROM users u WHERE u.organization_id=o.id AND u.app_role='OWNER' ORDER BY u.created_at LIMIT 1) owner ON true
       ORDER BY o.created_at DESC`),
-    pool.query(`SELECT bp.*,o.name AS organization_name FROM billing_payments bp JOIN organizations o ON o.id=bp.organization_id ORDER BY bp.submitted_at DESC LIMIT 5000`),
+    pool.query(`SELECT bp.*,o.name AS organization_name FROM billing_payments bp JOIN organizations o ON o.id=bp.organization_id ORDER BY bp.submitted_at DESC`),
     pool.query(`SELECT id,organization_id,store_id,name,username,phone,app_role,active,created_at FROM users WHERE organization_id IS NOT NULL ORDER BY created_at DESC`),
     pool.query(`SELECT id,organization_id,name,active,created_at FROM stores ORDER BY created_at DESC`),
   ]);
@@ -33,6 +33,12 @@ router.get("/bootstrap",asyncRoute(async(_req,res)=>{
     organizations:orgs.rows.map((row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),storeLimit:Number(row.store_limit||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,createdAt:row.created_at,users:usersByOrg.get(String(row.id))||[],storeRows:storesByOrg.get(String(row.id))||[]})),
     payments:payments.rows.map(paymentView),
   });
+}));
+
+router.get("/audit-logs",asyncRoute(async(req,res)=>{
+  const input=z.object({organizationId:z.string().uuid(),limit:z.coerce.number().int().min(1).max(200).default(50),offset:z.coerce.number().int().min(0).default(0)}).parse(req.query);
+  const {rows}=await pool.query(`SELECT a.id,a.action,a.entity_type,a.entity_id,a.title,a.description,a.created_at,u.name AS user_name,st.name AS store_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN stores st ON st.id=a.store_id WHERE a.organization_id=$1 ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`,[input.organizationId,input.limit,input.offset]);
+  ok(res,{logs:rows.map(row=>({id:row.id,action:row.action,entityType:row.entity_type,entityId:row.entity_id,title:row.title,description:row.description,createdAt:row.created_at,userName:row.user_name||"",storeName:row.store_name||""}))});
 }));
 
 router.get("/receipts/:id",asyncRoute(async(req,res)=>{

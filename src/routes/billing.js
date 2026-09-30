@@ -144,6 +144,12 @@ router.get("/receipts/:id",requirePermission("moduleBilling"),asyncRoute(async(r
   res.setHeader("Content-Type",row.mime_type);res.setHeader("Content-Disposition",`inline; filename*=UTF-8''${encodeURIComponent(row.file_name)}`);res.setHeader("Cache-Control","private, max-age=60");res.send(row.content);
 }));
 
+router.delete("/receipts/:id",requirePermission("billingWrite"),asyncRoute(async(req,res)=>{
+  const result=await pool.query(`DELETE FROM billing_receipts r WHERE r.id=$1 AND r.organization_id=$2 AND NOT EXISTS (SELECT 1 FROM billing_payments p WHERE p.receipt_id=r.id)`,[req.params.id,req.user.organizationId]);
+  if(!result.rowCount)throw new HttpError(409,"Chek to‘lovda ishlatilmoqda yoki topilmadi","RECEIPT_IN_USE");
+  ok(res,{deleted:true});
+}));
+
 router.post("/payments",requirePermission("billingWrite"),asyncRoute(async(req,res)=>{
   const input=z.object({draftId:z.string().uuid(),receiptId:z.string().uuid()}).parse(req.body);
   const payment=await withTransaction(async(client)=>{
@@ -151,6 +157,7 @@ router.post("/payments",requirePermission("billingWrite"),asyncRoute(async(req,r
     if(!draft)throw new HttpError(409,"To‘lov drafti topilmadi yoki muddati tugagan","BILLING_DRAFT_EXPIRED");
     const receipt=(await client.query("SELECT id,file_name,mime_type FROM billing_receipts WHERE id=$1 AND organization_id=$2",[input.receiptId,req.user.organizationId])).rows[0];
     if(!receipt)throw new HttpError(404,"To‘lov cheki topilmadi","RECEIPT_NOT_FOUND");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`billing-review:${req.user.organizationId}:${draft.type}`]);
     const existing=await client.query("SELECT 1 FROM billing_payments WHERE organization_id=$1 AND type=$2 AND status='REVIEW' LIMIT 1",[req.user.organizationId,draft.type]);
     if(existing.rowCount)throw new HttpError(409,"Bu turdagi to‘lov allaqachon tekshiruvda","PAYMENT_ALREADY_PENDING");
     const p=(await client.query(`INSERT INTO billing_payments(organization_id,draft_id,order_id,type,plan,amount,service_period_from,service_period_to,extension_days,extra_store_count,receipt_id,receipt_name,receipt_type,submitted_by)
