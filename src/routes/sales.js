@@ -73,7 +73,7 @@ const saleSchema=z.object({
       seen.add(item.productId);
     });
   }),
-  payments:z.array(paymentSchema).min(1),customer:z.record(z.string(),z.any()).default({}),metadata:z.record(z.string(),z.any()).default({}),
+  payments:z.array(paymentSchema).default([]),customer:z.record(z.string(),z.any()).default({}),customerId:z.string().uuid().optional().nullable(),creditAmount:z.coerce.number().min(0).default(0),creditDueDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),metadata:z.record(z.string(),z.any()).default({}),
 });
 
 async function consumeInventoryBatches(client,{organizationId,storeId,productId,quantity}){
@@ -254,12 +254,23 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:line.metadata||{},serials:requestedSerials,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
     }
     const paymentTotal=input.payments.reduce((sum,p)=>sum+Number(p.amount),0);
-    if(Math.abs(paymentTotal-total)>0.01)throw new HttpError(409,"To‘lov summasi savdo jami bilan mos emas","PAYMENT_MISMATCH");
+    const creditAmount=Number(input.creditAmount||0);
+    if(Math.abs(paymentTotal+creditAmount-total)>0.01)throw new HttpError(409,"To‘lov va nasiya summasi savdo jami bilan mos emas","PAYMENT_MISMATCH");
+    let creditCustomer=null;
+    if(creditAmount>0){
+      if(!input.customerId)throw new HttpError(409,"Nasiya savdo uchun mijozni tanlang","CREDIT_CUSTOMER_REQUIRED");
+      if(!input.creditDueDate)throw new HttpError(409,"Nasiya to‘lov muddatini kiriting","CREDIT_DUE_DATE_REQUIRED");
+      creditCustomer=(await client.query("SELECT * FROM customers WHERE id=$1 AND organization_id=$2 AND archived=false FOR UPDATE",[input.customerId,orgId])).rows[0];
+      if(!creditCustomer)throw new HttpError(404,"Mijoz topilmadi");
+      const currentDebt=Number((await client.query("SELECT COALESCE(sum(amount),0) balance FROM customer_ledger WHERE organization_id=$1 AND customer_id=$2",[orgId,input.customerId])).rows[0]?.balance||0);
+      const limit=Number(creditCustomer.credit_limit||0);
+      if(limit>0&&currentDebt+creditAmount>limit+0.001)throw new HttpError(409,"Mijoz kredit limiti yetarli emas","CREDIT_LIMIT_EXCEEDED",{currentDebt,creditAmount,creditLimit:limit});
+    }
     const {saleNumber,businessDate}=await nextSaleIdentity(client,orgId);
     await lockBusinessDay(client,{organizationId:orgId,storeId:input.storeId,businessDate});
     const saleMetadata={...input.metadata,clientBusinessDate:input.businessDate||null};
-    const sale=(await client.query(`INSERT INTO sales(organization_id,store_id,shift_id,seller_id,sale_number,client_reference,subtotal,discount_amount,total,customer,business_date,metadata)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[orgId,input.storeId,input.shiftId,req.user.id,saleNumber,input.clientReference,subtotal,subtotal-total,total,input.customer,businessDate,saleMetadata])).rows[0];
+    const sale=(await client.query(`INSERT INTO sales(organization_id,store_id,shift_id,seller_id,sale_number,client_reference,subtotal,discount_amount,total,customer,business_date,metadata,customer_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,[orgId,input.storeId,input.shiftId,req.user.id,saleNumber,input.clientReference,subtotal,subtotal-total,total,input.customer,businessDate,saleMetadata,input.customerId||null])).rows[0];
     for(const line of normalized){
       const batchAllocations=await consumeInventoryBatches(client,{organizationId:orgId,storeId:input.storeId,productId:line.product.id,quantity:line.quantity});
       const authoritativeTracking={...(line.metadata?.tracking||{}),quantity:line.quantity,serials:line.serials.map((serial,index)=>({serial,unitOffset:index})),batches:batchAllocations,untrackedQty:Math.max(0,line.quantity-line.serials.length)};
@@ -274,6 +285,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       }
     }
     for(const payment of input.payments)await client.query("INSERT INTO sale_payments(sale_id,method,amount,metadata) VALUES($1,$2,$3,$4)",[sale.id,payment.method,payment.amount,payment.metadata||{}]);
+    if(creditAmount>0)await client.query(`INSERT INTO customer_ledger(organization_id,customer_id,store_id,sale_id,entry_type,amount,due_date,reference,note,created_by) VALUES($1,$2,$3,$4,'CREDIT_SALE',$5,$6,$7,$8,$9)`,[orgId,input.customerId,input.storeId,sale.id,creditAmount,input.creditDueDate,saleNumber,String(input.metadata?.note||""),req.user.id]);
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.storeId,action:"create",entityType:"sale",entityId:sale.id,title:"Savdo amalga oshirildi",description:`${saleNumber} · ${total}`});
     await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"sale.completed",eventId:sale.id,payload:{saleId:sale.id,saleNumber,total,storeId:input.storeId,storeName:store.name,sellerId:req.user.id,sellerName:req.user.name,itemCount:normalized.reduce((sum,line)=>sum+Number(line.quantity||0),0),paymentMethods:input.payments.map((payment)=>payment.method)}});
     const savedItems=(await client.query(`SELECT product_id,product_name,sku,barcode,quantity,unit_price,discount_percent,line_total,metadata FROM sale_items WHERE sale_id=$1 ORDER BY id`,[sale.id])).rows;
@@ -303,22 +315,30 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     if(returned+input.quantity>Number(item.quantity))throw new HttpError(409,"Qaytarish miqdori sotilgan miqdordan oshib ketdi","RETURN_QUANTITY_EXCEEDED");
     const amount=Number(item.line_total)/Number(item.quantity)*Number(input.quantity);
     let breakdown=null;
+    let creditReduction=0;
+    let creditLedgerId=null;
     if(input.refundMethod==="original"){
+      if(sale.customer_id){
+        const credit=(await client.query(`SELECT cl.id,GREATEST(cl.amount-COALESCE(sum(a.amount),0),0) open_amount FROM customer_ledger cl LEFT JOIN customer_payment_allocations a ON a.credit_ledger_id=cl.id WHERE cl.organization_id=$1 AND cl.customer_id=$2 AND cl.sale_id=$3 AND cl.entry_type='CREDIT_SALE' GROUP BY cl.id ORDER BY cl.created_at LIMIT 1`,[orgId,sale.customer_id,sale.id])).rows[0];
+        creditReduction=Math.min(amount,Math.max(0,Number(credit?.open_amount||0)));
+        creditLedgerId=credit?.id||null;
+      }
+      const cashRefund=Math.max(0,amount-creditReduction);
       const paymentRows=(await client.query("SELECT method,amount FROM sale_payments WHERE sale_id=$1 ORDER BY id",[sale.id])).rows;
       const originalTotal=paymentRows.reduce((sum,row)=>sum+Number(row.amount||0),0);
       const allocation={cash:0,card:0,transfer:0};
-      if(originalTotal>0){
+      if(originalTotal>0&&cashRefund>0){
         let assigned=0;
         const supported=paymentRows.filter((row)=>Object.prototype.hasOwnProperty.call(allocation,row.method));
         supported.forEach((row,index)=>{
-          const value=index===supported.length-1?Math.max(0,amount-assigned):amount*(Number(row.amount||0)/originalTotal);
+          const value=index===supported.length-1?Math.max(0,cashRefund-assigned):cashRefund*(Number(row.amount||0)/originalTotal);
           allocation[row.method]+=value;assigned+=value;
         });
       }
       breakdown=allocation;
     }else breakdown={cash:input.refundMethod==="cash"?amount:0,card:input.refundMethod==="card"?amount:0,transfer:input.refundMethod==="transfer"?amount:0};
     const breakdownTotal=Number(breakdown.cash||0)+Number(breakdown.card||0)+Number(breakdown.transfer||0);
-    if(Math.abs(breakdownTotal-amount)>0.02)throw new HttpError(409,"Qaytarish to‘lov taqsimoti summaga mos emas","REFUND_MISMATCH");
+    if(Math.abs(breakdownTotal+creditReduction-amount)>0.02)throw new HttpError(409,"Qaytarish to‘lov taqsimoti summaga mos emas","REFUND_MISMATCH");
     if(Number(breakdown.cash||0)>0){
       if(!input.refundShiftId)throw new HttpError(409,"Naqd qaytarish uchun ochiq smena kerak","SHIFT_REQUIRED");
       const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open' FOR UPDATE",[input.refundShiftId,orgId,sale.store_id])).rows[0];
@@ -329,7 +349,8 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     await client.query(`INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,0,0) ON CONFLICT(store_id,product_id) DO NOTHING`,[orgId,sale.store_id,input.productId]);
     const balance=(await client.query("SELECT * FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 FOR UPDATE",[orgId,sale.store_id,input.productId])).rows[0];
     const before=Number(balance.quantity),after=before+Number(input.quantity);
-    const ret=(await client.query(`INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,reason,refund_method,business_date,metadata,created_by,client_reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[orgId,sale.id,sale.store_id,input.productId,input.quantity,amount,input.reason,input.refundMethod,returnBusinessDate,{...input.metadata,refundBreakdown:breakdown,refundShiftId:input.refundShiftId||null},req.user.id,input.clientReference||null])).rows[0];
+    const ret=(await client.query(`INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,reason,refund_method,business_date,metadata,created_by,client_reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[orgId,sale.id,sale.store_id,input.productId,input.quantity,amount,input.reason,input.refundMethod,returnBusinessDate,{...input.metadata,refundBreakdown:breakdown,creditReduction,refundShiftId:input.refundShiftId||null},req.user.id,input.clientReference||null])).rows[0];
+    if(creditReduction>0&&sale.customer_id&&creditLedgerId){const refundLedger=(await client.query(`INSERT INTO customer_ledger(organization_id,customer_id,store_id,sale_id,entry_type,amount,reference,note,created_by,metadata) VALUES($1,$2,$3,$4,'REFUND',$5,$6,$7,$8,$9) RETURNING id`,[orgId,sale.customer_id,sale.store_id,sale.id,-creditReduction,sale.sale_number,`Qaytarish: ${input.reason}`,req.user.id,{returnId:ret.id}])).rows[0];await client.query(`INSERT INTO customer_payment_allocations(organization_id,customer_id,payment_ledger_id,credit_ledger_id,amount) VALUES($1,$2,$3,$4,$5)`,[orgId,sale.customer_id,refundLedger.id,creditLedgerId,creditReduction]);}
     await client.query("UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3",[orgId,sale.store_id,input.productId,after]);
     await client.query("UPDATE sales SET returned_amount=returned_amount+$2 WHERE id=$1",[sale.id,amount]);
     await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by) VALUES($1,$2,$3,'return',$4,$5,$6,'return',$7,$8,$9)`,[orgId,sale.store_id,input.productId,input.quantity,before,after,ret.id,input.reason,req.user.id]);
