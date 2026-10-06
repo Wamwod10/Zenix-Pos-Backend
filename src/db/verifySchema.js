@@ -13,6 +13,7 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "008_serial_case_insensitive_unique.sql",
   "009_payment_telegram_approval.sql",
   "010_idempotency_and_billing_review.sql",
+  "014_billing_checkout_schema.sql",
 ]);
 
 export const REQUIRED_TABLES = Object.freeze([

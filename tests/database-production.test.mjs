@@ -130,6 +130,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     "008_serial_case_insensitive_unique.sql",
     "009_payment_telegram_approval.sql",
     "010_idempotency_and_billing_review.sql",
+    "014_billing_checkout_schema.sql",
   ]);
 
   for (const table of [
