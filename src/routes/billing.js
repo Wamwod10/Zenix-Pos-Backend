@@ -8,7 +8,7 @@ import {
   BILLING_PLANS, addMonths, daysBetween, extraStoreExtensionPrice, makeBillingOrderId,
   planExtensionPrice,
 } from "../config/billing.js";
-import { organizationCalendarDateISO } from "../lib/businessDate.js";
+import { databaseDateISO, organizationCalendarDateISO } from "../lib/businessDate.js";
 import { writeAudit } from "../services/audit.js";
 import { enqueuePaymentReviewNotification } from "../services/paymentNotifications.js";
 
@@ -54,12 +54,12 @@ const publicPayment=(row)=>row?({
   rejectReason:row.reject_reason||"",submittedAt:row.submitted_at,reviewedAt:row.reviewed_at,
 }):null;
 
-async function calculateDraft(client,user,input){
+export async function calculateDraft(client,user,input){
   const org=(await client.query("SELECT * FROM organizations WHERE id=$1 FOR UPDATE",[user.organizationId])).rows[0];
   if(!org)throw new HttpError(404,"Tashkilot topilmadi");
   const activeStores=Number((await client.query("SELECT count(*)::int AS count FROM stores WHERE organization_id=$1 AND active=true",[user.organizationId])).rows[0]?.count||0);
   const today=organizationCalendarDateISO(org);
-  const currentExpiry=org.expiry_date?String(org.expiry_date).slice(0,10):null;
+  const currentExpiry=org.expiry_date?databaseDateISO(org.expiry_date):null;
   const futureExpiry=currentExpiry&&currentExpiry>today?currentExpiry:today;
   const requestedPlan=input.plan||org.plan||"ANNUAL";
   const plan=BILLING_PLANS[requestedPlan]?requestedPlan:"ANNUAL";
