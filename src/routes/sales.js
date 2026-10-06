@@ -9,6 +9,7 @@ import { writeAudit } from "../services/audit.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 import { organizationBusinessDateISO } from "../lib/businessDate.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
+import { assertSharedOpenShift } from "../lib/branchShift.js";
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
@@ -223,8 +224,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
     }
     if(input.shiftId){
       const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open'",[input.shiftId,orgId,input.storeId])).rows[0];
-      if(!shift)throw new HttpError(409,"Smena ochiq emas","SHIFT_REQUIRED");
-      if(["CASHIER","SALES"].includes(req.user.appRole)&&String(shift.cashier_id)!==String(req.user.id))throw new HttpError(403,"Bu smena boshqa foydalanuvchiga tegishli","SHIFT_FORBIDDEN");
+      assertSharedOpenShift(shift,{organizationId:orgId,storeId:input.storeId,actorId:req.user.id});
     }
     const normalized=[];let subtotal=0,total=0;
     for(const line of input.items){
@@ -342,8 +342,7 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     if(Number(breakdown.cash||0)>0){
       if(!input.refundShiftId)throw new HttpError(409,"Naqd qaytarish uchun ochiq smena kerak","SHIFT_REQUIRED");
       const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open' FOR UPDATE",[input.refundShiftId,orgId,sale.store_id])).rows[0];
-      if(!shift)throw new HttpError(409,"Naqd qaytarish uchun ochiq smena topilmadi","SHIFT_REQUIRED");
-      if(["CASHIER","SALES"].includes(req.user.appRole)&&String(shift.cashier_id)!==String(req.user.id))throw new HttpError(403,"Naqd qaytarish faqat o‘z smenangizdan bajariladi","SHIFT_FORBIDDEN");
+      assertSharedOpenShift(shift,{organizationId:orgId,storeId:sale.store_id,actorId:req.user.id});
       await assertShiftCashAvailable(client,shift,Number(breakdown.cash||0),{message:"Qaytarish uchun kassada yetarli naqd pul yo‘q"});
     }
     await client.query(`INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,0,0) ON CONFLICT(store_id,product_id) DO NOTHING`,[orgId,sale.store_id,input.productId]);

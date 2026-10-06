@@ -14,7 +14,7 @@ test('sales transaction persists authoritative serial and batch tracking',()=>{
   assert.match(sales,/restoreInventoryBatches/);
   assert.match(sales,/authoritativeTracking/);
   assert.match(sales,/Bir mahsulot savdoda faqat bitta qatorda/);
-  assert.match(sales,/Naqd qaytarish faqat o‘z smenangizdan bajariladi/);
+  assert.match(sales,/assertSharedOpenShift/);
 });
 
 test('inventory bulk operations reject duplicate product rows',()=>{
@@ -92,12 +92,18 @@ test('transfer lifecycle queues telegram notification events',()=>{
   }
 });
 
-test('parallel branch shifts use per-user registers and bootstrap never adopts another cashier shift',()=>{
+test('one branch shift is shared while dangerous controls remain permission guarded',()=>{
   const shifts=read('src/routes/shifts.js');
   const bootstrap=read('src/routes/bootstrap.js');
-  assert.match(shifts,/input\.registerKey\s*\|\|\s*`user:\$\{req\.user\.id\}`/);
-  assert.match(shifts,/organization_id=\$1 AND store_id=\$2 AND register_key=\$3 AND status='open'/);
-  assert.match(bootstrap,/String\(shift\.cashierAccountId\)!==String\(req\.user\.id\)/);
+  const sales=read('src/routes/sales.js');
+  assert.match(shifts,/findOpenBranchShiftWithLock/);
+  assert.match(shifts,/branchRegisterKey/);
+  assert.match(shifts,/assertShiftControl/);
+  assert.match(bootstrap,/selectActiveBranchShifts/);
+  assert.match(sales,/assertSharedOpenShift/);
+  assert.doesNotMatch(sales,/shift\.cashier_id\)!==String\(req\.user\.id\)/);
+  assert.match(sales,/seller_id/);
+  assert.match(sales,/req\.user\.id/);
 });
 
 test('tracked batch transfers reject over-receipt that would desync batch ledgers',()=>{

@@ -5,6 +5,7 @@ import { requireAuth, requireOrganization } from "../middleware/auth.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import { canReadEmployees, hasPermission } from "../lib/permissions.js";
 import { databaseDateISO } from "../lib/businessDate.js";
+import { selectActiveBranchShifts } from "../lib/branchShift.js";
 
 const router=Router();
 const n=(value)=>Number(value||0);
@@ -51,8 +52,15 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
     pool.query(`SELECT * FROM stores WHERE organization_id=$1${branchStoreId?" AND id=$2":""} ORDER BY created_at`,storeArg),
     pool.query(`SELECT p.*,
       COALESCE(jsonb_object_agg(ib.store_id,ib.quantity) FILTER (WHERE ib.store_id IS NOT NULL),'{}'::jsonb) AS stock_by_store,
-      (SELECT max(s.created_at) FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE si.product_id=p.id AND s.organization_id=p.organization_id ${branchStoreId?"AND s.store_id=$2":""}) AS last_sale_at
-      FROM products p LEFT JOIN inventory_balances ib ON ib.product_id=p.id AND ib.organization_id=p.organization_id ${branchStoreId?"AND ib.store_id=$2":""}
+      max(ls.last_sale_at) AS last_sale_at
+      FROM products p
+      LEFT JOIN inventory_balances ib ON ib.product_id=p.id AND ib.organization_id=p.organization_id ${branchStoreId?"AND ib.store_id=$2":""}
+      LEFT JOIN (
+        SELECT si.product_id,max(s.created_at) AS last_sale_at
+        FROM sale_items si JOIN sales s ON s.id=si.sale_id
+        WHERE s.organization_id=$1 ${branchStoreId?"AND s.store_id=$2":""}
+        GROUP BY si.product_id
+      ) ls ON ls.product_id=p.id
       WHERE p.organization_id=$1 GROUP BY p.id ORDER BY p.created_at`,storeArg),
     pool.query(`SELECT s.*,u.name seller_name,st.name store_name,
       COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id',si.id,'productId',si.product_id,'name',si.product_name,'sku',si.sku,'barcode',si.barcode,'quantity',si.quantity,'qty',si.quantity,'finalPrice',si.unit_price*(1-si.discount_percent/100.0),'unitPrice',si.unit_price,'discountPercent',si.discount_percent,'lineTotal',si.line_total,'metadata',si.metadata)) FILTER (WHERE si.id IS NOT NULL),'[]'::jsonb) items,
@@ -132,14 +140,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   }
   const mapShift=(row)=>{const moves=shiftMovementsById.get(row.id)||[],stats=saleStatsByShift.get(row.id)||{totalSales:0,cashSales:0,cardSales:0,transferSales:0};const opened=dateParts(row.opened_at,timeZone),closed=row.closed_at?dateParts(row.closed_at,timeZone):null;const cashIn=moves.filter(m=>m.type==="in").reduce((s,m)=>s+m.amount,0),cashOut=moves.filter(m=>m.type==="out").reduce((s,m)=>s+m.amount,0);return {id:row.id,storeId:row.store_id,storeName:row.store_name||storeName.get(row.store_id)||"",cashierId:row.cashier_id,cashierAccountId:row.cashier_id,cashierName:row.cashier_name||"",registerKey:row.register_key,openingCash:n(row.opening_cash),expectedCash:n(row.expected_cash),actualCash:n(row.actual_cash),closingCash:n(row.actual_cash),difference:n(row.difference),openedAt:opened.time,openedAtISO:row.opened_at,closedAt:closed?.time||"",closedAtISO:row.closed_at,date:opened.date,dateISO:opened.dateISO,status:row.status,cashMovements:moves,cashIn,cashOut,...stats,...(row.metadata||{})}};
   const shifts=shiftsResult.rows.map(mapShift);
-  // A branch may have several registers. The client must only treat the current
-  // account's open register as its active shift; otherwise a manager/cashier can
-  // accidentally sell into somebody else's till. Query order is newest-first.
-  const activeShifts={};
-  for(const shift of shifts){
-    if(shift.status!=="open"||String(shift.cashierAccountId)!==String(req.user.id))continue;
-    if(!activeShifts[shift.storeId])activeShifts[shift.storeId]=shift;
-  }
+  const activeShifts=selectActiveBranchShifts(shifts,{allowedStoreId:branchStoreId});
   const shiftHistory=shifts.filter((row)=>row.status!=="open");
 
   const invoiceItemsById=new Map();for(const row of invoiceItemsResult.rows){const arr=invoiceItemsById.get(row.invoice_id)||[];arr.push({id:row.id,productId:row.product_id,product:row.product_name,quantity:n(row.quantity),unitCost:n(row.unit_cost),total:n(row.total),...(row.metadata||{})});invoiceItemsById.set(row.invoice_id,arr)}

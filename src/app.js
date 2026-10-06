@@ -20,10 +20,12 @@ import paymentTelegramRoutes from "./routes/paymentTelegram.js";
 import settingsRoutes from "./routes/settings.js";
 import platformRoutes from "./routes/platform.js";
 import fileRoutes from "./routes/files.js";
+import syncRoutes from "./routes/sync.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 import { requireTrustedClient } from "./middleware/clientGuard.js";
 import { pool } from "./db/pool.js";
 import { HttpError } from "./lib/http.js";
+import { workspaceRevisionMiddleware } from "./middleware/workspaceRevision.js";
 
 export const app=express();
 app.set("trust proxy",1);
@@ -33,6 +35,7 @@ app.use(express.json({limit:"2mb"}));
 app.use(cookieParser());
 app.use("/api",(_req,res,next)=>{res.setHeader("Cache-Control","no-store");next();});
 app.use(requireTrustedClient);
+app.use(workspaceRevisionMiddleware);
 app.get("/health",(_req,res)=>res.json({ok:true,service:"zenix-pos-api",time:new Date().toISOString()}));
 app.get("/ready",async(_req,res)=>{
   try{await pool.query("SELECT 1");res.json({ok:true,service:"zenix-pos-api",database:"ready",time:new Date().toISOString()});}
@@ -55,5 +58,6 @@ app.use("/api/telegram",telegramRoutes);
 app.use("/api/settings",settingsRoutes);
 app.use("/api/platform",platformRoutes);
 app.use("/api/files",fileRoutes);
+app.use("/api/sync",syncRoutes);
 app.use(notFound);
 app.use(errorHandler);

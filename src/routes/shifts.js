@@ -8,6 +8,7 @@ import { writeAudit } from "../services/audit.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 import { hasPermission } from "../lib/permissions.js";
 import { assertShiftCashAvailable, shiftExpectedCash } from "../lib/shiftCash.js";
+import { branchRegisterKey, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -31,14 +32,9 @@ router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, r
 
   const shift = await withTransaction(async (client) => {
     const store = await assertOrganizationStore(client, req.user.organizationId, input.storeId);
-    // One register per account by default. This allows several cashiers to work in
-    // the same branch at the same time without sharing or hijacking a shift.
-    const registerKey = input.registerKey || `user:${req.user.id}`;
-    const existing = await client.query(
-      "SELECT 1 FROM shifts WHERE organization_id=$1 AND store_id=$2 AND register_key=$3 AND status='open' LIMIT 1",
-      [req.user.organizationId, input.storeId, registerKey],
-    );
-    if (existing.rowCount) throw new HttpError(409, "Bu kassada smena allaqachon ochiq", "SHIFT_ALREADY_OPEN");
+    const existing = await findOpenBranchShiftWithLock(client, req.user.organizationId, input.storeId);
+    if (existing) throw new HttpError(409, "Bu filialda smena allaqachon ochiq", "SHIFT_ALREADY_OPEN");
+    const registerKey = branchRegisterKey(input.storeId);
 
     const row = (await client.query(`
       INSERT INTO shifts(organization_id,store_id,cashier_id,register_key,opening_cash,metadata)

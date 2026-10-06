@@ -130,13 +130,18 @@ test("schema verification covers all migrations and core backend domains", () =>
     "008_serial_case_insensitive_unique.sql",
     "009_payment_telegram_approval.sql",
     "010_idempotency_and_billing_review.sql",
+    "011_bootstrap_performance_indexes.sql",
+    "012_customers_credit_sales.sql",
+    "013_customer_credit_hardening.sql",
     "014_billing_checkout_schema.sql",
+    "015_workspace_revisions.sql",
   ]);
 
   for (const table of [
     "organizations", "users", "stores", "products", "inventory_balances",
     "sales", "shifts", "suppliers", "expenses", "billing_payments",
     "telegram_connections", "notification_deliveries", "auth_sessions",
+    "workspace_revisions",
   ]) {
     assert.ok(schemaModule.REQUIRED_TABLES.includes(table), `missing required table definition: ${table}`);
   }
@@ -165,4 +170,33 @@ test("schema verification covers all migrations and core backend domains", () =>
   assert.match(issues, /missing foreign keys on tables: sale_items/);
   assert.match(issues, /missing unique constraints on tables: users/);
   assert.match(issues, /missing indexes: products_org_sku_unique/);
+});
+
+test("schema verification does not invent natural unique constraints for customer ledgers", () => {
+  const snapshot = {
+    tables: [...schemaModule.REQUIRED_TABLES],
+    migrations: [...schemaModule.REQUIRED_MIGRATIONS],
+    primaryKeyTables: [...schemaModule.REQUIRED_TABLES],
+    foreignKeyTables: [...schemaModule.REQUIRED_FOREIGN_KEY_TABLES],
+    uniqueConstraintTables: schemaModule.REQUIRED_UNIQUE_CONSTRAINT_TABLES.filter(
+      (name) => name !== "customers" && name !== "customer_ledger",
+    ),
+    indexes: [...schemaModule.REQUIRED_INDEXES],
+  };
+
+  assert.deepEqual(schemaModule.findSchemaIssues(snapshot), []);
+});
+
+test("schema verification ignores invalid concurrent indexes", async () => {
+  assert.equal(typeof schemaModule.readDatabaseSchema,"function");
+  const queries=[];
+  const db={query:async(sql)=>{
+    queries.push(sql);
+    return {rows:[]};
+  }};
+
+  await schemaModule.readDatabaseSchema(db);
+
+  assert.match(queries.at(-1),/indisvalid/);
+  assert.doesNotMatch(queries.at(-1),/pg_indexes/);
 });
