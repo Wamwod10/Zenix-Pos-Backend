@@ -58,3 +58,8 @@ export function hasPermission(user, permission) {
   const defaults = DEFAULT_ROLE_PERMISSIONS[user.appRole] || {};
   return Boolean(defaults["*"] || defaults[permission]);
 }
+
+export function canReadEmployees(user){
+  return ["moduleSettings","settingsWrite","moduleExpenses","moduleSellerAnalytics"]
+    .some((permission)=>hasPermission(user,permission));
+}

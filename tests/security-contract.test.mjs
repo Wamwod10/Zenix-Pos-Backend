@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasPermission, isOrganizationPermissionKey, ROLES } from '../src/lib/permissions.js';
+import * as permissions from '../src/lib/permissions.js';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const read=(relative)=>fs.readFileSync(path.join(here,'..',relative),'utf8');
@@ -13,6 +14,12 @@ test('organization owner never inherits platform administration',()=>{
   assert.equal(hasPermission({appRole:ROLES.OWNER},'*'),false);
   assert.equal(hasPermission({appRole:ROLES.PLATFORM_ADMIN},'platformAdmin'),true);
   assert.equal(hasPermission({appRole:ROLES.PLATFORM_ADMIN},'moduleSales'),false);
+});
+
+test('seller analytics permission can read cashier and sales staff for zero-sale rows',()=>{
+  assert.equal(typeof permissions.canReadEmployees,'function','employee visibility policy must be available');
+  const user={appRole:ROLES.MANAGER,permissionOverrides:{moduleSettings:false,moduleExpenses:false,moduleSellerAnalytics:true}};
+  assert.equal(permissions.canReadEmployees(user),true);
 });
 
 test('platform/system permissions cannot be stored as organization overrides',()=>{

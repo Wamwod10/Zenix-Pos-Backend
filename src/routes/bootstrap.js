@@ -3,7 +3,7 @@ import { pool } from "../db/pool.js";
 import { asyncRoute, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization } from "../middleware/auth.js";
 import { isBranchLocked } from "../lib/storeScope.js";
-import { hasPermission } from "../lib/permissions.js";
+import { canReadEmployees, hasPermission } from "../lib/permissions.js";
 import { databaseDateISO } from "../lib/businessDate.js";
 
 const router=Router();
@@ -161,7 +161,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const expenseVisible=can("moduleExpenses")||can("moduleDashboard")||can("moduleAnalytics");
   const shiftVisible=can("moduleShifts")||can("moduleSales")||can("moduleSellerAnalytics");
   const settingsVisible=can("moduleSettings")||can("settingsWrite");
-  const employeeVisible=settingsVisible||can("moduleExpenses");
+  const employeeVisible=canReadEmployees(req.user);
   const activityVisible=can("moduleActivityLog")||settingsVisible;
   const billingVisible=can("moduleBilling")||can("billingWrite");
 

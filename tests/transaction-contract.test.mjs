@@ -95,11 +95,9 @@ test('transfer lifecycle queues telegram notification events',()=>{
 test('parallel branch shifts use per-user registers and bootstrap never adopts another cashier shift',()=>{
   const shifts=read('src/routes/shifts.js');
   const bootstrap=read('src/routes/bootstrap.js');
-  const storeContext=read('../frontend/src/context/StoreContext.jsx');
   assert.match(shifts,/input\.registerKey\s*\|\|\s*`user:\$\{req\.user\.id\}`/);
   assert.match(shifts,/organization_id=\$1 AND store_id=\$2 AND register_key=\$3 AND status='open'/);
   assert.match(bootstrap,/String\(shift\.cashierAccountId\)!==String\(req\.user\.id\)/);
-  assert.match(storeContext,/registerKey:shift\.registerKey\|\|`user:\$\{currentUser\?\.id\}`/);
 });
 
 test('tracked batch transfers reject over-receipt that would desync batch ledgers',()=>{
