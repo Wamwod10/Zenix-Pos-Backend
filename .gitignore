@@ -22,6 +22,7 @@ dist-ssr
 .neon
 .neon/
 backend/.git-legacy/
+.worktrees/
 
 # Editor directories and files
 .vscode/*
