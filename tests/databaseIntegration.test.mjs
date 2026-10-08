@@ -2,11 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs/promises";
 import pg from "pg";
 
 import { assertSafeTestDatabaseUrl } from "../scripts/assertTestDatabase.js";
 import { runMigrations, checkMigrationStatus } from "../src/db/migrationRunner.js";
 import { runTransaction } from "../src/db/tx.js";
+import { verifyDatabaseSchema } from "../src/db/verifySchema.js";
 
 const { Pool } = pg;
 const migrationsDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../migrations");
@@ -30,10 +32,16 @@ test("test database safety gate accepts an explicit loopback test database", () 
 
 const integrationUrl = process.env.TEST_DATABASE_URL;
 const integration = integrationUrl ? test : test.skip;
+const testPool = (max) => new Pool({
+  connectionString: integrationUrl,
+  max,
+  connectionTimeoutMillis: 5_000,
+  options: "-c lock_timeout=5s -c statement_timeout=30s",
+});
 
 integration("migrations apply to an empty database and rerun idempotently", async () => {
   assertSafeTestDatabaseUrl(integrationUrl, { nodeEnv: process.env.NODE_ENV || "test" });
-  const pool = new Pool({ connectionString: integrationUrl, max: 4 });
+  const pool = testPool(4);
   try {
     await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     const first = await runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} } });
@@ -47,22 +55,33 @@ integration("migrations apply to an empty database and rerun idempotently", asyn
       unverified: [],
       unknown: [],
     });
+    await verifyDatabaseSchema(pool);
+    const guarded = await fs.readFile(path.join(migrationsDirectory, "022_mvp18_guarded_constraints.sql"), "utf8");
+    await pool.query(guarded);
+    await pool.query(guarded);
+    const constraint = await pool.query("SELECT convalidated FROM pg_constraint WHERE conrelid='extra_store_entitlements'::regclass AND conname='extra_store_entitlements_payment_tenant_fk'");
+    assert.equal(constraint.rowCount, 1);
+    assert.equal(constraint.rows[0].convalidated, true);
   } finally {
     await pool.end();
   }
 });
 
-integration("concurrent migration runners serialize on the advisory lock", async () => {
+integration("concurrent runner migrations serialize on the advisory lock and converge", async () => {
   assertSafeTestDatabaseUrl(integrationUrl, { nodeEnv: process.env.NODE_ENV || "test" });
-  const pool = new Pool({ connectionString: integrationUrl, max: 4 });
+  const pool = testPool(4);
   try {
     await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     const [first, second] = await Promise.all([
-      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} } }),
-      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} } }),
+      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} }, lockTimeoutMs: 15_000 }),
+      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} }, lockTimeoutMs: 15_000 }),
     ]);
     assert.equal(first.applied.length + second.applied.length, first.total);
     assert.ok(first.applied.length === 0 || second.applied.length === 0);
+    assert.deepEqual(await checkMigrationStatus({ db: pool, directory: migrationsDirectory }), {
+      tableMissing: false, missing: [], drifted: [], unverified: [], unknown: [],
+    });
+    await verifyDatabaseSchema(pool);
   } finally {
     await pool.end();
   }
@@ -70,7 +89,7 @@ integration("concurrent migration runners serialize on the advisory lock", async
 
 integration("transactions roll back and tenant constraints reject cross-organization writes", async () => {
   assertSafeTestDatabaseUrl(integrationUrl, { nodeEnv: process.env.NODE_ENV || "test" });
-  const pool = new Pool({ connectionString: integrationUrl, max: 2 });
+  const pool = testPool(2);
   try {
     const rolledBackName = "rollback-proof-organization";
     await assert.rejects(runTransaction(pool, async (client) => {
@@ -87,6 +106,13 @@ integration("transactions roll back and tenant constraints reject cross-organiza
         VALUES($1,$2,'Cross tenant','cross-tenant-user','hash','CASHIER')`, [organizationB, storeA]),
       (error) => error?.constraint === "users_store_tenant_fk",
     );
+    const paymentA = (await pool.query(`INSERT INTO billing_payments(organization_id,order_id,type,plan,amount,status)
+      VALUES($1,'tenant-entitlement-payment','EXTRA','MONTHLY',120000,'APPROVED') RETURNING id`, [organizationA])).rows[0].id;
+    await assert.rejects(
+      pool.query(`INSERT INTO extra_store_entitlements(organization_id,payment_id,quantity,duration,starts_on,expires_on)
+        VALUES($1,$2,1,'MONTHLY',CURRENT_DATE,CURRENT_DATE + 30)`, [organizationB, paymentA]),
+      (error) => error?.constraint === "extra_store_entitlements_payment_tenant_fk",
+    );
   } finally {
     await pool.end();
   }
@@ -95,7 +121,7 @@ integration("transactions roll back and tenant constraints reject cross-organiza
 integration("account-wide failed login throttling is atomic with real PostgreSQL advisory locks", async () => {
   assertSafeTestDatabaseUrl(integrationUrl, { nodeEnv: process.env.NODE_ENV || "test" });
   const { recordLoginDecision } = await import("../src/services/loginThrottle.js");
-  const db = new Pool({ connectionString: integrationUrl, max: 8 });
+  const db = testPool(8);
   const usernameNorm = `phase3_lock_test_${process.pid}_${Date.now()}`;
   try {
     const decisions = await Promise.allSettled(Array.from({ length: 40 }, (_, i) =>
@@ -115,11 +141,12 @@ integration("account-wide failed login throttling is atomic with real PostgreSQL
 // substitutes for authenticated HTTP/browser end-to-end sale/refund tests.
 integration('concurrent sale cannot accept a shift closed by another transaction',async()=>{
   assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
-  const db=new Pool({connectionString:integrationUrl,max:3});
-  const closing=await db.connect();
-  const selling=await db.connect();
+  const db=testPool(3);
+  let closing, selling;
   let closingTx=false, sellingTx=false;
   try{
+    closing=await db.connect();
+    selling=await db.connect();
     const org=(await db.query("INSERT INTO organizations(name) VALUES('Shift lock rehearsal') RETURNING id")).rows[0].id;
     const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Shift test') RETURNING id",[org])).rows[0].id;
     const cashier=(await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Cashier',$3,'test-hash','CASHIER') RETURNING id",[org,store,`phase4_shift_${Date.now()}`])).rows[0].id;
@@ -140,16 +167,17 @@ integration('concurrent sale cannot accept a shift closed by another transaction
   }finally{
     if(sellingTx)await selling.query('ROLLBACK').catch(()=>{});
     if(closingTx)await closing.query('ROLLBACK').catch(()=>{});
-    selling.release();closing.release();await db.end();
+    selling?.release();closing?.release();await db.end();
   }
 });
 
 integration('two concurrent stock consumers cannot both read the original inventory quantity',async()=>{
   assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
-  const db=new Pool({connectionString:integrationUrl,max:3});
-  const first=await db.connect(),second=await db.connect();
+  const db=testPool(3);
+  let first,second;
   let firstTx=false,secondTx=false;
   try{
+    first=await db.connect();second=await db.connect();
     const org=(await db.query("INSERT INTO organizations(name) VALUES('Inventory lock rehearsal') RETURNING id")).rows[0].id;
     const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Inventory test') RETURNING id",[org])).rows[0].id;
     const product=(await db.query("INSERT INTO products(organization_id,name) VALUES($1,'Concurrent item') RETURNING id",[org])).rows[0].id;
@@ -171,16 +199,17 @@ integration('two concurrent stock consumers cannot both read the original invent
   }finally{
     if(secondTx)await second.query('ROLLBACK').catch(()=>{});
     if(firstTx)await first.query('ROLLBACK').catch(()=>{});
-    second.release();first.release();await db.end();
+    second?.release();first?.release();await db.end();
   }
 });
 
 integration('concurrent customer debt payment and refund decisions serialize on the customer row',async()=>{
   assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
-  const db=new Pool({connectionString:integrationUrl,max:3});
-  const refund=await db.connect(),payment=await db.connect();
+  const db=testPool(3);
+  let refund,payment;
   let refundTx=false,paymentTx=false;
   try{
+    refund=await db.connect();payment=await db.connect();
     const org=(await db.query("INSERT INTO organizations(name) VALUES('Credit lock rehearsal') RETURNING id")).rows[0].id;
     const customer=(await db.query("INSERT INTO customers(organization_id,name,credit_limit) VALUES($1,'Locked customer',1000) RETURNING id",[org])).rows[0].id;
     const lock='SELECT * FROM customers WHERE id=$1 AND organization_id=$2 FOR UPDATE';
@@ -199,20 +228,25 @@ integration('concurrent customer debt payment and refund decisions serialize on 
   }finally{
     if(paymentTx)await payment.query('ROLLBACK').catch(()=>{});
     if(refundTx)await refund.query('ROLLBACK').catch(()=>{});
-    refund.release();payment.release();await db.end();
+    refund?.release();payment?.release();await db.end();
   }
 });
 
 integration('receipt reuse is serialized on locked receipt and rejected after prior submission',async()=>{
   assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
   const {assertReceiptAvailable}=await import('../src/services/receiptReuseGuard.js');
-  const db=new Pool({connectionString:integrationUrl,max:3});
-  const first=await db.connect(),second=await db.connect();
+  const db=testPool(3);
+  let first,second;
   let firstTx=false,secondTx=false;
   try{
+    first=await db.connect();second=await db.connect();
     const org=(await db.query("INSERT INTO organizations(name) VALUES('Receipt reuse test') RETURNING id")).rows[0].id;
     const receipt=(await db.query(`INSERT INTO billing_receipts(organization_id,file_name,mime_type,file_size,content)
       VALUES($1,'test.pdf','application/pdf',4,$2) RETURNING id`,[org,Buffer.from('test')])).rows[0].id;
+    // Create identical evidence before either connection locks its parent org.
+    // A third connection's FK check otherwise waits on our own FOR UPDATE lock.
+    const duplicate=(await db.query(`INSERT INTO billing_receipts(organization_id,file_name,mime_type,file_size,content)
+      VALUES($1,'copy.pdf','application/pdf',4,$2) RETURNING id`,[org,Buffer.from('test')])).rows[0].id;
     await first.query('BEGIN');firstTx=true;
     await first.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[org]);
     await first.query('SELECT id FROM billing_receipts WHERE id=$1 AND organization_id=$2 FOR UPDATE',[receipt,org]);
@@ -230,8 +264,6 @@ integration('receipt reuse is serialized on locked receipt and rejected after pr
     await assert.rejects(assertReceiptAvailable(second,{organizationId:org,receiptId:receipt}),err=>err?.code==='BILLING_RECEIPT_ALREADY_USED');
     // Re-uploading identical bank evidence gets a new receipt ID, but must
     // never result in another approved/reviewed payment for the same tenant.
-    const duplicate=(await db.query(`INSERT INTO billing_receipts(organization_id,file_name,mime_type,file_size,content)
-      VALUES($1,'copy.pdf','application/pdf',4,$2) RETURNING id`,[org,Buffer.from('test')])).rows[0].id;
     await second.query('SELECT id FROM billing_receipts WHERE id=$1 AND organization_id=$2 FOR UPDATE',[duplicate,org]);
     await assert.rejects(assertReceiptAvailable(second,{organizationId:org,receiptId:duplicate}),
       err=>err?.code==='BILLING_RECEIPT_ALREADY_USED');
@@ -239,6 +271,6 @@ integration('receipt reuse is serialized on locked receipt and rejected after pr
   }finally{
     if(secondTx)await second.query('ROLLBACK').catch(()=>{});
     if(firstTx)await first.query('ROLLBACK').catch(()=>{});
-    first.release();second.release();await db.end();
+    first?.release();second?.release();await db.end();
   }
 });
