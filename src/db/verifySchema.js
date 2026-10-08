@@ -24,6 +24,7 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "020_extra_store_entitlements.sql",
   "021_mvp18_concurrent_indexes.sql",
   "022_mvp18_guarded_constraints.sql",
+  "023_validate_extra_store_constraints.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([

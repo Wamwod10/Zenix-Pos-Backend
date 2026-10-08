@@ -141,6 +141,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     "020_extra_store_entitlements.sql",
     "021_mvp18_concurrent_indexes.sql",
     "022_mvp18_guarded_constraints.sql",
+    "023_validate_extra_store_constraints.sql",
   ]);
 
   for (const table of [

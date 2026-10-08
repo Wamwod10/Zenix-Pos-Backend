@@ -9,6 +9,8 @@ import { assertSafeTestDatabaseUrl } from "../scripts/assertTestDatabase.js";
 import { runMigrations, checkMigrationStatus } from "../src/db/migrationRunner.js";
 import { runTransaction } from "../src/db/tx.js";
 import { verifyDatabaseSchema } from "../src/db/verifySchema.js";
+import { loadMigrationCatalog } from "../src/db/migrationCatalog.js";
+import { executeMigration } from "../src/db/migrationExecution.js";
 
 const { Pool } = pg;
 const migrationsDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../migrations");
@@ -59,6 +61,9 @@ integration("migrations apply to an empty database and rerun idempotently", asyn
     const guarded = await fs.readFile(path.join(migrationsDirectory, "022_mvp18_guarded_constraints.sql"), "utf8");
     await pool.query(guarded);
     await pool.query(guarded);
+    const validation = await fs.readFile(path.join(migrationsDirectory, "023_validate_extra_store_constraints.sql"), "utf8");
+    await pool.query(validation);
+    await pool.query(validation);
     const constraint = await pool.query("SELECT convalidated FROM pg_constraint WHERE conrelid='extra_store_entitlements'::regclass AND conname='extra_store_entitlements_payment_tenant_fk'");
     assert.equal(constraint.rowCount, 1);
     assert.equal(constraint.rows[0].convalidated, true);
@@ -84,6 +89,68 @@ integration("concurrent runner migrations serialize on the advisory lock and con
     await verifyDatabaseSchema(pool);
   } finally {
     await pool.end();
+  }
+});
+
+integration("migration validation commits ADD FK locks before its populated scan and permits concurrent writes", async () => {
+  assertSafeTestDatabaseUrl(integrationUrl, { nodeEnv: process.env.NODE_ENV || "test" });
+  const db = testPool(3);
+  const schema = `mvp18_validation_${process.pid}_${Date.now()}`;
+  let validator, writer, created = false;
+  try {
+    validator = await db.connect();
+    writer = await db.connect();
+    await validator.query(`CREATE SCHEMA ${schema}`);
+    created = true;
+    await validator.query(`SET search_path TO ${schema}`);
+    await writer.query(`SET search_path TO ${schema}`);
+    await writer.query("SET lock_timeout='250ms'");
+    await validator.query(`CREATE TABLE schema_migrations(name text PRIMARY KEY,checksum text);
+      CREATE TABLE billing_payments(organization_id uuid NOT NULL,id uuid PRIMARY KEY,UNIQUE(organization_id,id));
+      CREATE TABLE extra_store_entitlements(organization_id uuid NOT NULL,payment_id uuid NOT NULL);
+      INSERT INTO billing_payments SELECT gen_random_uuid(),gen_random_uuid() FROM generate_series(1,2000);
+      INSERT INTO extra_store_entitlements SELECT organization_id,id FROM billing_payments;`);
+    const catalog = await loadMigrationCatalog(migrationsDirectory);
+    const addition = catalog.find(({name}) => name === "022_mvp18_guarded_constraints.sql");
+    const validation = catalog.find(({name}) => name === "023_validate_extra_store_constraints.sql");
+    await executeMigration(validator, addition);
+    const before = await validator.query("SELECT convalidated FROM pg_constraint WHERE conrelid='extra_store_entitlements'::regclass AND conname='extra_store_entitlements_payment_tenant_fk'");
+    assert.equal(before.rows[0].convalidated, false, "022 must leave validation for its own transaction");
+    assert.ok(validation, "validation migration must follow the committed addition");
+    let observed = false;
+    await executeMigration({query: async (sql, params) => {
+      const result = await validator.query(sql, params);
+      if (/VALIDATE\s+CONSTRAINT/i.test(String(sql))) {
+        observed = true;
+        // The real validation transaction is still open, before its COMMIT.
+        const locks = await validator.query(`SELECT mode FROM pg_locks
+          WHERE pid=pg_backend_pid() AND granted AND relation IN
+            ('extra_store_entitlements'::regclass,'billing_payments'::regclass)`);
+        assert.ok(locks.rows.some(row => row.mode === "ShareUpdateExclusiveLock"));
+        assert.ok(!locks.rows.some(row => ["ShareRowExclusiveLock","AccessExclusiveLock"].includes(row.mode)),
+          "validation must not retain the stronger locks from ADD FOREIGN KEY");
+        const write = await writer.query(`INSERT INTO extra_store_entitlements
+          SELECT organization_id,id FROM billing_payments LIMIT 1 RETURNING payment_id`);
+        assert.equal(write.rowCount, 1, "a concurrent write must succeed while validation locks remain held");
+      }
+      return result;
+    }}, validation);
+    assert.equal(observed, true);
+    const after = await validator.query("SELECT convalidated FROM pg_constraint WHERE conrelid='extra_store_entitlements'::regclass AND conname='extra_store_entitlements_payment_tenant_fk'");
+    assert.equal(after.rows[0].convalidated, true);
+  } finally {
+    if (validator) {
+      await validator.query("ROLLBACK").catch(() => {});
+      await validator.query("RESET search_path").catch(() => {});
+    }
+    if (writer) await writer.query("RESET search_path").catch(() => {});
+    validator?.release();
+    writer?.release();
+    try {
+      if (created) await db.query(`DROP SCHEMA ${schema} CASCADE`);
+    } finally {
+      await db.end();
+    }
   }
 });
 

@@ -13,6 +13,7 @@ test("MVP18 migrations separate transactional tables from concurrent indexes and
   const tables = catalog.find(({ name }) => name === "020_extra_store_entitlements.sql");
   const indexes = catalog.find(({ name }) => name === "021_mvp18_concurrent_indexes.sql");
   const constraints = catalog.find(({ name }) => name === "022_mvp18_guarded_constraints.sql");
+  const validation = catalog.find(({ name }) => name === "023_validate_extra_store_constraints.sql");
   assert.equal(tables.transactional, true);
   assert.doesNotMatch(tables.sql, /CREATE\s+(?:UNIQUE\s+)?INDEX\b|ADD\s+CONSTRAINT/i);
   assert.ok(indexes, "concurrent migration 021 must exist");
@@ -26,14 +27,18 @@ test("MVP18 migrations separate transactional tables from concurrent indexes and
   assert.match(constraints.sql, /pg_constraint/i);
   assert.match(constraints.sql, /conrelid\s*=\s*'extra_store_entitlements'::regclass/i);
   assert.match(constraints.sql, /ADD CONSTRAINT extra_store_entitlements_payment_tenant_fk[\s\S]*NOT VALID/i);
-  assert.match(constraints.sql, /VALIDATE CONSTRAINT extra_store_entitlements_payment_tenant_fk/i);
+  assert.doesNotMatch(constraints.sql, /VALIDATE\s+CONSTRAINT/i, "022 must commit its stronger ADD FK locks before validation");
+  assert.ok(validation, "separate validation migration 023 must exist");
+  assert.equal(validation.transactional, true);
+  const validationSql = validation.sql.split(/\r?\n/).filter(line => !line.trim().startsWith("--")).join("\n").trim();
+  assert.match(validationSql, /^ALTER TABLE extra_store_entitlements\s+VALIDATE CONSTRAINT extra_store_entitlements_payment_tenant_fk;$/i);
   assert.deepEqual(await loadMigrationCatalog(directory), catalog);
 });
 
 test("schema verification reports missing MVP18 migration records and invalid final objects", () => {
   const snapshot = {
     tables: schemaModule.REQUIRED_TABLES,
-    migrations: schemaModule.REQUIRED_MIGRATIONS.filter(name => !name.startsWith("021_") && !name.startsWith("022_")),
+    migrations: schemaModule.REQUIRED_MIGRATIONS.filter(name => !/^02[123]_/.test(name)),
     primaryKeyTables: schemaModule.REQUIRED_TABLES,
     foreignKeyTables: schemaModule.REQUIRED_FOREIGN_KEY_TABLES,
     uniqueConstraintTables: schemaModule.REQUIRED_UNIQUE_CONSTRAINT_TABLES,
@@ -41,7 +46,7 @@ test("schema verification reports missing MVP18 migration records and invalid fi
     tenantConstraints: schemaModule.REQUIRED_TENANT_CONSTRAINTS.filter(name => name !== "extra_store_entitlements_payment_tenant_fk"),
   };
   assert.deepEqual(schemaModule.findSchemaIssues(snapshot), [
-    "missing migration records: 021_mvp18_concurrent_indexes.sql, 022_mvp18_guarded_constraints.sql",
+    "missing migration records: 021_mvp18_concurrent_indexes.sql, 022_mvp18_guarded_constraints.sql, 023_validate_extra_store_constraints.sql",
     "missing indexes: billing_payments_org_id_unique",
     "missing tenant integrity constraints: extra_store_entitlements_payment_tenant_fk",
   ]);

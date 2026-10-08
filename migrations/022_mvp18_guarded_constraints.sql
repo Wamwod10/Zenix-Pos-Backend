@@ -1,6 +1,6 @@
 -- Migration 021 supplies the referenced tenant/payment uniqueness first.
--- NOT VALID enforces new writes immediately; explicit validation checks the
--- existing entitlement rows without holding a write-blocking table scan lock.
+-- NOT VALID enforces new writes immediately. Commit this addition before
+-- migration 023 validates existing rows so its stronger locks are released.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -14,6 +14,3 @@ BEGIN
       REFERENCES billing_payments(organization_id, id) NOT VALID;
   END IF;
 END $$;
-
-ALTER TABLE extra_store_entitlements
-  VALIDATE CONSTRAINT extra_store_entitlements_payment_tenant_fk;
