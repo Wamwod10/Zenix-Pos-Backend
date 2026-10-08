@@ -28,8 +28,27 @@ async function assertProduct(client,orgId,productId){
   if(!row)throw new HttpError(404,"Mahsulot topilmadi","PRODUCT_NOT_FOUND");
   return row;
 }
+function assertCountQuantity(value){
+  // Number.toString is also pg's numeric-parameter representation. Validate
+  // that decimal spelling, never the binary fraction exposed by toFixed.
+  if(!["number","string"].includes(typeof value)||!/^\d{1,15}(?:\.\d{1,3})?$/.test(String(value)))
+    throw new HttpError(400,"Inventarizatsiya miqdori 0 dan numeric(18,3) chegarasigacha, ko‘pi bilan 3 kasr xonali bo‘lishi kerak","INVENTORY_COUNT_QUANTITY_INVALID");
+}
+function countQuantityUnits(value){
+  const [whole,fraction=""]=String(value).split(".");
+  return BigInt(whole)*1000n+BigInt(fraction.padEnd(3,"0"));
+}
+function countQuantityDecimal(units){
+  const negative=units<0n,value=negative?-units:units;
+  return `${negative?"-":""}${value/1000n}.${String(value%1000n).padStart(3,"0")}`;
+}
+function normalizeCountQuantity(value){
+  assertCountQuantity(value);
+  return countQuantityDecimal(countQuantityUnits(value));
+}
 async function assertManualQuantityChangeSafe(client,{orgId,storeId,productId,current,after,allowBatchReconciliation=false}){
-  if(Math.abs(Number(after)-Number(current))<=1e-9&&!allowBatchReconciliation)return;
+  const unchanged=allowBatchReconciliation?after===current:Math.abs(Number(after)-Number(current))<=1e-9;
+  if(unchanged&&!allowBatchReconciliation)return;
   const [serialState,batchState]=await Promise.all([
     client.query(`SELECT count(*)::int AS total,
       count(*) FILTER (WHERE store_id=$2 AND status='IN_STOCK')::int AS in_stock
@@ -41,7 +60,7 @@ async function assertManualQuantityChangeSafe(client,{orgId,storeId,productId,cu
   const serialTotal=Number(serialState.rows[0]?.total||0);
   const batchTotal=Number(batchState.rows[0]?.total||0);
   if(serialTotal>0){
-    if(Number(after)===Number(current))return false; // unchanged serial counts cannot reconcile lots either
+    if(unchanged)return false; // unchanged serial counts cannot reconcile lots either
     throw new HttpError(409,"Serial/IMEI kuzatiladigan mahsulot qoldig‘ini umumiy son bilan o‘zgartirib bo‘lmaydi. Serial birliklarini aniq kiriting.","TRACKED_SERIAL_ADJUSTMENT_REQUIRED",{current:Number(current),requested:Number(after),inStockSerials:Number(serialState.rows[0]?.in_stock||0)});
   }
   // Ordinary adjustments must still require lot-specific handling. Only count
@@ -55,26 +74,22 @@ async function assertManualQuantityChangeSafe(client,{orgId,storeId,productId,cu
  * expiry date for the supplier's original batch.
  */
 async function reconcileCountBatches(client,{organizationId,storeId,productId,requestedBalance}){
+  assertCountQuantity(requestedBalance);
   const rows=(await client.query(`SELECT id,remaining_quantity FROM inventory_batches
     WHERE organization_id=$1 AND store_id=$2 AND product_id=$3
     ORDER BY expiry_date ASC NULLS LAST,created_at ASC,id ASC FOR UPDATE`,[organizationId,storeId,productId])).rows;
   if(!rows.length)return;
   // Batch quantities are numeric(18,3). Work in thousandths so decimal equality
   // (e.g. 0.1 + 0.2 = 0.3) does not create or consume a spurious lot.
-  const units=value=>{
-    const [whole,fraction=""]=(typeof value==="number"?value.toFixed(3):String(value)).split(".");
-    return BigInt(whole)*1000n+BigInt(fraction.padEnd(3,"0"));
-  };
-  const quantity=value=>`${value/1000n}.${String(value%1000n).padStart(3,"0")}`;
-  const lockedBatchSum=rows.reduce((sum,row)=>sum+units(row.remaining_quantity),0n);
-  const delta=units(requestedBalance)-lockedBatchSum;
+  const lockedBatchSum=rows.reduce((sum,row)=>sum+countQuantityUnits(row.remaining_quantity),0n);
+  const delta=countQuantityUnits(requestedBalance)-lockedBatchSum;
   if(delta===0n)return;
   if(delta<0n){
     let toRemove=-delta;
     for(const row of rows){
       if(toRemove===0n)break;
-      const remaining=units(row.remaining_quantity),n=toRemove<remaining?toRemove:remaining;
-      if(n>0n)await client.query("UPDATE inventory_batches SET remaining_quantity=remaining_quantity-$2 WHERE id=$1",[row.id,quantity(n)]);
+      const remaining=countQuantityUnits(row.remaining_quantity),n=toRemove<remaining?toRemove:remaining;
+      if(n>0n)await client.query("UPDATE inventory_batches SET remaining_quantity=remaining_quantity-$2 WHERE id=$1",[row.id,countQuantityDecimal(n)]);
       toRemove-=n;
     }
     return;
@@ -82,7 +97,7 @@ async function reconcileCountBatches(client,{organizationId,storeId,productId,re
   await client.query(`INSERT INTO inventory_batches
     (organization_id,store_id,product_id,reference_id,batch_no,expiry_date,received_quantity,remaining_quantity,unit_cost)
     VALUES ($1,$2,$3,'INVENTORY-COUNT','INVENTORY-COUNT / EXPIRY-UNKNOWN',NULL,$4,$4,0)`,
-    [organizationId,storeId,productId,quantity(delta)]);
+    [organizationId,storeId,productId,countQuantityDecimal(delta)]);
 }
 
 async function allocateTransferTracking(client,{orgId,transferId,storeId,productId,quantity,balanceQuantity}){
@@ -377,20 +392,24 @@ router.post("/transfers/:id/cancel",requirePermission("transferCancel"),asyncRou
   ok(res,{transfer:result});
 }));
 
-const countChange=z.object({productId:z.string().uuid(),before:z.coerce.number().min(0),after:z.coerce.number().min(0)});
+const countQuantitySchema=z.union([z.number(),z.string()]).superRefine((value,ctx)=>{
+  try{assertCountQuantity(value)}catch(error){ctx.addIssue({code:z.ZodIssueCode.custom,message:error.message})}
+});
+const countChange=z.object({productId:z.string().uuid(),before:countQuantitySchema,after:countQuantitySchema});
 const countChangesSchema=uniqueProductArray(countChange,"Bir mahsulot inventarizatsiyada faqat bir marta bo‘lishi mumkin");
 async function applyCount(client,{orgId,storeId,changes,userId,countId,strictSnapshot}){
   const conflicts=[],movements=[];
   for(const change of changes){
-    const product=await assertProduct(client,orgId,change.productId);const balance=await lockBalance(client,{orgId,storeId,productId:change.productId});const current=Number(balance.quantity);
-    if(strictSnapshot&&current!==Number(change.before)){conflicts.push({productId:change.productId,product:product.name,snapshot:Number(change.before),current});continue;}
-    const after=Number(change.after),delta=after-current;
+    const after=normalizeCountQuantity(change.after);
+    const product=await assertProduct(client,orgId,change.productId);const balance=await lockBalance(client,{orgId,storeId,productId:change.productId});const current=normalizeCountQuantity(balance.quantity);
+    if(strictSnapshot&&current!==normalizeCountQuantity(change.before)){conflicts.push({productId:change.productId,product:product.name,snapshot:change.before,current});continue;}
+    const delta=countQuantityUnits(after)-countQuantityUnits(current);
     const canReconcile=await assertManualQuantityChangeSafe(client,{orgId,storeId,productId:change.productId,current,after,allowBatchReconciliation:true});
     if(canReconcile===false)continue;
     await reconcileCountBatches(client,{organizationId:orgId,storeId,productId:change.productId,requestedBalance:after});
-    if(delta===0)continue;
+    if(delta===0n)continue;
     await client.query(`UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,storeId,change.productId,after]);
-    const move=(await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by) VALUES($1,$2,$3,'count',$4,$5,$6,'inventory_count',$7,'Inventarizatsiya',$8) RETURNING *`,[orgId,storeId,change.productId,delta,current,after,countId,userId])).rows[0];
+    const move=(await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by) VALUES($1,$2,$3,'count',$4,$5,$6,'inventory_count',$7,'Inventarizatsiya',$8) RETURNING *`,[orgId,storeId,change.productId,countQuantityDecimal(delta),current,after,countId,userId])).rows[0];
     movements.push({...move,product:product.name});
   }
   return {conflicts,movements};

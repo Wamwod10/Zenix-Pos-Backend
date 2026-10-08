@@ -99,6 +99,30 @@ integration('inventory count batch reconciliation reaches the requested total wi
       await count(id,10000000000000,10000000000000);
       assert.equal((await client.query('SELECT remaining_quantity FROM inventory_batches WHERE id=$1',[lotId])).rows[0].remaining_quantity,'10000000000000.000');
     });
+    await t.test('count rejects excess precision without rounding either ledger',async()=>{
+      const id=await product(0);await batch(id,0);
+      await assert.rejects(count(id,0,1.0005),error=>error.code==='INVENTORY_COUNT_QUANTITY_INVALID');
+      assert.equal(await total(id),0);
+      assert.equal((await client.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[id])).rows[0].quantity,'0.000');
+    });
+    await t.test('canonical count target exactly matches both ledgers and movement across schema range',async()=>{
+      for(const target of [1.001,0.029,100000000000000.03,'999999999999999.999']){
+        const id=await product(0);await batch(id,0);await count(id,0,target);
+        const expected=target===1.001?'1.001':target===0.029?'0.029':target===100000000000000.03?'100000000000000.030':'999999999999999.999';
+        const ledger=(await client.query(`SELECT b.quantity,sum(l.remaining_quantity) AS batches,m.quantity AS delta,m.before_quantity,m.after_quantity
+          FROM inventory_balances b JOIN inventory_batches l ON l.product_id=b.product_id AND l.store_id=b.store_id AND l.organization_id=b.organization_id
+          JOIN stock_movements m ON m.product_id=b.product_id WHERE b.product_id=$1
+          GROUP BY b.quantity,m.quantity,m.before_quantity,m.after_quantity`,[id])).rows[0];
+        assert.deepEqual(ledger,{quantity:expected,batches:expected,delta:expected,before_quantity:'0.000',after_quantity:expected});
+      }
+    });
+    await t.test('large fractional count delta remains exact and snapshot remains precise',async()=>{
+      const id=await product('100000000000000.031');await batch(id,'100000000000000.031');
+      await count(id,'100000000000000.031','100000000000000.030');
+      const movement=(await client.query('SELECT quantity,before_quantity,after_quantity FROM stock_movements WHERE product_id=$1',[id])).rows[0];
+      assert.deepEqual(movement,{quantity:'-0.001',before_quantity:'100000000000000.031',after_quantity:'100000000000000.030'});
+      assert.equal((await client.query('SELECT sum(remaining_quantity) AS total FROM inventory_batches WHERE product_id=$1',[id])).rows[0].total,'100000000000000.030');
+    });
     await t.test('other-store and other-tenant lots stay unchanged',async()=>{
       const id=await product(5);await batch(id,2);const other=await batch(id,9,{storeId:otherStore});
       const tenantProduct=(await client.query("INSERT INTO products(organization_id,name) VALUES($1,'Other tenant product') RETURNING id",[otherOrg])).rows[0].id;

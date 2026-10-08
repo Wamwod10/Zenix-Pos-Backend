@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { HttpError } from '../src/lib/http.js';
+import { z } from 'zod';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const read=(relative)=>fs.readFileSync(path.join(here,'..',relative),'utf8');
@@ -12,11 +13,12 @@ const read=(relative)=>fs.readFileSync(path.join(here,'..',relative),'utf8');
 // Execute the real transaction helpers without loading the configured app pool.
 const inventorySource=read('src/routes/inventory.js');
 const countHelpers=vm.runInNewContext(`${inventorySource.slice(inventorySource.indexOf('async function lockBalance'),inventorySource.indexOf('async function allocateTransferTracking'))}
+${inventorySource.slice(inventorySource.indexOf('const countQuantitySchema'),inventorySource.indexOf('const countChangesSchema'))}
 ${inventorySource.slice(inventorySource.indexOf('async function applyCount'),inventorySource.indexOf('router.post("/counts"'))}
-({reconcileCountBatches,applyCount})`,{HttpError});
+({reconcileCountBatches,applyCount,countChange})`,{HttpError,z});
 
 function countClient({batches=[],balance=5,serials=0}={}){
-  const state={batches:structuredClone(batches),balance,writes:[],locks:[]};
+  const state={batches:structuredClone(batches),balance,writes:[],locks:[],batchValues:[],balanceValues:[],movementValues:[]};
   return {state,async query(sql,args=[]){
     if(sql.includes('SELECT id,remaining_quantity FROM inventory_batches')){
       assert.match(sql,/FOR UPDATE/);
@@ -29,6 +31,7 @@ function countClient({batches=[],balance=5,serials=0}={}){
       state.batches.find(row=>row.id===args[0]).remaining_quantity-=args[1];return {rows:[]};
     }
     if(sql.includes('INSERT INTO inventory_batches')){
+      state.batchValues.push(args.at(-1));
       const quantity=Number(args.at(-1));
       state.writes.push({insert:quantity});
       state.batches.push({id:'count-batch',organization_id:args[0],store_id:args[1],product_id:args[2],remaining_quantity:quantity,received_quantity:quantity,
@@ -39,8 +42,8 @@ function countClient({batches=[],balance=5,serials=0}={}){
     if(sql.includes('SELECT id,name,unit,min_stock FROM products'))return {rows:[{id:'product',name:'Counted item'}]};
     if(sql.includes('INSERT INTO inventory_balances'))return {rows:[]};
     if(sql.includes('SELECT * FROM inventory_balances'))return {rows:[{quantity:state.balance}]};
-    if(sql.includes('UPDATE inventory_balances')){state.balance=args[3];return {rows:[]};}
-    if(sql.includes('INSERT INTO stock_movements'))return {rows:[{quantity:args[3]}]};
+    if(sql.includes('UPDATE inventory_balances')){state.balanceValues.push(args[3]);state.balance=Number(args[3]);return {rows:[]};}
+    if(sql.includes('INSERT INTO stock_movements')){state.movementValues.push(Array.from(args.slice(3,6)));return {rows:[{quantity:args[3]}]};}
     throw new Error(`Unexpected inventory count query: ${sql}`);
   }};
 }
@@ -99,6 +102,52 @@ test('inventory count leaves unchanged serial-tracked inventory and batches unto
   const client=countClient({serials:1,batches:[lot('a',2)]});
   await countHelpers.applyCount(client,countOptions(5));
   assert.equal(client.state.writes.length,0);assert.equal(client.state.locks.length,0);
+});
+
+for(const requested of [1.0005,'1.0005','999999999999999.9999',1000000000000000,'1000000000000000',Infinity])
+test(`inventory count rejects invalid numeric precision or range: ${requested}`,async()=>{
+  const client=countClient({balance:0,batches:[lot('history',0)]});
+  await assert.rejects(countHelpers.applyCount(client,countOptions(requested,0)),error=>error.code==='INVENTORY_COUNT_QUANTITY_INVALID');
+  assert.equal(client.state.writes.length,0);assert.equal(client.state.balanceValues.length,0);
+});
+
+for(const fixture of [
+  {requested:1.001,want:'1.001'},
+  {requested:0.029,want:'0.029'},
+  {requested:100000000000000.03,want:'100000000000000.030'},
+  {requested:'999999999999999.999',want:'999999999999999.999'},
+])test(`inventory count uses one exact canonical target for batches, balance and movement: ${fixture.requested}`,async()=>{
+  const client=countClient({balance:0,batches:[lot('history',0)]});
+  await countHelpers.applyCount(client,countOptions(fixture.requested,0));
+  assert.deepEqual(client.state.batchValues,[fixture.want]);
+  assert.deepEqual(client.state.balanceValues,[fixture.want]);
+  assert.deepEqual(client.state.movementValues,[[fixture.want,'0.000',fixture.want]]);
+});
+
+test('inventory count computes exact fractional movements at large balances',async()=>{
+  const client=countClient({balance:'100000000000000.031',batches:[lot('a','100000000000000.031')]});
+  await countHelpers.applyCount(client,countOptions('100000000000000.030','100000000000000.031'));
+  assert.deepEqual(client.state.balanceValues,['100000000000000.030']);
+  assert.deepEqual(client.state.movementValues,[['-0.001','100000000000000.031','100000000000000.030']]);
+});
+
+test('inventory count schema preserves exact decimal strings and rejects rounding inputs',()=>{
+  const productId='00000000-0000-4000-8000-000000000001';
+  assert.equal(countHelpers.countChange.safeParse({productId,before:0,after:1.0005}).success,false);
+  const exact=countHelpers.countChange.parse({productId,before:'999999999999999.999',after:'999999999999999.998'});
+  assert.equal(exact.before,'999999999999999.999');assert.equal(exact.after,'999999999999999.998');
+});
+
+test('inventory count rejects a large fractional snapshot conflict before reconciliation',async()=>{
+  const client=countClient({balance:'100000000000000.031',batches:[lot('a','100000000000000.031')]});
+  const result=await countHelpers.applyCount(client,countOptions('100000000000000.030','100000000000000.030'));
+  assert.equal(result.conflicts.length,1);assert.equal(client.state.writes.length,0);assert.equal(client.state.balanceValues.length,0);
+});
+
+test('inventory count excludes a serial-tracked large fractional change',async()=>{
+  const client=countClient({balance:'100000000000000.031',serials:1,batches:[lot('a','100000000000000.031')]});
+  await assert.rejects(countHelpers.applyCount(client,countOptions('100000000000000.030','100000000000000.031')),error=>error.code==='TRACKED_SERIAL_ADJUSTMENT_REQUIRED');
+  assert.equal(client.state.writes.length,0);assert.equal(client.state.balanceValues.length,0);
 });
 
 test('sales transaction persists authoritative serial and batch tracking',()=>{
