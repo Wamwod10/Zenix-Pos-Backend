@@ -82,6 +82,20 @@ test("expired callback token cannot review a payment", async () => {
   assert.equal(reviewed, 0);
 });
 
+test("missing or corrupt token expiry is fail-closed", async () => {
+  for (const expiry of [null, undefined, "not-a-date"]) {
+    let reviews = 0;
+    const result = await webhook.handlePaymentCallback(update(), {
+      db: { query: async () => ({ rows: [{ id: "payment-1", status: "REVIEW", telegram_review_token_expires_at: expiry }] }) },
+      reviewPayment: async () => { reviews++; },
+      answerCallback: async () => {}, editMessage: async () => {},
+      config: { paymentAdminChatId: "-1001", paymentAdminUserIds: ["123"] },
+    });
+    assert.equal(result, "expired");
+    assert.equal(reviews, 0);
+  }
+});
+
 test("valid reject uses the database payment and does not activate it", async () => {
   let reviewInput;
   const outcome = await webhook.handlePaymentCallback(update({ data: `pr:${token}` }), {

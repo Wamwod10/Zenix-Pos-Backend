@@ -161,7 +161,7 @@ router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req
   const lineSchema=z.object({
     productId:z.string().uuid().optional().nullable(),name:z.string().trim().max(240).default(""),sku:z.string().trim().max(120).default(""),barcode:z.string().trim().max(120).default(""),
     category:z.string().trim().max(120).default(""),brand:z.string().trim().max(120).default(""),unit:z.string().trim().max(40).default("dona"),quantity:qty,
-    costPrice:z.coerce.number().min(0).default(0),sellPrice:z.coerce.number().min(0).default(0),wholesalePrice:z.coerce.number().min(0).default(0),minStock:z.coerce.number().min(0).default(0),
+    costPrice:z.coerce.number().positive(),sellPrice:z.coerce.number().min(0).default(0),wholesalePrice:z.coerce.number().min(0).default(0),minStock:z.coerce.number().min(0).default(0),
     batchNo:z.string().trim().max(120).default(""),expiryDate:z.string().optional().nullable(),serials:z.array(z.string().trim().min(1).max(180)).default([]),metadata:z.record(z.string(),z.any()).default({}),note:z.string().trim().max(500).default(""),
   }).refine((line)=>Boolean(line.productId||line.name),{message:"Mahsulot ID yoki nomi kerak"});
   const input=z.object({
@@ -358,11 +358,18 @@ router.post("/counts",requirePermission("inventoryAdjust"),asyncRoute(async(req,
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;await assertOrganizationStore(client,orgId,input.storeId);const count=(await client.query(`INSERT INTO inventory_counts(organization_id,store_id,status,snapshot,result,created_by) VALUES($1,$2,$3,$4::jsonb,$4::jsonb,$5) RETURNING *`,[orgId,input.storeId,input.requireApproval?'review':'applying',JSON.stringify(input.changes),req.user.id])).rows[0];
     if(input.requireApproval)return {...count,changes:input.changes,status:'review'};
+    await client.query("SAVEPOINT inventory_count_apply");
     const applied=await applyCount(client,{orgId,storeId:input.storeId,changes:input.changes,userId:req.user.id,countId:count.id,strictSnapshot:true});
-    if(applied.conflicts.length)throw new HttpError(409,"Qoldiq inventarizatsiya vaqtida o‘zgargan","INVENTORY_COUNT_CONFLICT",applied.conflicts);
+    if(applied.conflicts.length){
+      await client.query("ROLLBACK TO SAVEPOINT inventory_count_apply");
+      const updated=(await client.query(`UPDATE inventory_counts SET status='conflict',result=$2::jsonb,reviewed_at=now(),reviewed_by=$3 WHERE id=$1 RETURNING *`,[count.id,JSON.stringify({conflicts:applied.conflicts}),req.user.id])).rows[0];
+      return {...updated,conflicts:applied.conflicts};
+    }
+    await client.query("RELEASE SAVEPOINT inventory_count_apply");
     const updated=(await client.query(`UPDATE inventory_counts SET status='approved',reviewed_at=now(),reviewed_by=$2 WHERE id=$1 RETURNING *`,[count.id,req.user.id])).rows[0];
     return {...updated,changes:input.changes,movements:applied.movements};
   });
+  if(result.conflicts?.length)throw new HttpError(409,"Qoldiq inventarizatsiya vaqtida o‘zgargan","INVENTORY_COUNT_CONFLICT",{countId:result.id,conflicts:result.conflicts});
   ok(res,{count:result},201);
 }));
 
@@ -372,10 +379,18 @@ router.post("/counts/:id/review",requirePermission("inventoryCountApprove"),asyn
     const orgId=req.user.organizationId;const count=(await client.query(`SELECT * FROM inventory_counts WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.params.id,orgId])).rows[0];
     if(!count)throw new HttpError(404,"Inventarizatsiya topilmadi");assertStoreScope(req.user,count.store_id);if(!['review','conflict'].includes(count.status))throw new HttpError(409,"Inventarizatsiya allaqachon ko‘rib chiqilgan");
     if(input.decision==='reject')return (await client.query(`UPDATE inventory_counts SET status='rejected',reviewed_at=now(),reviewed_by=$2 WHERE id=$1 RETURNING *`,[count.id,req.user.id])).rows[0];
-    const changes=Array.isArray(count.snapshot)?count.snapshot:[];const applied=await applyCount(client,{orgId,storeId:count.store_id,changes,userId:req.user.id,countId:count.id,strictSnapshot:true});
-    if(applied.conflicts.length){await client.query(`UPDATE inventory_counts SET status='conflict',result=$2::jsonb,reviewed_at=now(),reviewed_by=$3 WHERE id=$1`,[count.id,JSON.stringify({conflicts:applied.conflicts}),req.user.id]);throw new HttpError(409,`${applied.conflicts.length} ta mahsulot qoldig‘i o‘zgargan. Qayta sanang.`,`INVENTORY_COUNT_CONFLICT`,applied.conflicts);}
+    const changes=Array.isArray(count.snapshot)?count.snapshot:[];
+    await client.query("SAVEPOINT inventory_count_review");
+    const applied=await applyCount(client,{orgId,storeId:count.store_id,changes,userId:req.user.id,countId:count.id,strictSnapshot:true});
+    if(applied.conflicts.length){
+      await client.query("ROLLBACK TO SAVEPOINT inventory_count_review");
+      const updated=(await client.query(`UPDATE inventory_counts SET status='conflict',result=$2::jsonb,reviewed_at=now(),reviewed_by=$3 WHERE id=$1 RETURNING *`,[count.id,JSON.stringify({conflicts:applied.conflicts}),req.user.id])).rows[0];
+      return {...updated,conflicts:applied.conflicts};
+    }
+    await client.query("RELEASE SAVEPOINT inventory_count_review");
     const updated=(await client.query(`UPDATE inventory_counts SET status='approved',result=$2::jsonb,reviewed_at=now(),reviewed_by=$3 WHERE id=$1 RETURNING *`,[count.id,JSON.stringify(changes),req.user.id])).rows[0];return {...updated,movements:applied.movements};
   });
+  if(result.conflicts?.length)throw new HttpError(409,`${result.conflicts.length} ta mahsulot qoldig‘i o‘zgargan. Qayta sanang.`,`INVENTORY_COUNT_CONFLICT`,{countId:result.id,conflicts:result.conflicts});
   ok(res,{count:result});
 }));
 

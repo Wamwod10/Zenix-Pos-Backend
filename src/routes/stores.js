@@ -15,6 +15,8 @@ router.post("/", requirePermission("settingsWrite"), asyncRoute(async (req, res)
     const org = (await client.query("SELECT store_limit FROM organizations WHERE id=$1 FOR UPDATE", [req.user.organizationId])).rows[0];
     const count = Number((await client.query("SELECT count(*) FROM stores WHERE organization_id=$1 AND active=true", [req.user.organizationId])).rows[0].count);
     if (count >= Number(org.store_limit)) throw new HttpError(409, "Tarif bo‘yicha filial limiti tugagan", "STORE_LIMIT");
+    const duplicate = await client.query("SELECT 1 FROM stores WHERE organization_id=$1 AND lower(name)=lower($2) LIMIT 1", [req.user.organizationId, name]);
+    if (duplicate.rowCount) throw new HttpError(409, "Bu nomdagi filial allaqachon mavjud", "STORE_NAME_EXISTS");
     const store = (await client.query("INSERT INTO stores(organization_id,name) VALUES($1,$2) RETURNING *", [req.user.organizationId, name])).rows[0];
     await writeAudit(client, {
       organizationId:req.user.organizationId,
@@ -65,7 +67,9 @@ router.patch("/:id", requirePermission("settingsWrite"), asyncRoute(async (req, 
         client.query("SELECT 1 FROM inventory_counts WHERE organization_id=$1 AND store_id=$2 AND status IN ('draft','review') LIMIT 1", [orgId, id]),
       ]);
       if (shift.rowCount || stock.rowCount || serialStock.rowCount || batchStock.rowCount || users.rowCount || transfer.rowCount || count.rowCount) {
-        throw new HttpError(409, "Filialni arxivlashdan oldin ochiq smena, qoldiq, xodim, transfer va inventarizatsiyani yakunlang", "STORE_HAS_DEPENDENCIES");
+        const details={shift:Boolean(shift.rowCount),stock:Boolean(stock.rowCount||serialStock.rowCount||batchStock.rowCount),users:Boolean(users.rowCount),transfer:Boolean(transfer.rowCount),inventoryCount:Boolean(count.rowCount)};
+        const labels=[details.shift&&"ochiq smena",details.stock&&"qoldiq",details.users&&"faol xodim",details.transfer&&"ochiq transfer",details.inventoryCount&&"tugallanmagan inventarizatsiya"].filter(Boolean);
+        throw new HttpError(409, `Filialni arxivlashdan oldin quyidagilarni yakunlang: ${labels.join(", ")}`, "STORE_HAS_DEPENDENCIES", details);
       }
     }
 

@@ -53,10 +53,12 @@ test('branch-scoped product/bootstrap responses are server filtered',()=>{
 
 test('login is throttled and live sessions are bounded server-side',()=>{
   const auth=read('src/routes/auth.js');
+  const throttle=read('src/services/loginThrottle.js');
   const migration=read('migrations/005_production_security.sql');
   assert.match(migration,/CREATE TABLE IF NOT EXISTS auth_login_attempts/);
-  assert.match(auth,/maxLoginFailures=8/);
-  assert.match(auth,/LOGIN_RATE_LIMITED/);
+  assert.match(throttle,/MAX_IP_FAILURES = 8/);
+  assert.match(throttle,/LOGIN_RATE_LIMITED/);
+  assert.match(throttle,/pg_advisory_xact_lock/);
   assert.match(auth,/ORDER BY created_at DESC OFFSET 20/);
 });
 

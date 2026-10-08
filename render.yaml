@@ -2,15 +2,16 @@ services:
   - type: web
     name: zenix-pos-api
     env: node
-    rootDir: backend
     buildCommand: npm ci
-    preDeployCommand: npm run migrate && npm run db:verify
+    preDeployCommand: npm run migrate:status && npm run db:verify
     startCommand: npm start
     healthCheckPath: /ready
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
+        sync: false
+      - key: MIGRATION_DATABASE_URL
         sync: false
       - key: DB_POOL_MAX
         value: 5
@@ -40,7 +41,6 @@ services:
   - type: worker
     name: zenix-pos-worker
     env: node
-    rootDir: backend
     buildCommand: npm ci
     startCommand: npm run worker
     envVars:

@@ -10,14 +10,19 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "migrate": "node src/db/migrate.js",
+    "migrate:status": "node src/db/migrationStatus.js",
     "db:verify": "node src/db/verifySchema.js",
-    "check": "node --check src/server.js && node --check src/app.js && node --check src/db/config.js && node --check src/db/startup.js && node --check src/db/verifySchema.js",
+    "db:audit-integrity": "node src/db/auditIntegrity.js",
+    "check": "node scripts/checkSyntax.mjs",
     "telegram:webhook": "node scripts/setTelegramWebhook.js",
     "telegram:payment:webhook": "node scripts/setPaymentTelegramWebhook.js",
     "platform:admin": "node scripts/createPlatformAdmin.js",
     "seed:zenix-market": "node scripts/seedZenixMarket.js",
     "test": "node --test tests/*.test.mjs",
-    "worker": "node src/worker.js"
+    "test:db": "node scripts/assertTestDatabase.js && node --test --test-isolation=none tests/databaseIntegration.test.mjs",
+    "worker": "node src/worker.js",
+    "test:http": "node scripts/assertTestDatabase.js && node --test --test-isolation=none tests/httpIntegration.test.mjs",
+    "db:audit-subscriptions": "node src/db/auditSubscriptions.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

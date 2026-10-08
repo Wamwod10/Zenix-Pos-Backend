@@ -63,7 +63,7 @@ export async function handlePaymentCallback(update, {
     await answerCallback(callback.id, "Bu to'lov allaqachon ko'rib chiqilgan.").catch(() => {});
     return "alreadyReviewed";
   }
-  if (payment.telegram_review_token_expires_at && new Date(payment.telegram_review_token_expires_at).getTime() <= Date.now()) {
+  if (!payment.telegram_review_token_expires_at || !Number.isFinite(new Date(payment.telegram_review_token_expires_at).getTime()) || new Date(payment.telegram_review_token_expires_at).getTime() <= Date.now()) {
     await answerCallback(callback.id, "Tasdiqlash tugmasining muddati tugagan.", true).catch(() => {});
     return "expired";
   }

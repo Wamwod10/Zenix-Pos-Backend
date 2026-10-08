@@ -135,6 +135,9 @@ test("schema verification covers all migrations and core backend domains", () =>
     "013_customer_credit_hardening.sql",
     "014_billing_checkout_schema.sql",
     "015_workspace_revisions.sql",
+    "016_tenant_integrity_guards.sql",
+    "017_catalog_pagination_indexes.sql",
+    "018_platform_directory_indexes.sql",
   ]);
 
   for (const table of [
@@ -153,6 +156,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     foreignKeyTables: [...schemaModule.REQUIRED_FOREIGN_KEY_TABLES],
     uniqueConstraintTables: [...schemaModule.REQUIRED_UNIQUE_CONSTRAINT_TABLES],
     indexes: [...schemaModule.REQUIRED_INDEXES],
+    tenantConstraints: [...schemaModule.REQUIRED_TENANT_CONSTRAINTS],
   };
   assert.deepEqual(schemaModule.findSchemaIssues(complete), []);
 
@@ -182,6 +186,7 @@ test("schema verification does not invent natural unique constraints for custome
       (name) => name !== "customers" && name !== "customer_ledger",
     ),
     indexes: [...schemaModule.REQUIRED_INDEXES],
+    tenantConstraints: [...schemaModule.REQUIRED_TENANT_CONSTRAINTS],
   };
 
   assert.deepEqual(schemaModule.findSchemaIssues(snapshot), []);
@@ -197,6 +202,6 @@ test("schema verification ignores invalid concurrent indexes", async () => {
 
   await schemaModule.readDatabaseSchema(db);
 
-  assert.match(queries.at(-1),/indisvalid/);
+  assert.match(queries.at(-2),/indisvalid/);
   assert.doesNotMatch(queries.at(-1),/pg_indexes/);
 });

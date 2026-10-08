@@ -75,9 +75,18 @@ export async function processPaymentNotificationOutbox({ db = pool, telegramSend
 }
 
 export function startPaymentNotificationWorker() {
-  const run = () => processPaymentNotificationOutbox().catch((error) => console.error("[payment-telegram-worker]", String(error?.message || error).slice(0, 300)));
+  const activeRuns = new Set();
+  const run = () => {
+    const task = processPaymentNotificationOutbox().catch((error) => console.error("[payment-telegram-worker]", String(error?.message || error).slice(0, 300)));
+    activeRuns.add(task);
+    task.finally(() => activeRuns.delete(task));
+    return task;
+  };
   const timer = setInterval(run, 15_000);
   timer.unref?.();
   run();
-  return timer;
+  return {
+    timer,
+    async stop() { clearInterval(timer); await Promise.allSettled([...activeRuns]); },
+  };
 }

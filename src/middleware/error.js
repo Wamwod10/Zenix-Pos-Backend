@@ -49,6 +49,6 @@ export function errorHandler(error, req, res, _next) {
   const status = error instanceof HttpError ? error.status : (Number.isInteger(error?.status)&&error.status>=400&&error.status<600?error.status:500);
   const code = error instanceof HttpError ? error.code : (status<500&&error?.code?String(error.code):"INTERNAL_ERROR");
   const message = error instanceof HttpError ? error.message : (status<500&&error?.message?String(error.message):"Serverda kutilmagan xatolik yuz berdi");
-  if (status >= 500) console.error("[api]", error);
+  if (status >= 500) console.error(JSON.stringify({event:"unhandled_api_error",requestId:req.requestId||null,method:req.method,status,errorCode:String(error?.code||"INTERNAL_ERROR").slice(0,40)}));
   return res.status(status).json({ ok:false, error:{ code, message, details:error.details } });
 }

@@ -7,6 +7,7 @@ import { env } from "../config/env.js";
 import { randomToken, sha256 } from "../lib/crypto.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth } from "../middleware/auth.js";
+import { assertLoginAllowed, recordLoginDecision } from "../services/loginThrottle.js";
 
 const router=Router();
 const cookieOptions={httpOnly:true,secure:env.isProduction,sameSite:env.isProduction?"none":"lax",path:"/",maxAge:env.sessionTtlDays*86400000};
@@ -16,6 +17,9 @@ const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ow
 const publicUser=(row)=>({id:row.id,organizationId:row.organization_id,organizationName:row.organization_name||row.organizationName||"",storeId:row.store_id,name:row.name,username:row.username,phone:row.phone,appRole:row.app_role,permissionOverrides:row.permission_overrides||{},mustChangePassword:Boolean(row.must_change_password),forcePasswordChange:Boolean(row.must_change_password)});
 
 async function createSession(client,userId,req){
+  // All callers must use an open transaction. Serialize concurrent logins for
+  // one account so the 20-session ceiling cannot be bypassed by racing inserts.
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`session:${userId}`]);
   const raw=randomToken(40),hash=sha256(raw);
   const expiresAt=new Date(Date.now()+env.sessionTtlDays*86400000);
   await client.query(`INSERT INTO auth_sessions(user_id,token_hash,user_agent,ip_address,expires_at) VALUES($1,$2,$3,$4,$5)`,[userId,hash,String(req.get("user-agent")||"").slice(0,500),req.ip||null,expiresAt]);
@@ -30,25 +34,9 @@ async function createSession(client,userId,req){
   return raw;
 }
 
-const loginWindow="15 minutes";
-const maxLoginFailures=8;
 const registrationWindow="1 hour";
 const maxRegistrationsPerIp=8;
 const requestIp=(req)=>String(req.ip||req.socket?.remoteAddress||"unknown").slice(0,120);
-async function assertLoginAllowed(usernameNorm,ipAddress){
-  const row=(await pool.query(`SELECT count(*)::int AS failures
-    FROM auth_login_attempts
-    WHERE username_norm=$1 AND ip_address=$2 AND success=false
-      AND created_at>now()-$3::interval`,[usernameNorm,ipAddress,loginWindow])).rows[0];
-  if(Number(row?.failures||0)>=maxLoginFailures){
-    throw new HttpError(429,"Juda ko‘p noto‘g‘ri urinish. Birozdan keyin qayta urinib ko‘ring.","LOGIN_RATE_LIMITED");
-  }
-}
-async function recordLoginAttempt(usernameNorm,ipAddress,success){
-  await pool.query(`INSERT INTO auth_login_attempts(username_norm,ip_address,success) VALUES($1,$2,$3)`,[usernameNorm,ipAddress,Boolean(success)]);
-  // Opportunistic cleanup keeps this security ledger bounded without a separate cron.
-  pool.query("DELETE FROM auth_login_attempts WHERE created_at<now()-interval '24 hours'").catch(()=>{});
-}
 async function recordRegistrationAttempt(ipAddress){
   await withTransaction(async(client)=>{
     // Serialize registrations from the same network so simultaneous requests cannot
@@ -82,18 +70,15 @@ router.post("/login",asyncRoute(async(req,res)=>{
   const input=loginSchema.parse(req.body);
   const usernameNorm=input.username.trim().toLowerCase();
   const ipAddress=requestIp(req);
-  await assertLoginAllowed(usernameNorm,ipAddress);
+  await assertLoginAllowed(pool,usernameNorm,ipAddress);
   const {rows}=await pool.query(`SELECT u.*,o.name AS organization_name FROM users u LEFT JOIN organizations o ON o.id=u.organization_id WHERE lower(u.username)=lower($1) AND u.active=true ORDER BY u.created_at LIMIT 1`,[usernameNorm]);
   const user=rows[0];
   const valid=Boolean(user)&&await bcrypt.compare(input.password,user.password_hash);
+  await recordLoginDecision(pool,{usernameNorm,ipAddress,success:valid});
   if(!valid){
-    await recordLoginAttempt(usernameNorm,ipAddress,false);
     throw new HttpError(401,"Kirish nomi yoki parol noto‘g‘ri","INVALID_CREDENTIALS");
   }
-  await recordLoginAttempt(usernameNorm,ipAddress,true);
-  await pool.query("DELETE FROM auth_login_attempts WHERE username_norm=$1 AND ip_address=$2 AND success=false",[usernameNorm,ipAddress]);
-  const client=await pool.connect();let token;
-  try{token=await createSession(client,user.id,req)}finally{client.release()}
+  const token=await withTransaction((client)=>createSession(client,user.id,req));
   res.cookie(env.sessionCookieName,token,cookieOptions);
   ok(res,{user:publicUser(user)});
 }));

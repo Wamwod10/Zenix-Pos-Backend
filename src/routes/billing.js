@@ -5,25 +5,38 @@ import { pool } from "../db/pool.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission } from "../middleware/auth.js";
 import {
-  BILLING_PLANS, addMonths, daysBetween, extraStoreExtensionPrice, makeBillingOrderId,
+  BILLING_PLANS, addMonths, daysBetween, dateISO, extraStoreExtensionPrice, makeBillingOrderId,
   planExtensionPrice,
 } from "../config/billing.js";
 import { databaseDateISO, organizationCalendarDateISO } from "../lib/businessDate.js";
 import { writeAudit } from "../services/audit.js";
+import { ACCEPTED_RECEIPT_TYPES, isReceiptConsistent } from "../lib/receiptType.js";
 import { enqueuePaymentReviewNotification } from "../services/paymentNotifications.js";
+import { buildBillingDraftMetadata } from "../services/billingDraftMetadata.js";
+import { assertBillingDraftCurrent, draftRecalculationInput } from "../services/billingDraftIntegrity.js";
+import { assertNoConflictingBillingReview } from "../services/pendingBillingReview.js";
+import { assertReceiptAvailable } from "../services/receiptReuseGuard.js";
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
 
-const ACCEPTED_RECEIPTS=new Set(["image/jpeg","image/png","application/pdf"]);
+const ACCEPTED_RECEIPTS=new Set(ACCEPTED_RECEIPT_TYPES);
 const MAX_RECEIPT_BYTES=5*1024*1024;
-const draftSchema=z.object({
+export const draftSchema=z.object({
   type:z.enum(["LICENSE","EXTRA"]),
   plan:z.enum(["MONTHLY","ANNUAL"]).optional(),
   intent:z.enum(["ACTIVATE","RENEW","CHANGE_PLAN","EXTRA"]).optional(),
-  selectedEndDate:z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  selectedEndDate:z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(value=>dateISO(value)===value,'Sana noto‘g‘ri').optional().nullable(),
   extraStoreCount:z.coerce.number().int().min(0).max(20).default(0),
   metadata:z.record(z.string(),z.any()).default({}),
+}).superRefine((input,ctx)=>{
+  if(input.type==="EXTRA" && input.intent && input.intent!=="EXTRA"){
+    ctx.addIssue({code:"custom",path:["intent"],message:"Filial uchun noto‘g‘ri to‘lov maqsadi"});
+  }
+  if(input.type==="LICENSE" && input.intent==="EXTRA"){
+    ctx.addIssue({code:"custom",path:["intent"],message:"Tarif uchun noto‘g‘ri to‘lov maqsadi"});
+  }
 });
 
 const publicDraft=(row)=>{
@@ -112,7 +125,7 @@ router.post("/draft",requirePermission("billingWrite"),asyncRoute(async(req,res)
     const calculated=await calculateDraft(client,req.user,input);
     await client.query("UPDATE billing_drafts SET status='cancelled' WHERE organization_id=$1 AND created_by=$2 AND status='open'",[req.user.organizationId,req.user.id]);
     const orderId=makeBillingOrderId();
-    const metadata={...input.metadata,intent:calculated.intent,purpose:input.metadata?.purpose||undefined,activeStores:calculated.activeStores};
+    const metadata=buildBillingDraftMetadata(input,calculated);
     return (await client.query(`INSERT INTO billing_drafts(order_id,organization_id,created_by,type,plan,current_end_date,selected_end_date,extension_days,base_amount,extra_store_count,extra_store_amount,total_amount,metadata)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,[
       orderId,req.user.organizationId,req.user.id,calculated.type,calculated.plan,calculated.currentEndDate,calculated.selectedEndDate,
@@ -132,6 +145,7 @@ router.post("/receipts",requirePermission("billingWrite"),express.raw({type:[...
   if(!ACCEPTED_RECEIPTS.has(mime))throw new HttpError(415,"Faqat JPG, PNG yoki PDF qabul qilinadi","UNSUPPORTED_RECEIPT_TYPE");
   if(!Buffer.isBuffer(req.body)||req.body.length<=0)throw new HttpError(400,"Chek fayli bo‘sh","EMPTY_RECEIPT");
   if(req.body.length>MAX_RECEIPT_BYTES)throw new HttpError(413,"Chek hajmi 5MB dan oshmasligi kerak","RECEIPT_TOO_LARGE");
+  if(!isReceiptConsistent(req.body,mime))throw new HttpError(415,"Chek fayli ko‘rsatilgan turga mos kelmaydi","RECEIPT_CONTENT_MISMATCH");
   let fileName="receipt";
   try{fileName=decodeURIComponent(String(req.get("x-file-name")||"receipt")).slice(0,250)}catch{fileName=String(req.get("x-file-name")||"receipt").slice(0,250)}
   const row=(await pool.query(`INSERT INTO billing_receipts(organization_id,uploaded_by,file_name,mime_type,file_size,content) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,file_name,mime_type,file_size,created_at`,[req.user.organizationId,req.user.id,fileName,mime,req.body.length,req.body])).rows[0];
@@ -153,13 +167,22 @@ router.delete("/receipts/:id",requirePermission("billingWrite"),asyncRoute(async
 router.post("/payments",requirePermission("billingWrite"),asyncRoute(async(req,res)=>{
   const input=z.object({draftId:z.string().uuid(),receiptId:z.string().uuid()}).parse(req.body);
   const payment=await withTransaction(async(client)=>{
+    // Lock the organization first, as in /draft and platform controls, to avoid
+    // deadlocks and to keep approval/submission decisions on a consistent quote.
+    const owner=(await client.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE",[req.user.organizationId])).rows[0];
+    if(!owner)throw new HttpError(404,"Tashkilot topilmadi","ORG_NOT_FOUND");
     const draft=(await client.query("SELECT * FROM billing_drafts WHERE id=$1 AND organization_id=$2 AND created_by=$3 AND status='open' AND expires_at>now() FOR UPDATE",[input.draftId,req.user.organizationId,req.user.id])).rows[0];
     if(!draft)throw new HttpError(409,"To‘lov drafti topilmadi yoki muddati tugagan","BILLING_DRAFT_EXPIRED");
-    const receipt=(await client.query("SELECT id,file_name,mime_type FROM billing_receipts WHERE id=$1 AND organization_id=$2",[input.receiptId,req.user.organizationId])).rows[0];
+    // Reprice on the locked organization; a stale draft must never bypass the
+    // current tariff, branch count or effective expiry date.
+    const refreshed=await calculateDraft(client,req.user,draftRecalculationInput(draft));
+    assertBillingDraftCurrent(draft,refreshed);
+    const receipt=(await client.query("SELECT id,file_name,mime_type FROM billing_receipts WHERE id=$1 AND organization_id=$2 FOR UPDATE",[input.receiptId,req.user.organizationId])).rows[0];
     if(!receipt)throw new HttpError(404,"To‘lov cheki topilmadi","RECEIPT_NOT_FOUND");
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`billing-review:${req.user.organizationId}:${draft.type}`]);
-    const existing=await client.query("SELECT 1 FROM billing_payments WHERE organization_id=$1 AND type=$2 AND status='REVIEW' LIMIT 1",[req.user.organizationId,draft.type]);
-    if(existing.rowCount)throw new HttpError(409,"Bu turdagi to‘lov allaqachon tekshiruvda","PAYMENT_ALREADY_PENDING");
+    // The locked organization row serializes all pending reviews, including
+    // opposite payment types. They both mutate the same store_limit.
+    await assertNoConflictingBillingReview(client,req.user.organizationId);
+    await assertReceiptAvailable(client,{organizationId:req.user.organizationId,receiptId:receipt.id});
     const p=(await client.query(`INSERT INTO billing_payments(organization_id,draft_id,order_id,type,plan,amount,service_period_from,service_period_to,extension_days,extra_store_count,receipt_id,receipt_name,receipt_type,submitted_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,[
       req.user.organizationId,draft.id,draft.order_id,draft.type,draft.plan,draft.total_amount,draft.current_end_date,draft.selected_end_date,draft.extension_days,draft.extra_store_count,

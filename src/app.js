@@ -24,8 +24,10 @@ import syncRoutes from "./routes/sync.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 import { requireTrustedClient } from "./middleware/clientGuard.js";
 import { pool } from "./db/pool.js";
+import { assertDatabaseReady } from "./db/readiness.js";
 import { HttpError } from "./lib/http.js";
 import { workspaceRevisionMiddleware } from "./middleware/workspaceRevision.js";
+import { requestTelemetry } from "./middleware/requestTelemetry.js";
 
 export const app=express();
 app.set("trust proxy",1);
@@ -33,12 +35,13 @@ app.use(helmet({crossOriginResourcePolicy:{policy:"cross-origin"}}));
 app.use(cors({origin(origin,cb){if(!origin||env.frontendOrigins.includes(origin))return cb(null,true);return cb(new HttpError(403,"So‘rov manbasi ruxsat etilmagan","CORS_FORBIDDEN"));},credentials:true}));
 app.use(express.json({limit:"2mb"}));
 app.use(cookieParser());
+app.use(requestTelemetry);
 app.use("/api",(_req,res,next)=>{res.setHeader("Cache-Control","no-store");next();});
 app.use(requireTrustedClient);
 app.use(workspaceRevisionMiddleware);
 app.get("/health",(_req,res)=>res.json({ok:true,service:"zenix-pos-api",time:new Date().toISOString()}));
 app.get("/ready",async(_req,res)=>{
-  try{await pool.query("SELECT 1");res.json({ok:true,service:"zenix-pos-api",database:"ready",time:new Date().toISOString()});}
+  try{await assertDatabaseReady(pool);res.json({ok:true,service:"zenix-pos-api",database:"ready",time:new Date().toISOString()});}
   catch(error){res.status(503).json({ok:false,service:"zenix-pos-api",database:"unavailable",time:new Date().toISOString()});}
 });
 app.use("/api/auth",authRoutes);

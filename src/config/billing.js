@@ -11,7 +11,10 @@ const asDate=(value)=>{
   if(!match)return null;
   const [,year,month,day]=match;
   const date=new Date(Date.UTC(Number(year),Number(month)-1,Number(day),12,0,0));
-  return Number.isFinite(date.getTime())?date:null;
+  return Number.isFinite(date.getTime()) &&
+    date.getUTCFullYear()===Number(year) &&
+    date.getUTCMonth()===Number(month)-1 &&
+    date.getUTCDate()===Number(day) ? date : null;
 };
 export const dateISO=(value)=>{
   const date=value instanceof Date?value:asDate(value);

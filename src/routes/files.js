@@ -3,6 +3,7 @@ import { pool } from "../db/pool.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requireActiveLicense, requirePermission } from "../middleware/auth.js";
 import { hasPermission } from "../lib/permissions.js";
+import { isAssetContentValid } from "../lib/uploadType.js";
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
@@ -19,6 +20,7 @@ router.post("/",requireFileWrite,express.raw({type:"*/*",limit:"8mb"}),asyncRout
   if(!content.length)throw new HttpError(400,"Fayl bo‘sh","FILE_EMPTY");
   if(content.length>maxBytes)throw new HttpError(413,"Fayl 8 MB dan katta bo‘lmasligi kerak","FILE_TOO_LARGE");
   if(!allowedTypes.has(mimeType))throw new HttpError(415,"Faqat JPG, PNG, WEBP yoki PDF fayllar qo‘llanadi","FILE_TYPE_NOT_ALLOWED");
+  if(!isAssetContentValid(content,mimeType))throw new HttpError(415,"Fayl tarkibi ko‘rsatilgan formatga mos kelmaydi","FILE_CONTENT_MISMATCH");
   const {rows}=await pool.query(`INSERT INTO file_assets(organization_id,uploaded_by,file_name,mime_type,file_size,content) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,file_name,mime_type,file_size,created_at`,[req.user.organizationId,req.user.id,fileName,mimeType,content.length,content]);
   ok(res,{file:{id:rows[0].id,name:rows[0].file_name,type:rows[0].mime_type,size:rows[0].file_size,createdAt:rows[0].created_at}},201);
 }));

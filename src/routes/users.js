@@ -2,6 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
+import { withTransaction } from "../db/tx.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission } from "../middleware/auth.js";
 import { ROLES, isOrganizationPermissionKey } from "../lib/permissions.js";
@@ -140,13 +141,15 @@ router.patch("/:id",requirePermission("settingsWrite"),asyncRoute(async(req,res)
 
 router.post("/:id/reset-password",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
   const input=passwordSchema.parse(req.body);
-  const target=(await pool.query(`SELECT * FROM users WHERE id=$1 AND organization_id=$2`,[req.params.id,req.user.organizationId])).rows[0];
-  if(!target)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
-  if(target.app_role===ROLES.OWNER&&req.params.id!==req.user.id)throw new HttpError(403,"Egasi parolini bu yerdan almashtirib bo‘lmaydi","OWNER_PROTECTED");
-  if(req.user.appRole!==ROLES.OWNER&&target.app_role===ROLES.ADMIN)throw new HttpError(403,"ADMIN parolini faqat tashkilot egasi tiklay oladi","ROLE_ADMIN_REQUIRED");
   const passwordHash=await bcrypt.hash(input.password,12);
-  await pool.query(`UPDATE users SET password_hash=$3,must_change_password=true,updated_at=now() WHERE id=$1 AND organization_id=$2`,[req.params.id,req.user.organizationId,passwordHash]);
-  await pool.query(`UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL`,[req.params.id,req.user.sessionId]);
+  await withTransaction(async(client)=>{
+    const target=(await client.query(`SELECT * FROM users WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.params.id,req.user.organizationId])).rows[0];
+    if(!target)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
+    if(target.app_role===ROLES.OWNER&&req.params.id!==req.user.id)throw new HttpError(403,"Egasi parolini bu yerdan almashtirib bo‘lmaydi","OWNER_PROTECTED");
+    if(req.user.appRole!==ROLES.OWNER&&target.app_role===ROLES.ADMIN)throw new HttpError(403,"ADMIN parolini faqat tashkilot egasi tiklay oladi","ROLE_ADMIN_REQUIRED");
+    await client.query(`UPDATE users SET password_hash=$3,must_change_password=true,updated_at=now() WHERE id=$1 AND organization_id=$2`,[req.params.id,req.user.organizationId,passwordHash]);
+    await client.query(`UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL`,[req.params.id,req.user.sessionId]);
+  });
   ok(res,{success:true});
 }));
 
@@ -158,11 +161,13 @@ router.patch("/me/profile",asyncRoute(async(req,res)=>{
 
 router.post("/me/password",asyncRoute(async(req,res)=>{
   const input=changePasswordSchema.parse(req.body);
-  const target=(await pool.query(`SELECT * FROM users WHERE id=$1`,[req.user.id])).rows[0];
-  if(!target||!(await bcrypt.compare(input.currentPassword,target.password_hash)))throw new HttpError(400,"Joriy parol noto‘g‘ri","INVALID_PASSWORD");
   const passwordHash=await bcrypt.hash(input.newPassword,12);
-  await pool.query(`UPDATE users SET password_hash=$2,must_change_password=false,updated_at=now() WHERE id=$1`,[req.user.id,passwordHash]);
-  await pool.query(`UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL`,[req.user.id,req.user.sessionId]);
+  await withTransaction(async(client)=>{
+    const target=(await client.query(`SELECT * FROM users WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.user.id,req.user.organizationId])).rows[0];
+    if(!target||!(await bcrypt.compare(input.currentPassword,target.password_hash)))throw new HttpError(400,"Joriy parol noto‘g‘ri","INVALID_PASSWORD");
+    await client.query(`UPDATE users SET password_hash=$3,must_change_password=false,updated_at=now() WHERE id=$1 AND organization_id=$2`,[req.user.id,req.user.organizationId,passwordHash]);
+    await client.query(`UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL`,[req.user.id,req.user.sessionId]);
+  });
   ok(res,{success:true});
 }));
 

@@ -223,7 +223,8 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       if(duplicate)throw new HttpError(409,"Bu savdo allaqachon saqlangan","SALE_ALREADY_EXISTS",duplicate);
     }
     if(input.shiftId){
-      const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open'",[input.shiftId,orgId,input.storeId])).rows[0];
+      // Hold the same row lock as shift closing until sale commit.
+      const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open' FOR UPDATE",[input.shiftId,orgId,input.storeId])).rows[0];
       assertSharedOpenShift(shift,{organizationId:orgId,storeId:input.storeId,actorId:req.user.id});
     }
     const normalized=[];let subtotal=0,total=0;
@@ -314,29 +315,78 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     const returned=Number((await client.query("SELECT COALESCE(sum(quantity),0) qty FROM sale_returns WHERE sale_id=$1 AND product_id=$2",[sale.id,input.productId])).rows[0].qty);
     if(returned+input.quantity>Number(item.quantity))throw new HttpError(409,"Qaytarish miqdori sotilgan miqdordan oshib ketdi","RETURN_QUANTITY_EXCEEDED");
     const amount=Number(item.line_total)/Number(item.quantity)*Number(input.quantity);
+    // Lock the customer consistently with payment posting. A refund must not race
+    // the same customer's debt repayment while computing remaining credit.
+    if(sale.customer_id){
+      const locked=(await client.query("SELECT id FROM customers WHERE id=$1 AND organization_id=$2 FOR UPDATE",[sale.customer_id,orgId])).rows[0];
+      if(!locked)throw new HttpError(409,"Mijoz topilmadi","CUSTOMER_NOT_FOUND");
+    }
     let breakdown=null;
     let creditReduction=0;
     let creditLedgerId=null;
     if(input.refundMethod==="original"){
       if(sale.customer_id){
-        const credit=(await client.query(`SELECT cl.id,GREATEST(cl.amount-COALESCE(sum(a.amount),0),0) open_amount FROM customer_ledger cl LEFT JOIN customer_payment_allocations a ON a.credit_ledger_id=cl.id WHERE cl.organization_id=$1 AND cl.customer_id=$2 AND cl.sale_id=$3 AND cl.entry_type='CREDIT_SALE' GROUP BY cl.id ORDER BY cl.created_at LIMIT 1`,[orgId,sale.customer_id,sale.id])).rows[0];
+        const credit=(await client.query(`SELECT cl.id,GREATEST(cl.amount-COALESCE(sum(a.amount),0),0) open_amount
+          FROM customer_ledger cl LEFT JOIN customer_payment_allocations a ON a.credit_ledger_id=cl.id
+          WHERE cl.organization_id=$1 AND cl.customer_id=$2 AND cl.sale_id=$3 AND cl.entry_type='CREDIT_SALE'
+          GROUP BY cl.id ORDER BY cl.id LIMIT 1`,[orgId,sale.customer_id,sale.id])).rows[0];
         creditReduction=Math.min(amount,Math.max(0,Number(credit?.open_amount||0)));
         creditLedgerId=credit?.id||null;
       }
-      const cashRefund=Math.max(0,amount-creditReduction);
-      const paymentRows=(await client.query("SELECT method,amount FROM sale_payments WHERE sale_id=$1 ORDER BY id",[sale.id])).rows;
-      const originalTotal=paymentRows.reduce((sum,row)=>sum+Number(row.amount||0),0);
-      const allocation={cash:0,card:0,transfer:0};
-      if(originalTotal>0&&cashRefund>0){
-        let assigned=0;
-        const supported=paymentRows.filter((row)=>Object.prototype.hasOwnProperty.call(allocation,row.method));
-        supported.forEach((row,index)=>{
-          const value=index===supported.length-1?Math.max(0,cashRefund-assigned):cashRefund*(Number(row.amount||0)/originalTotal);
-          allocation[row.method]+=value;assigned+=value;
-        });
+      // Include settled credit repayments attributed to this sale; original
+      // payment rows alone exclude later debt payments, causing false 409s.
+      const captured=(await client.query(`
+        SELECT method,sum(amount)::numeric amount FROM (
+          SELECT method,amount FROM sale_payments WHERE sale_id=$1
+          UNION ALL
+          SELECT pay.payment_method method,a.amount
+          FROM customer_payment_allocations a
+          JOIN customer_ledger credit ON credit.id=a.credit_ledger_id
+          JOIN customer_ledger pay ON pay.id=a.payment_ledger_id
+          WHERE credit.organization_id=$2 AND credit.sale_id=$1
+            AND credit.entry_type='CREDIT_SALE' AND pay.entry_type='PAYMENT'
+        ) payments WHERE method IN ('cash','card','transfer') GROUP BY method`,[sale.id,orgId])).rows;
+      const refunded=(await client.query(`SELECT metadata->'refundBreakdown' AS breakdown
+        FROM sale_returns WHERE sale_id=$1 AND organization_id=$2`,[sale.id,orgId])).rows;
+      const available={cash:0,card:0,transfer:0};
+      for(const row of captured)available[row.method]+=Number(row.amount||0);
+      for(const row of refunded)for(const method of Object.keys(available))available[method]-=Number(row.breakdown?.[method]||0);
+      for(const method of Object.keys(available))available[method]=Math.max(0,available[method]);
+      const payable=Math.max(0,amount-creditReduction);
+      breakdown={cash:0,card:0,transfer:0};
+      if(input.refundBreakdown){
+        breakdown={...input.refundBreakdown};
+        for(const method of Object.keys(available)){
+          if(Number(breakdown[method]||0)>available[method]+0.02)
+            throw new HttpError(409,"Qaytarish avval to‘langan summadan katta","REFUND_EXCEEDS_CAPTURED_PAYMENT");
+        }
+      }else{
+        let remaining=payable;
+        const totalAvailable=Object.values(available).reduce((sum,value)=>sum+value,0);
+        if(totalAvailable+0.02<payable)throw new HttpError(409,"Qaytarish uchun tasdiqlangan to‘lov yetarli emas","REFUND_EXCEEDS_CAPTURED_PAYMENT");
+        for(const method of Object.keys(available)){
+          const allocated=Math.min(remaining,available[method]);
+          breakdown[method]=allocated;remaining-=allocated;
+        }
       }
-      breakdown=allocation;
-    }else breakdown={cash:input.refundMethod==="cash"?amount:0,card:input.refundMethod==="card"?amount:0,transfer:input.refundMethod==="transfer"?amount:0};
+    }else{
+      // Explicit cash/card/transfer cannot pay out an unpaid credit balance.
+      const captured=(await client.query(`SELECT COALESCE(sum(amount),0) total FROM (
+        SELECT amount FROM sale_payments WHERE sale_id=$1
+        UNION ALL SELECT a.amount FROM customer_payment_allocations a
+        JOIN customer_ledger credit ON credit.id=a.credit_ledger_id
+        JOIN customer_ledger pay ON pay.id=a.payment_ledger_id
+        WHERE credit.sale_id=$1 AND credit.organization_id=$2 AND pay.entry_type='PAYMENT'
+      ) x`,[sale.id,orgId])).rows[0];
+      const prior=(await client.query(`SELECT COALESCE(sum(
+        COALESCE((metadata->'refundBreakdown'->>'cash')::numeric,0)+
+        COALESCE((metadata->'refundBreakdown'->>'card')::numeric,0)+
+        COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) total
+        FROM sale_returns WHERE sale_id=$1 AND organization_id=$2`,[sale.id,orgId])).rows[0];
+      if(Number(captured?.total||0)-Number(prior?.total||0)+0.02<amount)
+        throw new HttpError(409,"Qaytarish uchun to‘langan summa yetarli emas","REFUND_EXCEEDS_CAPTURED_PAYMENT");
+      breakdown={cash:input.refundMethod==="cash"?amount:0,card:input.refundMethod==="card"?amount:0,transfer:input.refundMethod==="transfer"?amount:0};
+    }
     const breakdownTotal=Number(breakdown.cash||0)+Number(breakdown.card||0)+Number(breakdown.transfer||0);
     if(Math.abs(breakdownTotal+creditReduction-amount)>0.02)throw new HttpError(409,"Qaytarish to‘lov taqsimoti summaga mos emas","REFUND_MISMATCH");
     if(Number(breakdown.cash||0)>0){

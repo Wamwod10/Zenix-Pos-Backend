@@ -18,6 +18,79 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "013_customer_credit_hardening.sql",
   "014_billing_checkout_schema.sql",
   "015_workspace_revisions.sql",
+  "016_tenant_integrity_guards.sql",
+  "017_catalog_pagination_indexes.sql",
+  "018_platform_directory_indexes.sql",
+]);
+
+export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
+  "users_store_tenant_fk",
+  "inventory_balances_store_tenant_fk",
+  "inventory_balances_product_tenant_fk",
+  "inventory_batches_store_tenant_fk",
+  "inventory_batches_product_tenant_fk",
+  "product_serials_store_tenant_fk",
+  "product_serials_product_tenant_fk",
+  "product_serials_sale_tenant_fk",
+  "stock_movements_store_tenant_fk",
+  "stock_movements_product_tenant_fk",
+  "stock_movements_created_by_tenant_fk",
+  "shifts_store_tenant_fk",
+  "shifts_cashier_tenant_fk",
+  "shift_movements_shift_tenant_fk",
+  "shift_movements_created_by_tenant_fk",
+  "sales_store_tenant_fk",
+  "sales_shift_tenant_fk",
+  "sales_seller_tenant_fk",
+  "sales_customer_tenant_fk",
+  "sale_returns_sale_tenant_fk",
+  "sale_returns_store_tenant_fk",
+  "sale_returns_product_tenant_fk",
+  "sale_returns_created_by_tenant_fk",
+  "supplier_invoices_supplier_tenant_fk",
+  "supplier_invoices_store_tenant_fk",
+  "supplier_payments_supplier_tenant_fk",
+  "supplier_payments_invoice_tenant_fk",
+  "supplier_payments_store_tenant_fk",
+  "supplier_payments_shift_tenant_fk",
+  "supplier_payments_created_by_tenant_fk",
+  "expenses_store_tenant_fk",
+  "expenses_shift_tenant_fk",
+  "expenses_created_by_tenant_fk",
+  "stock_transfers_from_store_tenant_fk",
+  "stock_transfers_to_store_tenant_fk",
+  "stock_transfers_created_by_tenant_fk",
+  "inventory_counts_store_tenant_fk",
+  "inventory_counts_created_by_tenant_fk",
+  "inventory_counts_reviewed_by_tenant_fk",
+  "sale_holds_store_tenant_fk",
+  "sale_holds_user_tenant_fk",
+  "sale_holds_shift_tenant_fk",
+  "business_days_store_tenant_fk",
+  "business_days_closed_by_tenant_fk",
+  "billing_drafts_created_by_tenant_fk",
+  "billing_receipts_uploaded_by_tenant_fk",
+  "billing_payments_draft_tenant_fk",
+  "billing_payments_receipt_tenant_fk",
+  "billing_payments_submitted_by_tenant_fk",
+  "telegram_link_tokens_store_tenant_fk",
+  "telegram_link_tokens_created_by_tenant_fk",
+  "telegram_connections_store_tenant_fk",
+  "telegram_connections_linked_by_tenant_fk",
+  "notification_outbox_store_tenant_fk",
+  "file_assets_uploaded_by_tenant_fk",
+  "audit_logs_store_tenant_fk",
+  "customers_created_by_tenant_fk",
+  "customer_ledger_customer_tenant_fk",
+  "customer_ledger_store_tenant_fk",
+  "customer_ledger_sale_tenant_fk",
+  "customer_ledger_created_by_tenant_fk",
+  "customer_allocations_customer_tenant_fk",
+  "customer_allocations_payment_tenant_fk",
+  "customer_allocations_credit_tenant_fk",
+  "customer_loyalty_customer_tenant_fk",
+  "customer_loyalty_sale_tenant_fk",
+  "customer_loyalty_created_by_tenant_fk",
 ]);
 
 export const REQUIRED_TABLES = Object.freeze([
@@ -130,6 +203,11 @@ export const REQUIRED_INDEXES = Object.freeze([
   "products_org_sku_unique",
   "products_org_barcode_unique",
   "products_org_active_idx",
+  "products_org_created_id_paging_idx",
+  "organizations_created_id_paging_idx",
+  "organizations_license_created_idx",
+  "billing_payments_submitted_id_paging_idx",
+  "billing_payments_status_submitted_idx",
   "inventory_batches_lookup_idx",
   "product_serials_lookup_idx",
   "stock_movements_lookup_idx",
@@ -190,6 +268,7 @@ export const findSchemaIssues = (snapshot) => {
     ["missing foreign keys on tables", REQUIRED_FOREIGN_KEY_TABLES, snapshot.foreignKeyTables],
     ["missing unique constraints on tables", REQUIRED_UNIQUE_CONSTRAINT_TABLES, snapshot.uniqueConstraintTables],
     ["missing indexes", REQUIRED_INDEXES, snapshot.indexes],
+    ["missing tenant integrity constraints", REQUIRED_TENANT_CONSTRAINTS, snapshot.tenantConstraints],
   ];
 
   return checks.flatMap(([label, required, actual = []]) => {
@@ -199,7 +278,7 @@ export const findSchemaIssues = (snapshot) => {
 };
 
 export const readDatabaseSchema = async (db) => {
-  const [tables, migrations, primaryKeys, foreignKeys, uniqueConstraints, indexes] = await Promise.all([
+  const [tables, migrations, primaryKeys, foreignKeys, uniqueConstraints, indexes, tenantConstraints] = await Promise.all([
     db.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"),
     db.query("SELECT name FROM schema_migrations ORDER BY name"),
     db.query("SELECT table_name FROM information_schema.table_constraints WHERE table_schema='public' AND constraint_type='PRIMARY KEY'"),
@@ -212,6 +291,7 @@ export const readDatabaseSchema = async (db) => {
       JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
       WHERE namespace.nspname='public' AND index_row.indisvalid AND index_row.indisready
     `),
+    db.query("SELECT conname FROM pg_constraint WHERE connamespace='public'::regnamespace"),
   ]);
 
   return {
@@ -221,6 +301,7 @@ export const readDatabaseSchema = async (db) => {
     foreignKeyTables: foreignKeys.rows.map((row) => row.table_name),
     uniqueConstraintTables: uniqueConstraints.rows.map((row) => row.table_name),
     indexes: indexes.rows.map((row) => row.indexname),
+    tenantConstraints: tenantConstraints.rows.map((row) => row.conname),
   };
 };
 

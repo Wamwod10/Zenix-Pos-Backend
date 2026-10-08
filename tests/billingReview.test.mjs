@@ -18,7 +18,14 @@ const createClient = (overrides = {}) => {
     state,
     async query(sql, params = []) {
       state.queries.push({ sql, params });
+      if (/SELECT organization_id FROM billing_payments/.test(sql)) {
+        return { rows: overrides.missingPayment ? [] : [{ organization_id: state.payment.organization_id }] };
+      }
+      if (/SELECT id FROM organizations WHERE id=\$1 FOR UPDATE/.test(sql)) {
+        return { rows: [{ id: state.payment.organization_id }] };
+      }
       if (/SELECT bp\.\*,o\./.test(sql)) return { rows: [state.payment] };
+      if (/SELECT id FROM billing_payments/.test(sql)) return {rowCount: overrides.otherPending ? 1 : 0, rows:[]};
       if (/UPDATE billing_payments SET status/.test(sql)) {
         state.payment = { ...state.payment, status: params[1], reject_reason: params[2], reviewed_at: "2026-09-26T12:00:00.000Z" };
         return { rows: [state.payment] };
@@ -38,7 +45,9 @@ for (const [plan, expiry] of [["MONTHLY", "2026-10-26"], ["ANNUAL", "2027-09-26"
       actor: { source: "telegram", telegramUserId: "123456789", telegramUsername: "owner", telegramChatId: "-1001" },
     });
     assert.equal(result.outcome, "approved");
-    assert.match(client.state.queries[0].sql, /FOR UPDATE OF bp,o/);
+    assert.match(client.state.queries[0].sql, /SELECT organization_id FROM billing_payments/);
+    assert.match(client.state.queries[1].sql, /SELECT id FROM organizations WHERE id=\$1 FOR UPDATE/);
+    assert.match(client.state.queries[2].sql, /FOR UPDATE OF bp/);
     assert.deepEqual(client.state.organizationUpdate.params, ["org-1", plan, expiry, 3]);
     assert.equal(client.state.audit[3], "approve");
     assert.deepEqual(client.state.audit[10], {
@@ -54,6 +63,13 @@ test("a second decision is idempotent and cannot update the organization", async
   assert.equal(result.outcome, "alreadyReviewed");
   assert.equal(client.state.organizationUpdate, null);
   assert.equal(client.state.audit, null);
+});
+
+test('missing payment is rejected before obtaining any organization lock', async () => {
+  const client = createClient({ missingPayment: true });
+  await assert.rejects(applyBillingReview(client, { paymentId: 'missing', decision: 'APPROVED' }),
+    error => error.status === 404 && error.code === 'PAYMENT_NOT_FOUND');
+  assert.equal(client.state.queries.length, 1);
 });
 
 test("rejection records review without activating the subscription", async () => {
@@ -76,4 +92,19 @@ test("extra-store approval increases only the locked payment organization limit"
   assert.equal(result.outcome, "approved");
   assert.match(client.state.organizationUpdate.sql, /store_limit=store_limit\+\$2/);
   assert.deepEqual(client.state.organizationUpdate.params, ["org-from-payment", 2]);
+});
+
+
+test('approval fails closed when another pending payment can change the same branch limit',async()=>{
+  const client=createClient({otherPending:true});
+  await assert.rejects(applyBillingReview(client,{paymentId:'payment-1',decision:'APPROVED'}),
+    error=>error.status===409&&error.code==='BILLING_REVIEW_CONFLICT');
+  assert.equal(client.state.organizationUpdate,null);
+  assert.equal(client.state.audit,null);
+});
+
+test('conflicting historical pending payments may still be rejected to resolve the conflict',async()=>{
+  const client=createClient({otherPending:true});
+  const result=await applyBillingReview(client,{paymentId:'payment-1',decision:'REJECTED'});
+  assert.equal(result.outcome,'rejected');
 });

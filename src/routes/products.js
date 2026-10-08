@@ -6,6 +6,9 @@ import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission, requireActiveLicense } from "../middleware/auth.js";
 import { writeAudit } from "../services/audit.js";
 import { isBranchLocked } from "../lib/storeScope.js";
+import { catalogPageQuerySchema, decodeCatalogCursor, encodeCatalogCursor } from "../lib/catalogCursor.js";
+import { addCatalogSearchFilter } from "../lib/catalogSearch.js";
+import { assertNoLiveProductInventory } from "../services/productDeletionGuard.js";
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -38,6 +41,34 @@ const productAuditSnapshot = (row) => ({
   minStock: Number(row.min_stock || 0),
   archived: Boolean(row.archived),
 });
+
+// New clients can page through large catalogs without materializing every product.
+// The legacy GET / contract remains unchanged until all POS consumers migrate.
+router.get("/page", requirePermission("moduleProducts"), asyncRoute(async (req,res)=>{
+  const input=catalogPageQuerySchema.parse(req.query);
+  const cursor=decodeCatalogCursor(input.cursor);
+  const branchStoreId=isBranchLocked(req.user)?req.user.storeId:null;
+  const params=[req.user.organizationId];
+  const filters=["p.organization_id=$1"];
+  if(input.includeArchived!=='true')filters.push('p.archived=false');
+  const searchFilter=addCatalogSearchFilter(params,input.search);
+  if(searchFilter)filters.push(searchFilter);
+  if(cursor){
+    params.push(cursor.createdAt,cursor.id);
+    filters.push(`(p.created_at,p.id)<($${params.length-1}::timestamptz,$${params.length}::uuid)`);
+  }
+  let branchFilter='';
+  if(branchStoreId){params.push(branchStoreId);branchFilter=` AND ib.store_id=$${params.length}`;}
+  params.push(input.limit+1);
+  const {rows}=await pool.query(`SELECT p.*,
+    COALESCE((SELECT jsonb_object_agg(ib.store_id,ib.quantity) FROM inventory_balances ib
+      WHERE ib.organization_id=p.organization_id AND ib.product_id=p.id${branchFilter}),'{}'::jsonb) stock_by_store
+    FROM products p WHERE ${filters.join(' AND ')}
+    ORDER BY p.created_at DESC,p.id DESC LIMIT $${params.length}`,params);
+  const more=rows.length>input.limit;
+  const products=rows.slice(0,input.limit);
+  ok(res,{products,hasMore:more,nextCursor:more?encodeCatalogCursor(products.at(-1)):null});
+}));
 
 router.get("/", requirePermission("moduleProducts"), asyncRoute(async (req, res) => {
   const branchStoreId=isBranchLocked(req.user)?req.user.storeId:null;
@@ -170,7 +201,13 @@ router.post("/:id/archive", requirePermission("productWrite"), asyncRoute(async 
       client.query(`SELECT 1 FROM stock_transfer_items sti JOIN stock_transfers st ON st.id=sti.transfer_id
         WHERE st.organization_id=$1 AND sti.product_id=$2 AND st.status IN ('pending','approved','dispatched') LIMIT 1`, [orgId, current.id]),
     ]);
-    if (nonzero.rowCount || serial.rowCount || batch.rowCount) throw new HttpError(409, "Qoldig‘i mavjud mahsulotni arxivlab bo‘lmaydi", "PRODUCT_HAS_STOCK");
+    if (nonzero.rowCount || serial.rowCount || batch.rowCount) {
+      const stockLocations=(await client.query(`SELECT st.id AS store_id,st.name AS store_name,COALESCE(ib.quantity,0)::numeric AS quantity
+        FROM inventory_balances ib JOIN stores st ON st.id=ib.store_id AND st.organization_id=ib.organization_id
+        WHERE ib.organization_id=$1 AND ib.product_id=$2 AND ib.quantity<>0 ORDER BY st.name`,[orgId,current.id])).rows.map((row)=>({storeId:row.store_id,storeName:row.store_name,quantity:Number(row.quantity||0)}));
+      const summary=stockLocations.length?stockLocations.map((row)=>`${row.storeName}: ${row.quantity}`).join(" · "):"partiya yoki serial qoldig‘i mavjud";
+      throw new HttpError(409,`Mahsulotni arxivlashdan oldin qoldiqni nolga tushiring. ${summary}`,"PRODUCT_HAS_STOCK",{stockLocations});
+    }
     if (transfer.rowCount) throw new HttpError(409, "Ochiq transferdagi mahsulotni arxivlab bo‘lmaydi", "PRODUCT_HAS_TRANSFER");
 
     const row = (await client.query("UPDATE products SET archived=true,archived_at=now(),updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING *", [current.id, orgId])).rows[0];
@@ -188,6 +225,31 @@ router.post("/:id/archive", requirePermission("productWrite"), asyncRoute(async 
     return row;
   });
   ok(res, { product });
+}));
+
+router.delete("/:id", requirePermission("settingsWrite"), asyncRoute(async (req, res) => {
+  const deleted = await withTransaction(async (client) => {
+    const orgId=req.user.organizationId;
+    const current=(await client.query("SELECT * FROM products WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,orgId])).rows[0];
+    if(!current)throw new HttpError(404,"Mahsulot topilmadi");
+    await assertNoLiveProductInventory(client,orgId,current.id);
+    const checks=await Promise.all([
+      client.query("SELECT 1 FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.organization_id=$1 AND si.product_id=$2 LIMIT 1",[orgId,current.id]),
+      client.query("SELECT 1 FROM sale_returns WHERE organization_id=$1 AND product_id=$2 LIMIT 1",[orgId,current.id]),
+      client.query("SELECT 1 FROM stock_movements WHERE organization_id=$1 AND product_id=$2 LIMIT 1",[orgId,current.id]),
+      client.query("SELECT 1 FROM stock_transfer_items sti JOIN stock_transfers st ON st.id=sti.transfer_id WHERE st.organization_id=$1 AND sti.product_id=$2 LIMIT 1",[orgId,current.id]),
+      client.query("SELECT 1 FROM inventory_counts WHERE organization_id=$1 AND (snapshot::text LIKE $2 OR result::text LIKE $2) LIMIT 1",[orgId,`%${current.id}%`]),
+      client.query("SELECT 1 FROM supplier_invoice_items sii JOIN supplier_invoices si ON si.id=sii.invoice_id WHERE si.organization_id=$1 AND sii.product_id=$2 LIMIT 1",[orgId,current.id]),
+    ]);
+    if(checks.some((result)=>result.rowCount))throw new HttpError(409,"Bu mahsulot tarixiy hujjatlarda ishlatilgan. Hisobot va cheklarni saqlash uchun uni butunlay o‘chirib bo‘lmaydi; arxivlang.","PRODUCT_HAS_HISTORY");
+    await client.query("DELETE FROM product_serials WHERE organization_id=$1 AND product_id=$2",[orgId,current.id]);
+    await client.query("DELETE FROM inventory_batches WHERE organization_id=$1 AND product_id=$2",[orgId,current.id]);
+    await client.query("DELETE FROM inventory_balances WHERE organization_id=$1 AND product_id=$2",[orgId,current.id]);
+    await client.query("DELETE FROM products WHERE id=$1 AND organization_id=$2",[current.id,orgId]);
+    await writeAudit(client,{organizationId:orgId,userId:req.user.id,action:"delete",entityType:"product",entityId:current.id,title:"Mahsulot butunlay o‘chirildi",description:current.name,before:productAuditSnapshot(current)});
+    return current;
+  });
+  ok(res,{deleted:true,product:{id:deleted.id,name:deleted.name}});
 }));
 
 export default router;

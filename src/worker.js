@@ -1,11 +1,18 @@
 import { assertServerEnvironment } from "./config/env.js";
 import { pool } from "./db/pool.js";
 import { assertDatabaseConnection } from "./db/startup.js";
+import { createShutdownController } from "./shutdown.js";
 import { startNotificationWorker } from "./services/notificationWorker.js";
 import { startPaymentNotificationWorker } from "./services/paymentNotificationWorker.js";
+
 assertServerEnvironment();
 await assertDatabaseConnection(pool);
-startNotificationWorker();startPaymentNotificationWorker();
+const workers = [startNotificationWorker(), startPaymentNotificationWorker()];
 console.log("Zenix notification workers started");
-const shutdown=async()=>{await pool.end().catch(()=>{});process.exit(0)};
-process.on("SIGTERM",shutdown);process.on("SIGINT",shutdown);
+
+const { shutdown } = createShutdownController({
+  pool,
+  stoppers: [() => Promise.all(workers.map((handle) => handle.stop()))],
+});
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));

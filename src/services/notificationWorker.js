@@ -253,8 +253,18 @@ export async function processNotificationOutbox(){
 }
 
 export function startNotificationWorker(){
-  const timer=setInterval(()=>processNotificationOutbox().catch((error)=>console.error("[telegram-worker]",error)),15_000);
+  const activeRuns=new Set();
+  const run=()=>{
+    const task=processNotificationOutbox().catch((error)=>console.error("[telegram-worker]",error));
+    activeRuns.add(task);
+    task.finally(()=>activeRuns.delete(task));
+    return task;
+  };
+  const timer=setInterval(run,15_000);
   timer.unref?.();
-  processNotificationOutbox().catch((error)=>console.error("[telegram-worker]",error));
-  return timer;
+  run();
+  return {
+    timer,
+    async stop(){clearInterval(timer);await Promise.allSettled([...activeRuns])},
+  };
 }
