@@ -3,9 +3,103 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+import { HttpError } from '../src/lib/http.js';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const read=(relative)=>fs.readFileSync(path.join(here,'..',relative),'utf8');
+
+// Execute the real transaction helpers without loading the configured app pool.
+const inventorySource=read('src/routes/inventory.js');
+const countHelpers=vm.runInNewContext(`${inventorySource.slice(inventorySource.indexOf('async function lockBalance'),inventorySource.indexOf('async function allocateTransferTracking'))}
+${inventorySource.slice(inventorySource.indexOf('async function applyCount'),inventorySource.indexOf('router.post("/counts"'))}
+({reconcileCountBatches,applyCount})`,{HttpError});
+
+function countClient({batches=[],balance=5,serials=0}={}){
+  const state={batches:structuredClone(batches),balance,writes:[],locks:[]};
+  return {state,async query(sql,args=[]){
+    if(sql.includes('SELECT id,remaining_quantity FROM inventory_batches')){
+      assert.match(sql,/FOR UPDATE/);
+      state.locks.push(args);
+      return {rows:state.batches.filter(row=>row.organization_id===args[0]&&row.store_id===args[1]&&row.product_id===args[2]&&(!sql.includes('remaining_quantity>0')||row.remaining_quantity>0))
+        .sort((a,b)=>(a.expiry_date??'9999').localeCompare(b.expiry_date??'9999')||a.created_at.localeCompare(b.created_at)||a.id.localeCompare(b.id))};
+    }
+    if(sql.startsWith('UPDATE inventory_batches')){
+      state.writes.push({id:args[0],quantity:Number(args[1])});
+      state.batches.find(row=>row.id===args[0]).remaining_quantity-=args[1];return {rows:[]};
+    }
+    if(sql.includes('INSERT INTO inventory_batches')){
+      const quantity=Number(args.at(-1));
+      state.writes.push({insert:quantity});
+      state.batches.push({id:'count-batch',organization_id:args[0],store_id:args[1],product_id:args[2],remaining_quantity:quantity,received_quantity:quantity,
+        batch_no:'INVENTORY-COUNT / EXPIRY-UNKNOWN',expiry_date:null,created_at:'2026-10-09'});return {rows:[]};
+    }
+    if(sql.includes('FROM product_serials'))return {rows:[{total:serials,in_stock:serials}]};
+    if(sql.includes('FROM inventory_batches'))return {rows:[{total:state.batches.length,remaining:0}]};
+    if(sql.includes('SELECT id,name,unit,min_stock FROM products'))return {rows:[{id:'product',name:'Counted item'}]};
+    if(sql.includes('INSERT INTO inventory_balances'))return {rows:[]};
+    if(sql.includes('SELECT * FROM inventory_balances'))return {rows:[{quantity:state.balance}]};
+    if(sql.includes('UPDATE inventory_balances')){state.balance=args[3];return {rows:[]};}
+    if(sql.includes('INSERT INTO stock_movements'))return {rows:[{quantity:args[3]}]};
+    throw new Error(`Unexpected inventory count query: ${sql}`);
+  }};
+}
+const lot=(id,quantity,overrides={})=>({id,organization_id:'org',store_id:'store',product_id:'product',remaining_quantity:quantity,received_quantity:Math.max(1,quantity),expiry_date:'2027-01-01',created_at:'2026-01-01',...overrides});
+const countOptions=(after,before=5)=>({orgId:'org',storeId:'store',changes:[{productId:'product',before,after}],userId:'user',countId:'count',strictSnapshot:true});
+
+for(const fixture of [
+  {name:'pre-existing aggregate drift',balance:20,requested:7,batches:[lot('a',3),lot('b',2)],want:[3,2,2]},
+  {name:'zero-positive historical lots',balance:0,requested:3,batches:[lot('a',0)],want:[0,3]},
+  {name:'decrease',balance:5,requested:2,batches:[lot('a',3),lot('b',2)],want:[0,2]},
+  {name:'increase',balance:5,requested:8,batches:[lot('a',3),lot('b',2)],want:[3,2,3]},
+  {name:'exact equality',balance:20,requested:5,batches:[lot('a',3),lot('b',2)],want:[3,2]},
+  {name:'fractional exact equality',balance:1,requested:0.3,batches:[lot('a',0.1),lot('b',0.2)],want:[0.1,0.2]},
+  {name:'other-store and other-tenant lots',balance:5,requested:4,batches:[lot('a',2),lot('other-store',9,{store_id:'elsewhere'}),lot('other-tenant',11,{organization_id:'other'})],want:[2,9,11,2]},
+])test(`batch reconciliation handles ${fixture.name}`,async()=>{
+  const client=countClient(fixture);
+  await countHelpers.reconcileCountBatches(client,{organizationId:'org',storeId:'store',productId:'product',requestedBalance:fixture.requested});
+  assert.deepEqual(client.state.batches.map(row=>row.remaining_quantity),fixture.want);
+  assert.deepEqual(Array.from(client.state.locks[0]),['org','store','product']);
+  if(fixture.name.includes('equality'))assert.equal(client.state.writes.length,0,'exact batch total must be a no-op');
+});
+
+test('batch reconciliation consumes deterministically by expiry, creation and ID',async()=>{
+  const client=countClient({batches:[lot('z',2,{expiry_date:null}),lot('b',3),lot('a',3),lot('older',1,{created_at:'2025-01-01'})]});
+  await countHelpers.reconcileCountBatches(client,{organizationId:'org',storeId:'store',productId:'product',requestedBalance:4});
+  assert.deepEqual(client.state.writes,[{id:'older',quantity:1},{id:'a',quantity:3},{id:'b',quantity:1}]);
+  assert.deepEqual(client.state.batches.map(row=>row.remaining_quantity),[2,2,0,0]);
+});
+
+test('batch reconciliation retains exact thousandths at large PostgreSQL numeric quantities',async()=>{
+  const updates=[];
+  const client={async query(sql,args){
+    if(sql.includes('SELECT id,remaining_quantity'))return {rows:[{id:'large-lot',remaining_quantity:'10000000000000.001'}]};
+    if(sql.startsWith('UPDATE inventory_batches')){updates.push([args[0],Number(args[1])]);return {rows:[]};}
+    throw new Error(`Unexpected reconciliation query: ${sql}`);
+  }};
+  await countHelpers.reconcileCountBatches(client,{organizationId:'org',storeId:'store',productId:'product',requestedBalance:10000000000000});
+  assert.deepEqual(updates,[['large-lot',0.001]]);
+});
+
+test('inventory count repairs batch drift even when aggregate balance is unchanged',async()=>{
+  const client=countClient({balance:5,batches:[lot('a',2)]});
+  const result=await countHelpers.applyCount(client,countOptions(5));
+  assert.deepEqual(client.state.batches.map(row=>row.remaining_quantity),[2,3]);
+  assert.equal(client.state.balance,5);
+  assert.equal(result.movements.length,0);
+});
+
+test('inventory count excludes serial-tracked aggregate changes before batch mutations',async()=>{
+  const client=countClient({serials:1,batches:[lot('a',2)]});
+  await assert.rejects(countHelpers.applyCount(client,countOptions(7)),error=>error.code==='TRACKED_SERIAL_ADJUSTMENT_REQUIRED');
+  assert.equal(client.state.balance,5);assert.equal(client.state.writes.length,0);
+});
+
+test('inventory count leaves unchanged serial-tracked inventory and batches untouched',async()=>{
+  const client=countClient({serials:1,batches:[lot('a',2)]});
+  await countHelpers.applyCount(client,countOptions(5));
+  assert.equal(client.state.writes.length,0);assert.equal(client.state.locks.length,0);
+});
 
 test('sales transaction persists authoritative serial and batch tracking',()=>{
   const sales=read('src/routes/sales.js');
@@ -73,12 +167,16 @@ test('telegram webhook stays public while protected settings stay authenticated'
   assert.match(telegram,/"transfers"/);
 });
 
-test('manual inventory count and adjustment cannot corrupt tracked serial or batch ledgers',()=>{
+test('count reconciles batch ledger while ordinary adjustments and serial changes remain guarded',()=>{
   const inventory=read('src/routes/inventory.js');
-  assert.match(inventory,/assertManualQuantityChangeSafe/);
   assert.match(inventory,/TRACKED_SERIAL_ADJUSTMENT_REQUIRED/);
   assert.match(inventory,/TRACKED_BATCH_ADJUSTMENT_REQUIRED/);
-  assert.match(inventory,/applyCount[\s\S]*assertManualQuantityChangeSafe/);
+  assert.match(inventory,/if\(batchTotal>0&&!allowBatchReconciliation\)/);
+  assert.match(inventory,/applyCount[\s\S]*allowBatchReconciliation:true/);
+  assert.match(inventory,/reconcileCountBatches\(client,/);
+  assert.match(inventory,/FOR UPDATE/);
+  assert.match(inventory,/remaining_quantity=remaining_quantity-\$2/);
+  assert.match(inventory,/INVENTORY-COUNT \/ EXPIRY-UNKNOWN/);
 });
 
 test('transfer lifecycle queues telegram notification events',()=>{

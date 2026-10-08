@@ -4,6 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs/promises";
 import pg from "pg";
+import vm from "node:vm";
+import { HttpError } from "../src/lib/http.js";
 
 import { assertSafeTestDatabaseUrl } from "../scripts/assertTestDatabase.js";
 import { runMigrations, checkMigrationStatus } from "../src/db/migrationRunner.js";
@@ -40,6 +42,104 @@ const testPool = (max) => new Pool({
   connectionTimeoutMillis: 5_000,
   options: "-c lock_timeout=5s -c statement_timeout=30s",
 });
+
+function registerInventoryCountIntegration(){
+integration('inventory count batch reconciliation reaches the requested total with real PostgreSQL locks',async(t)=>{
+  assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
+  const source=await fs.readFile(new URL('../src/routes/inventory.js',import.meta.url),'utf8');
+  const {reconcileCountBatches,applyCount}=vm.runInNewContext(`${source.slice(source.indexOf('async function lockBalance'),source.indexOf('async function allocateTransferTracking'))}
+    ${source.slice(source.indexOf('async function applyCount'),source.indexOf('router.post("/counts"'))}
+    ({reconcileCountBatches,applyCount})`,{HttpError});
+  const db=testPool(2);
+  let client,contender,transaction=false,contenderTx=false;
+  try{
+    client=await db.connect();contender=await db.connect();
+    await client.query('BEGIN');transaction=true;
+    const org=(await client.query("INSERT INTO organizations(name) VALUES('Count batch reconciliation') RETURNING id")).rows[0].id;
+    const otherOrg=(await client.query("INSERT INTO organizations(name) VALUES('Other count tenant') RETURNING id")).rows[0].id;
+    const store=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Count store') RETURNING id",[org])).rows[0].id;
+    const otherStore=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Other store') RETURNING id",[org])).rows[0].id;
+    const tenantStore=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Other tenant store') RETURNING id",[otherOrg])).rows[0].id;
+    const product=async(balance)=>{
+      const id=(await client.query("INSERT INTO products(organization_id,name) VALUES($1,'Counted lot product') RETURNING id",[org])).rows[0].id;
+      await client.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,$4)',[org,store,id,balance]);
+      return id;
+    };
+    const batch=async(productId,quantity,{storeId=store,organizationId=org,expiry='2027-01-01',created='2026-01-01',id=null}={})=>(await client.query(`INSERT INTO inventory_batches
+      (id,organization_id,store_id,product_id,batch_no,expiry_date,received_quantity,remaining_quantity,created_at)
+      VALUES(COALESCE($1::uuid,gen_random_uuid()),$2,$3,$4,'Supplier lot',$5,$6,$7,$8) RETURNING id`,[id,organizationId,storeId,productId,expiry,Math.max(1,quantity),quantity,created])).rows[0].id;
+    const count=async(productId,before,after)=>applyCount(client,{orgId:org,storeId:store,changes:[{productId,before,after}],userId:null,countId:'reconciliation-test',strictSnapshot:true});
+    const total=async(productId)=>Number((await client.query('SELECT COALESCE(sum(remaining_quantity),0) AS total FROM inventory_batches WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,store,productId])).rows[0].total);
+
+    for(const fixture of [
+      {name:'aggregate drift',before:20,after:7,lots:[3,2]},
+      {name:'unchanged aggregate drift',before:5,after:5,lots:[2]},
+      {name:'historical zero-positive lots',before:0,after:3,lots:[0]},
+      {name:'decrease',before:5,after:2,lots:[3,2]},
+      {name:'increase',before:5,after:8,lots:[3,2]},
+      {name:'exact equality',before:20,after:5,lots:[3,2]},
+      {name:'fractional equality',before:1,after:0.3,lots:[0.1,0.2]},
+    ])await t.test(fixture.name,async()=>{
+      const id=await product(fixture.before);
+      for(const quantity of fixture.lots)await batch(id,quantity);
+      const original=(await client.query('SELECT * FROM inventory_batches WHERE product_id=$1 ORDER BY id',[id])).rows;
+      await count(id,fixture.before,fixture.after);
+      assert.equal(await total(id),fixture.after);
+      assert.equal(Number((await client.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[id])).rows[0].quantity),fixture.after);
+      const after=(await client.query('SELECT * FROM inventory_batches WHERE product_id=$1 ORDER BY id',[id])).rows;
+      if(fixture.name.includes('equality'))assert.deepEqual(after,original,'equal batch totals must not alter existing lots');
+      if(['aggregate drift','unchanged aggregate drift','historical zero-positive lots','increase'].includes(fixture.name)){
+        const unidentified=after.find(row=>row.batch_no==='INVENTORY-COUNT / EXPIRY-UNKNOWN');
+        assert.ok(unidentified,'increase must have a traceable inventory count lot');
+        assert.equal(unidentified.expiry_date,null);assert.equal(Number(unidentified.unit_cost),0);
+      }
+    });
+    await t.test('large numeric quantities reconcile to the exact thousandth',async()=>{
+      const id=await product(10000000000000);const lotId=await batch(id,'10000000000000.001');
+      await count(id,10000000000000,10000000000000);
+      assert.equal((await client.query('SELECT remaining_quantity FROM inventory_batches WHERE id=$1',[lotId])).rows[0].remaining_quantity,'10000000000000.000');
+    });
+    await t.test('other-store and other-tenant lots stay unchanged',async()=>{
+      const id=await product(5);await batch(id,2);const other=await batch(id,9,{storeId:otherStore});
+      const tenantProduct=(await client.query("INSERT INTO products(organization_id,name) VALUES($1,'Other tenant product') RETURNING id",[otherOrg])).rows[0].id;
+      const tenant=await batch(tenantProduct,11,{organizationId:otherOrg,storeId:tenantStore});
+      await count(id,5,4);assert.equal(await total(id),4);
+      assert.equal(Number((await client.query('SELECT remaining_quantity FROM inventory_batches WHERE id=$1',[other])).rows[0].remaining_quantity),9);
+      assert.equal(Number((await client.query('SELECT remaining_quantity FROM inventory_batches WHERE id=$1',[tenant])).rows[0].remaining_quantity),11);
+    });
+    await t.test('deterministic consumption uses expiry then creation then ID',async()=>{
+      const id=await product(9);
+      const last=await batch(id,2,{expiry:null});
+      const b=await batch(id,3,{id:'00000000-0000-4000-8000-000000000002'});
+      const a=await batch(id,3,{id:'00000000-0000-4000-8000-000000000001'});
+      const older=await batch(id,1,{created:'2025-01-01'});
+      await count(id,9,4);
+      const quantities=(await client.query('SELECT id,remaining_quantity FROM inventory_batches WHERE product_id=$1',[id])).rows;
+      const remaining=new Map(quantities.map(row=>[row.id,Number(row.remaining_quantity)]));
+      assert.deepEqual([remaining.get(older),remaining.get(a),remaining.get(b),remaining.get(last)],[0,0,2,2]);
+    });
+    await t.test('serial inventory is excluded before any batch mutation',async()=>{
+      const id=await product(5);await batch(id,2);
+      await client.query("INSERT INTO product_serials(organization_id,store_id,product_id,serial) VALUES($1,$2,$3,'count-serial')",[org,store,id]);
+      await assert.rejects(count(id,5,7),error=>error.code==='TRACKED_SERIAL_ADJUSTMENT_REQUIRED');
+      await count(id,5,5);assert.equal(await total(id),2);
+      assert.equal(Number((await client.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[id])).rows[0].quantity),5);
+    });
+    // Publish fixtures so another transaction can prove historical rows are locked.
+    const historicalProduct=await product(0);const historical=await batch(historicalProduct,0);
+    await client.query('COMMIT');transaction=false;
+    await client.query('BEGIN');transaction=true;
+    await reconcileCountBatches(client,{organizationId:org,storeId:store,productId:historicalProduct,requestedBalance:0});
+    await contender.query('BEGIN');contenderTx=true;
+    await contender.query("SET LOCAL lock_timeout='250ms'");
+    await assert.rejects(contender.query('SELECT id FROM inventory_batches WHERE id=$1 FOR UPDATE',[historical]),error=>error.code==='55P03');
+  }finally{
+    if(contenderTx)await contender.query('ROLLBACK').catch(()=>{});
+    if(transaction)await client.query('ROLLBACK').catch(()=>{});
+    contender?.release();client?.release();await db.end();
+  }
+});
+}
 
 integration("migrations apply to an empty database and rerun idempotently", async () => {
   assertSafeTestDatabaseUrl(integrationUrl, { nodeEnv: process.env.NODE_ENV || "test" });
@@ -341,3 +441,5 @@ integration('receipt reuse is serialized on locked receipt and rejected after pr
     first?.release();second?.release();await db.end();
   }
 });
+
+registerInventoryCountIntegration();
