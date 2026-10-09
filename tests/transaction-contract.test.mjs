@@ -170,8 +170,8 @@ test('inventory count excludes a serial-tracked large fractional change',async()
 
 test('sales transaction persists authoritative serial and batch tracking',()=>{
   const sales=read('src/routes/sales.js');
-  assert.match(sales,/tracking\?\.serials/);
-  assert.match(sales,/consumeInventoryBatches/);
+  assert.match(read('src/services/saleTrackingSelections.js'),/tracking\?\.serials/);
+  assert.match(sales,/consumeSaleTracking/);
   assert.match(sales,/restoreInventoryBatches/);
   assert.match(sales,/authoritativeTracking/);
   assert.match(sales,/Bir mahsulot savdoda faqat bitta qatorda/);

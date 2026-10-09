@@ -11,6 +11,7 @@ import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js"
 import { organizationBusinessDateISO } from "../lib/businessDate.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { assertSharedOpenShift } from "../lib/branchShift.js";
+import { planSaleTracking, consumeSaleTracking } from "../services/saleTrackingSelections.js";
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
@@ -77,24 +78,6 @@ const saleSchema=z.object({
   }),
   payments:z.array(paymentSchema).default([]),customer:z.record(z.string(),z.any()).default({}),customerId:z.string().uuid().optional().nullable(),creditAmount:z.coerce.number().min(0).default(0),creditDueDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),metadata:z.record(z.string(),z.any()).default({}),
 });
-
-async function consumeInventoryBatches(client,{organizationId,storeId,productId,quantity}){
-  let remaining=Number(quantity||0),offset=0;
-  if(remaining<=0)return [];
-  const {rows}=await client.query(`SELECT * FROM inventory_batches
-    WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 AND remaining_quantity>0
-    ORDER BY expiry_date ASC NULLS LAST,created_at ASC,id ASC FOR UPDATE`,[organizationId,storeId,productId]);
-  const allocations=[];
-  for(const batch of rows){
-    if(remaining<=1e-9)break;
-    const available=Number(batch.remaining_quantity||0),take=Math.min(available,remaining);
-    if(take<=0)continue;
-    await client.query("UPDATE inventory_batches SET remaining_quantity=remaining_quantity-$2 WHERE id=$1",[batch.id,take]);
-    allocations.push({batchId:batch.id,batchNo:batch.batch_no||"",expiryDate:batch.expiry_date||null,quantity:take,startOffset:offset,endOffset:offset+take});
-    offset+=take;remaining-=take;
-  }
-  return allocations;
-}
 
 async function restoreInventoryBatches(client,{organizationId,storeId,productId,tracking,returnStart,returnEnd}){
   const allocations=Array.isArray(tracking?.batches)?tracking.batches:[];
@@ -239,31 +222,17 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       assertSharedOpenShift(shift,{organizationId:orgId,storeId:input.storeId,actorId:req.user.id});
     }
     const normalized=[];let subtotal=0,total=0;
-    for(const line of input.items){
+    for(const line of [...input.items].sort((a,b)=>a.productId.localeCompare(b.productId))){
       const product=(await client.query("SELECT * FROM products WHERE id=$1 AND organization_id=$2 AND archived=false",[line.productId,orgId])).rows[0];
       if(!product)throw new HttpError(404,"Mahsulot topilmadi");
       await client.query(`INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,0,0) ON CONFLICT(store_id,product_id) DO NOTHING`,[orgId,input.storeId,line.productId]);
       const balance=(await client.query("SELECT * FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 FOR UPDATE",[orgId,input.storeId,line.productId])).rows[0];
       const quantity=Number(line.quantity),before=Number(balance.quantity),after=before-quantity;
       if(after<0)throw new HttpError(409,`${product.name} uchun qoldiq yetarli emas`,`INSUFFICIENT_STOCK`);
-      const requestedSerials=(line.metadata?.tracking?.serials||line.metadata?.tracking?.serializedUnits||line.metadata?.serializedUnits||[])
-        .map((entry)=>String(entry?.serial||entry||"").trim()).filter(Boolean);
-      const uniqueSerials=[...new Set(requestedSerials.map((serial)=>serial.toLowerCase()))];
-      if(uniqueSerials.length!==requestedSerials.length)throw new HttpError(409,`${product.name}: serial/IMEI takrorlangan`,`DUPLICATE_SERIAL`);
-      const serializedStock=Number((await client.query(`SELECT count(*)::int AS count FROM product_serials WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 AND status='IN_STOCK'`,[orgId,input.storeId,line.productId])).rows[0]?.count||0);
-      const fullySerialized=serializedStock>0&&serializedStock+1e-9>=before;
-      if(serializedStock>0||requestedSerials.length){
-        if(!Number.isInteger(quantity))throw new HttpError(409,`${product.name}: serial/IMEI mahsulot miqdori butun son bo‘lishi kerak`,`SERIAL_QUANTITY_INVALID`);
-        if(fullySerialized&&requestedSerials.length!==quantity)throw new HttpError(409,`${product.name}: ${quantity} dona uchun ${quantity} ta serial/IMEI tanlang`,`SERIAL_QUANTITY_MISMATCH`);
-        if(requestedSerials.length>quantity)throw new HttpError(409,`${product.name}: serial/IMEI soni sotuv miqdoridan ko‘p`,`SERIAL_QUANTITY_MISMATCH`);
-        if(requestedSerials.length){
-          const found=await client.query(`SELECT lower(serial) serial FROM product_serials WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 AND status='IN_STOCK' AND lower(serial)=ANY($4::text[])`,[orgId,input.storeId,line.productId,uniqueSerials]);
-          if(found.rowCount!==uniqueSerials.length)throw new HttpError(409,`${product.name}: tanlangan serial/IMEI omborda mavjud emas`,`SERIAL_NOT_AVAILABLE`);
-        }
-      }
+      const tracking=await planSaleTracking(client,{organizationId:orgId,storeId:input.storeId,productId:line.productId,quantity,stock:before,metadata:line.metadata});
       const pricing=normalizedLinePricing({product,line,posRules,user:req.user});
       subtotal+=pricing.gross;total+=pricing.lineTotal;
-      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:line.metadata||{},serials:requestedSerials,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
+      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:line.metadata||{},tracking,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
     }
     const paymentTotal=input.payments.reduce((sum,p)=>sum+Number(p.amount),0);
     const creditAmount=Number(input.creditAmount||0);
@@ -284,17 +253,13 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
     const sale=(await client.query(`INSERT INTO sales(organization_id,store_id,shift_id,seller_id,sale_number,client_reference,subtotal,discount_amount,total,customer,business_date,metadata,customer_id)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,[orgId,input.storeId,input.shiftId,req.user.id,saleNumber,input.clientReference,subtotal,subtotal-total,total,input.customer,businessDate,saleMetadata,input.customerId||null])).rows[0];
     for(const line of normalized){
-      const batchAllocations=await consumeInventoryBatches(client,{organizationId:orgId,storeId:input.storeId,productId:line.product.id,quantity:line.quantity});
-      const authoritativeTracking={...(line.metadata?.tracking||{}),quantity:line.quantity,serials:line.serials.map((serial,index)=>({serial,unitOffset:index})),batches:batchAllocations,untrackedQty:Math.max(0,line.quantity-line.serials.length)};
+      await consumeSaleTracking(client,{organizationId:orgId,storeId:input.storeId,productId:line.product.id,saleId:sale.id,tracking:line.tracking});
+      const authoritativeTracking=line.tracking;
       const itemMetadata={...line.metadata,tracking:authoritativeTracking};
       await client.query(`INSERT INTO sale_items(sale_id,product_id,product_name,sku,barcode,quantity,unit_price,discount_percent,line_total,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[sale.id,line.product.id,line.product.name,line.product.sku,line.product.barcode,line.quantity,line.unitPrice,line.discountPercent,line.lineTotal,itemMetadata]);
       await client.query("UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3",[orgId,input.storeId,line.product.id,line.after]);
       await enqueueStockLevelNotification(client,{organizationId:orgId,storeId:input.storeId,eventBase:sale.id,productId:line.product.id,productName:line.product.name,storeName:store.name,before:line.before,after:line.after,minStock:Number(line.product.min_stock||0)});
       await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,unit_cost,reference_type,reference_id,created_by,metadata) VALUES($1,$2,$3,'sale',$4,$5,$6,$7,'sale',$8,$9,$10::jsonb)`,[orgId,input.storeId,line.product.id,-line.quantity,line.before,line.after,Number(line.balance.avg_cost||line.product.cost_price||0),sale.id,req.user.id,JSON.stringify({tracking:authoritativeTracking})]);
-      for(const serialValue of line.serials){
-        const updated=await client.query(`UPDATE product_serials SET status='SOLD',sale_id=$4,updated_at=now() WHERE organization_id=$1 AND product_id=$2 AND lower(serial)=lower($3) AND store_id=$5 AND status='IN_STOCK'`,[orgId,line.product.id,serialValue,sale.id,input.storeId]);
-        if(!updated.rowCount)throw new HttpError(409,`Serial/IMEI ${serialValue} omborda topilmadi`,`SERIAL_NOT_AVAILABLE`);
-      }
     }
     for(const payment of input.payments)await client.query("INSERT INTO sale_payments(sale_id,method,amount,metadata) VALUES($1,$2,$3,$4)",[sale.id,payment.method,payment.amount,payment.metadata||{}]);
     if(creditAmount>0)await client.query(`INSERT INTO customer_ledger(organization_id,customer_id,store_id,sale_id,entry_type,amount,due_date,reference,note,created_by) VALUES($1,$2,$3,$4,'CREDIT_SALE',$5,$6,$7,$8,$9)`,[orgId,input.customerId,input.storeId,sale.id,creditAmount,input.creditDueDate,saleNumber,String(input.metadata?.note||""),req.user.id]);
