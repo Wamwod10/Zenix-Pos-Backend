@@ -125,7 +125,7 @@ test('registration persists trial expiry from the returned organization timezone
   const originalConnect=pool.connect,originalQuery=pool.query;
   let expiryDate;
   const query=async(sql,params)=>{
-    if(sql.startsWith('INSERT INTO organizations'))return {rows:[{id:ORG,name:'Business',timezone:'America/Los_Angeles'}],rowCount:1};
+    if(sql.startsWith('INSERT INTO organizations'))return {rows:[{id:ORG,name:'Business',timezone:'America/Los_Angeles',created_at:new Date()}],rowCount:1};
     if(sql.startsWith('UPDATE organizations'))expiryDate=params[3];
     if(sql.startsWith('INSERT INTO stores'))return {rows:[{id:STORE}],rowCount:1};
     return {rows:[{id:ID,organization_id:ORG,store_id:STORE,app_role:'OWNER',name:'Owner'}],rowCount:1};

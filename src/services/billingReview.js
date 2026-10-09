@@ -63,7 +63,7 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
     } else {
       const plan = BILLING_PLANS[row.plan] ? row.plan : "ANNUAL";
       const storeLimit = BILLING_PLANS[plan].includedStores + Math.max(0, Number(row.extra_store_count || 0));
-      await client.query("UPDATE organizations SET plan=$2,license_status=CASE WHEN license_status='SUSPENDED' THEN 'SUSPENDED' ELSE 'ACTIVE' END,expiry_date=$3,store_limit=$4,settings=CASE WHEN license_status='SUSPENDED' THEN settings ELSE jsonb_set(COALESCE(settings,'{}'::jsonb),'{billingHold}','false'::jsonb,true) END,updated_at=now() WHERE id=$1", [row.organization_id, plan, row.service_period_to, storeLimit]);
+      await client.query("UPDATE organizations SET plan=$2,license_status=CASE WHEN license_status='SUSPENDED' THEN 'SUSPENDED' ELSE 'ACTIVE' END,expiry_date=$3,store_limit=$4,settings=CASE WHEN license_status='SUSPENDED' THEN settings ELSE jsonb_set(COALESCE(settings,'{}'::jsonb)-'trialEndsAt','{billingHold}','false'::jsonb,true) END,updated_at=now() WHERE id=$1", [row.organization_id, plan, row.service_period_to, storeLimit]);
     }
   } else {
     await releasePromoReservation(client,row.id,reason||"REJECTED");

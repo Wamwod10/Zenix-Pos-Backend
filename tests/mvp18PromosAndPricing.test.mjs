@@ -138,10 +138,10 @@ test('promo quota and per-business quota are validated before consumption',async
  await assert.rejects(()=>lockValidPromo(db,{code:'ZENIX-50',plan:'MONTHLY',organizationId:'org'}),{code:'PROMO_EXHAUSTED'});
 });
 
-test('a free promo activation clears only billing hold, not the platform suspension gate',async()=>{
- const fs=await import('node:fs');const source=fs.readFileSync(new URL('../src/routes/billing.js',import.meta.url),'utf8');
- assert.match(source,/org\.license_status==="SUSPENDED"/);
- assert.match(source,/PROMO_FREE_FLOW/);
- assert.match(source,/UPDATE organizations SET license_status='ACTIVE',plan=\$2,expiry_date=\$3,settings=jsonb_set/);
- assert.match(source,/await consumePromo\(client/);
+test('a suspended organization cannot activate a free promo',async()=>{
+ const {activateFreePromo}=await import('../src/routes/billing.js');
+ const calls=[];
+ const client={query:async sql=>{calls.push(sql);return {rows:sql.includes('FROM organizations')?[{id:'org',license_status:'SUSPENDED'}]:[]}}};
+ await assert.rejects(()=>activateFreePromo(client,{organizationId:'org',id:'owner'},{code:'FREE30',plan:'MONTHLY'}),{code:'ORG_SUSPENDED'});
+ assert.equal(calls.some(sql=>sql.startsWith('UPDATE')||sql.startsWith('INSERT')),false);
 });

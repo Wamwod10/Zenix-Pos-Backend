@@ -27,6 +27,7 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "022_mvp18_guarded_constraints.sql",
   "023_validate_extra_store_constraints.sql",
   "024_promo_reservations.sql",
+  "025_saas_controls.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
@@ -107,6 +108,8 @@ export const REQUIRED_TABLES = Object.freeze([
   "stores",
   "users",
   "auth_sessions",
+  "password_reset_tokens",
+  "organization_trial_claims",
   "user_preferences",
   "products",
   "inventory_balances",

@@ -17,3 +17,13 @@ test('request telemetry exposes correlation ID but never logs session or body da
  assert.equal(JSON.stringify(entries).includes('SECRET'),false);
  assert.equal(JSON.stringify(entries).includes('token'),false);
 });
+test('support diagnostics persist only sanitized authenticated tenant errors',async()=>{
+ const records=[];
+ const middleware=createRequestTelemetry({logger:{warn:()=>{}},persist:async value=>records.push(value),makeId:()=> 'trace-safe'});
+ const req={method:'POST',user:{id:'user',organizationId:'org'},route:{path:'/:id'},body:{password:'SECRET'},originalUrl:'/api/payments/SECRET?token=SECRET'};
+ const res=new EventEmitter();res.statusCode=500;res.setHeader=()=>{};
+ middleware(req,res,()=>{});res.emit('finish');await Promise.resolve();
+ assert.equal(records.length,1);
+ assert.equal(records[0].organizationId,'org');
+ assert.equal(JSON.stringify(records).includes('SECRET'),false);
+});

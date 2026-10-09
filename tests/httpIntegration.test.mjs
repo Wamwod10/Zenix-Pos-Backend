@@ -174,7 +174,7 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
             await Promise.race([verified,new Promise((_,reject)=>barrierTimeout=setTimeout(()=>reject(Error('Login verification barrier timed out')),5000))]);
             clearTimeout(barrierTimeout);
           }else login=await pendingLogin;
-          const reset=await request(`/api/platform/organizations/${a.orgId}/users/${userId}/reset-password`,{cookie:adminLogin.cookie,method:'POST',body:{password:`Reset-Disposable!${suffix}`,reason:'Deterministic reset race regression'}});
+          const reset=await request(`/api/platform/organizations/${a.orgId}/users/${userId}/reset-password`,{cookie:adminLogin.cookie,method:'POST',body:{password:`Reset-Disposable!${suffix}`,reason:'Deterministic reset race regression',identityVerified:true}});
           assert.equal(reset.status,200);
           releaseVerification();
           if(resetWins){login=await pendingLogin;assert.equal(login.status,401,'a verified snapshot must fail if reset committed before session creation');assert.equal(login.payload.error.code,'INVALID_CREDENTIALS');}

@@ -11,7 +11,7 @@ export async function requireAuth(req, _res, next) {
     const tokenHash = sha256(raw);
     const { rows } = await pool.query(`
       SELECT s.id AS session_id, s.expires_at, s.last_seen_at, u.id, u.organization_id, u.store_id, u.name, u.username, u.phone,
-             u.app_role, u.permission_overrides, u.active, o.name AS organization_name, o.license_status, o.expiry_date, o.timezone AS organization_timezone,
+             u.app_role, u.permission_overrides, u.active, u.must_change_password, o.name AS organization_name, o.license_status, o.expiry_date, o.timezone AS organization_timezone,
              CASE WHEN o.expiry_date IS NULL THEN true ELSE o.expiry_date >= (now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date END AS license_date_valid,
              o.settings AS organization_settings
       FROM auth_sessions s
@@ -28,7 +28,10 @@ export async function requireAuth(req, _res, next) {
       sessionId:row.session_id, licenseStatus:row.license_status, expiryDate:row.expiry_date, organizationTimezone:row.organization_timezone,
       licenseDateValid:row.license_date_valid!==false,
       rolePermissions:row.organization_settings?.rolePermissions || {}, organizationSettings:row.organization_settings||{},
+      forcePasswordChange:Boolean(row.must_change_password),
     };
+    const passwordSafePaths=new Set(['/api/auth/me','/api/auth/logout','/api/users/me/password']);
+    if(req.user.forcePasswordChange&&!passwordSafePaths.has(String(req.originalUrl||'').split('?')[0]))throw new HttpError(403,'Avval yangi parol o‘rnating','PASSWORD_CHANGE_REQUIRED');
     const lastSeenAt=row.last_seen_at?new Date(row.last_seen_at).getTime():0;
     if(!lastSeenAt||Date.now()-lastSeenAt>60_000){
       pool.query("UPDATE auth_sessions SET last_seen_at=now() WHERE id=$1", [row.session_id]).catch(()=>{});
@@ -50,7 +53,8 @@ export const requireOrganization = (req, _res, next) => {
 export const requireActiveLicense = (req, _res, next) => {
   const status = String(req.user?.licenseStatus || "PAYMENT_REQUIRED").toUpperCase();
   if (status === "SUSPENDED") return next(new HttpError(403, "Akkaunt administrator tomonidan bloklangan", "ACCOUNT_SUSPENDED"));
-  const dateValid = req.user?.licenseDateValid !== false;
+  const trialEnd=req.user?.organizationSettings?.trialEndsAt;
+  const dateValid = req.user?.licenseDateValid !== false && (!trialEnd || Date.parse(trialEnd)>Date.now());
   const active = (status === "ACTIVE" || status === "APPROVED") && dateValid && !req.user?.organizationSettings?.billingHold;
   if (!active) return next(new HttpError(402, "Zenix POS tarifini faollashtiring", req.user?.organizationSettings?.billingHold ? "BILLING_HOLD" : status === "REVIEW" ? "LICENSE_REVIEW" : status === "EXPIRED" || !dateValid ? "LICENSE_EXPIRED" : "PAYMENT_REQUIRED"));
   next();

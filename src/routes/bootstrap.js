@@ -42,7 +42,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const activeExtraStores=extraStoreEntitlements.filter(row=>row.status==='ACTIVE').reduce((sum,row)=>sum+row.quantity,0);
   const effectiveStoreLimit=Number(org.store_limit||0)+activeExtraStores;
   const licenseStatus=String(org.license_status||"PAYMENT_REQUIRED").toUpperCase();
-  const licenseActive=(licenseStatus==="ACTIVE"||licenseStatus==="APPROVED")&&org.license_date_valid!==false&&!org.settings?.billingHold;
+  const licenseActive=(licenseStatus==="ACTIVE"||licenseStatus==="APPROVED")&&org.license_date_valid!==false&&!org.settings?.billingHold&&(!org.settings?.trialEndsAt||Date.parse(org.settings.trialEndsAt)>Date.now());
   if(!licenseActive){
     const [storesResult,billingResult]=await Promise.all([
       pool.query(`SELECT * FROM stores WHERE organization_id=$1${branchStoreId?" AND id=$2":""} ORDER BY created_at`,branchStoreId?[orgId,branchStoreId]:[orgId]),
@@ -52,7 +52,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
     const payments=billingResult.rows.map((row)=>({id:row.id,orderId:row.order_id,organizationId:row.organization_id,organization:org.name||"",draftId:row.draft_id,type:row.type,plan:row.plan,amount:n(row.amount),status:row.status,servicePeriodFrom:row.service_period_from,servicePeriodTo:row.service_period_to,targetExpiry:row.service_period_to,extensionDays:Number(row.extension_days||0),extraStores:Number(row.extra_store_count||0),renewalExtraStores:Number(row.extra_store_count||0),purpose:row.type==="EXTRA"?`Qo‘shimcha filial limiti · ${Number(row.extra_store_count||0)} ta`:`${row.plan==="MONTHLY"?"Oylik":"Yillik"} tarif`,receiptId:row.receipt_id,receiptName:row.receipt_name,receiptType:row.receipt_type,rejectReason:row.reject_reason,submittedAt:row.submitted_at,reviewedAt:row.reviewed_at}));
     const billingVisible=hasPermission(req.user,"moduleBilling")||hasPermission(req.user,"billingWrite");
     return ok(res,{
-      organization:{id:org.id,name:org.name,phone:org.phone,address:org.address,timezone:org.timezone,currency:org.currency,plan:org.plan,licenseStatus:org.license_status,expiryDate:org.expiry_date,storeLimit:effectiveStoreLimit,baseStoreLimit:Number(org.store_limit||0),activeExtraStores,extraStoreEntitlements,settings:org.settings||{}},
+      organization:{serverNow:new Date().toISOString(),id:org.id,name:org.name,phone:org.phone,address:org.address,timezone:org.timezone,currency:org.currency,plan:org.plan,licenseStatus:org.license_status,expiryDate:org.expiry_date,storeLimit:effectiveStoreLimit,baseStoreLimit:Number(org.store_limit||0),activeExtraStores,extraStoreEntitlements,settings:org.settings||{}},
       stores,inventory:[],dailySales:[],salesHistory:[],returns:[],suppliers:[],expenses:[],activeShifts:{},shiftHistory:[],activityLogs:[],inventoryTransfers:[],stockMovements:[],inventoryCounts:[],payments:billingVisible?payments:[],telegramConnections:[],employees:[],
     });
   }
@@ -181,7 +181,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const billingVisible=can("moduleBilling")||can("billingWrite");
 
   ok(res,{
-    organization:{id:org.id,name:org.name,phone:org.phone,address:org.address,timezone:org.timezone,currency:org.currency,plan:org.plan,licenseStatus:org.license_status,expiryDate:org.expiry_date,storeLimit:effectiveStoreLimit,baseStoreLimit:Number(org.store_limit||0),activeExtraStores,extraStoreEntitlements,settings:org.settings||{}},
+    organization:{serverNow:new Date().toISOString(),id:org.id,name:org.name,phone:org.phone,address:org.address,timezone:org.timezone,currency:org.currency,plan:org.plan,licenseStatus:org.license_status,expiryDate:org.expiry_date,storeLimit:effectiveStoreLimit,baseStoreLimit:Number(org.store_limit||0),activeExtraStores,extraStoreEntitlements,settings:org.settings||{}},
     stores,
     inventory:inventoryVisible?inventory:[],
     dailySales:salesVisible?dailySales:[],salesHistory:salesVisible?salesHistory:[],returns:salesVisible?returns:[],

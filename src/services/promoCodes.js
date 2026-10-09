@@ -6,6 +6,7 @@ export async function lockValidPromo(client,{code,plan,organizationId,lock=true}
  const normalized=normalizePromoCode(code);
  const promo=(await client.query(`SELECT * FROM platform_promos WHERE code=$1${lock?' FOR UPDATE':''}`,[normalized])).rows[0];
  if(!promo||!promo.active||(promo.expires_at&&new Date(promo.expires_at).getTime()<=Date.now()))throw new HttpError(409,"Promokod mavjud emas yoki muddati tugagan","PROMO_INACTIVE");
+ if(promo.starts_at&&Date.parse(promo.starts_at)>Date.now())throw new HttpError(409,'Promokod hali boshlanmagan','PROMO_NOT_STARTED');
  if(promo.plan!=="BOTH"&&promo.plan!==plan)throw new HttpError(409,"Bu promokod tanlangan tarifga tegishli emas","PROMO_PLAN_MISMATCH");
  const reserved=Number((await client.query("SELECT count(*)::int n FROM platform_promo_reservations WHERE promo_id=$1 AND status='RESERVED'",[promo.id])).rows[0]?.n||0);
  if(Number(promo.used_count)+reserved>=Number(promo.max_uses))throw new HttpError(409,"Promokod limiti tugagan. Boshqa promokod tanlang.","PROMO_EXHAUSTED");
