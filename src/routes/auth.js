@@ -8,11 +8,18 @@ import { randomToken, sha256 } from "../lib/crypto.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth } from "../middleware/auth.js";
 import { assertLoginAllowed, recordLoginDecision } from "../services/loginThrottle.js";
+import { organizationCalendarDateISO } from "../lib/businessDate.js";
+
+export function trialPeriod(organization,now=new Date()){
+  const expiry=new Date(`${organizationCalendarDateISO(organization,now)}T12:00:00Z`);
+  expiry.setUTCDate(expiry.getUTCDate()+14);
+  return {expiryDate:expiry.toISOString().slice(0,10),settings:{trialStartedAt:now.toISOString(),trialEndsAt:new Date(now.getTime()+14*86400000).toISOString(),trialUsed:true}};
+}
 
 const router=Router();
 const cookieOptions={httpOnly:true,secure:env.isProduction,sameSite:env.isProduction?"none":"lax",path:"/",maxAge:env.sessionTtlDays*86400000};
 const loginSchema=z.object({username:z.string().trim().min(1).max(120),password:z.string().min(1).max(300)});
-const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().min(5).max(40),username:z.string().trim().min(3).max(120),password:z.string().min(8).max(300)});
+const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().min(5).max(40),username:z.string().trim().min(3).max(120),password:z.string().min(8).max(300),startOption:z.enum(["TRIAL","MONTHLY","ANNUAL"]).default("TRIAL")});
 
 const publicUser=(row)=>({id:row.id,organizationId:row.organization_id,organizationName:row.organization_name||row.organizationName||"",storeId:row.store_id,name:row.name,username:row.username,phone:row.phone,appRole:row.app_role,permissionOverrides:row.permission_overrides||{},mustChangePassword:Boolean(row.must_change_password),forcePasswordChange:Boolean(row.must_change_password)});
 
@@ -56,7 +63,10 @@ router.post("/register",asyncRoute(async(req,res)=>{
   await recordRegistrationAttempt(requestIp(req));
   const result=await withTransaction(async(client)=>{
     const passwordHash=await bcrypt.hash(input.password,12);
+    // Read the database's organization timezone before deriving any trial date.
     const org=(await client.query(`INSERT INTO organizations(name,phone) VALUES($1,$2) RETURNING *`,[input.businessName,input.phone])).rows[0];
+    const trial=input.startOption==='TRIAL'?trialPeriod(org):null;
+    await client.query(`UPDATE organizations SET plan=$2,license_status=$3,expiry_date=$4,settings=$5::jsonb WHERE id=$1`,[org.id,input.startOption==='MONTHLY'?'MONTHLY':'ANNUAL',trial?'ACTIVE':'PAYMENT_REQUIRED',trial?.expiryDate||null,JSON.stringify(trial?.settings||{trialUsed:false})]);
     const store=(await client.query(`INSERT INTO stores(organization_id,name) VALUES($1,'Asosiy filial') RETURNING *`,[org.id])).rows[0];
     const user=(await client.query(`INSERT INTO users(organization_id,store_id,name,username,phone,password_hash,app_role) VALUES($1,$2,$3,$4,$5,$6,'OWNER') RETURNING *`,[org.id,store.id,input.ownerName,input.username.toLowerCase(),input.phone,passwordHash])).rows[0];
     const token=await createSession(client,user.id,req);

@@ -43,6 +43,106 @@ const testPool = (max) => new Pool({
   options: "-c lock_timeout=5s -c statement_timeout=30s",
 });
 
+function registerStoreAuthorizationIntegration(){
+integration('queued store authorization observes committed access changes before business mutation', {timeout:30_000}, async(t)=>{
+  const {lockStoreTradingAuthorization}=await import('../src/services/storeTradingHolds.js');
+  const db=testPool(3);
+  try{
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date,store_limit,timezone) VALUES('Task 5 queued authorization','ACTIVE',CURRENT_DATE+30,2,'Asia/Tashkent') RETURNING id")).rows[0].id;
+    await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Primary')",[org]);
+    const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Protected extra') RETURNING id",[org])).rows[0].id;
+    await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Owner',$3,'hash','OWNER')",[org,store,`task5-${org}`]);
+    for(const [change,code,now] of [
+      ["license_status='SUSPENDED'",'ACCOUNT_SUSPENDED'],
+      ["settings=jsonb_build_object('billingHold',true)",'BILLING_HOLD'],
+      ["license_status='PAYMENT_REQUIRED'",'PAYMENT_REQUIRED'],
+      ["expiry_date=CURRENT_DATE-1",'LICENSE_EXPIRED'],
+      ["store_limit=1",'STORE_ENTITLEMENT_EXPIRED'],
+      ["settings=jsonb_build_object('storeTradingHolds',jsonb_build_object($2::text,jsonb_build_object('reason','Explicit hold')))",'STORE_TRADING_HOLD'],
+      ["timezone='Asia/Tashkent',expiry_date='2026-10-08'",'LICENSE_EXPIRED',new Date('2026-10-08T20:00:00Z')],
+    ])await t.test(code,async()=>{
+      await db.query("UPDATE organizations SET license_status='ACTIVE',expiry_date=CURRENT_DATE+30,store_limit=2,timezone='UTC',settings='{}'::jsonb WHERE id=$1",[org]);
+      const admin=await db.connect(),writer=await db.connect();
+      try{
+        await admin.query('BEGIN');await writer.query('BEGIN');
+        await admin.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[org]);
+        const writerPid=(await writer.query('SELECT pg_backend_pid() pid')).rows[0].pid;
+        const queued=(async()=>{
+          await lockStoreTradingAuthorization(writer,{organizationId:org,storeId:store,now});
+          await writer.query("INSERT INTO sale_holds(organization_id,store_id,user_id,name,cart,total) SELECT $1,$2,id,'Should never write','[]',0 FROM users WHERE organization_id=$1 LIMIT 1",[org,store]);
+        })();
+        const rejected=assert.rejects(queued,error=>error.code===code);
+        const deadline=Date.now()+3000;
+        let waiting=false;
+        while(Date.now()<deadline){
+          waiting=(await db.query("SELECT wait_event_type='Lock' waiting FROM pg_stat_activity WHERE pid=$1",[writerPid])).rows[0]?.waiting;
+          if(waiting)break;
+          await new Promise(resolve=>setTimeout(resolve,20));
+        }
+        assert.equal(waiting,true,'operation must actually queue behind the organization lock');
+        await admin.query(`UPDATE organizations SET ${change} WHERE id=$1`,change.includes('$2')?[org,store]:[org]);
+        await admin.query('COMMIT');
+        await rejected;
+        assert.equal((await writer.query('SELECT count(*)::int n FROM sale_holds WHERE organization_id=$1',[org])).rows[0].n,0);
+      }finally{await admin.query('ROLLBACK');await writer.query('ROLLBACK');admin.release();writer.release();}
+    });
+  }finally{await db.end();}
+});
+}
+
+function registerQueuedRouteIntegration(){
+integration('queued sales and shift openings reject admin changes without business rows', {timeout:30_000}, async(t)=>{
+  const {default:sales}=await import('../src/routes/sales.js');
+  const {default:shifts}=await import('../src/routes/shifts.js');
+  const {pool}=await import('../src/db/pool.js');
+  const db=testPool(3),originalConnect=pool.connect;
+  try{
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date,store_limit,timezone) VALUES('Task 5 queued routes','ACTIVE',CURRENT_DATE+30,2,'Asia/Tashkent') RETURNING id")).rows[0].id;
+    await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Primary')",[org]);
+    const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Protected extra') RETURNING id",[org])).rows[0].id;
+    const user=(await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Owner',$3,'hash','OWNER') RETURNING id",[org,store,`task5-route-${org}`])).rows[0].id;
+    for(const [change,code] of [
+      ["license_status='SUSPENDED'",'ACCOUNT_SUSPENDED'],
+      ["settings=jsonb_build_object('billingHold',true)",'BILLING_HOLD'],
+      ["license_status='PAYMENT_REQUIRED'",'PAYMENT_REQUIRED'],
+      ["expiry_date=CURRENT_DATE-1",'LICENSE_EXPIRED'],
+      ["store_limit=1",'STORE_ENTITLEMENT_EXPIRED'],
+      ["settings=jsonb_build_object('storeTradingHolds',jsonb_build_object($2::text,jsonb_build_object('reason','Explicit hold')))",'STORE_TRADING_HOLD'],
+    ])for(const [router,path,body] of [
+      [sales,'/',{storeId:store,shiftId:user,items:[{productId:user,quantity:1,unitPrice:10}],payments:[{method:'cash',amount:10}]}],
+      [shifts,'/open',{storeId:store}],
+    ])await t.test(`${path} ${code}`,async()=>{
+      await db.query("UPDATE organizations SET license_status='ACTIVE',expiry_date=CURRENT_DATE+30,store_limit=2,settings='{}'::jsonb WHERE id=$1",[org]);
+      const admin=await db.connect(),writer=await db.connect();
+      pool.connect=async()=>({query:writer.query.bind(writer),release(){}});
+      try{
+        await admin.query('BEGIN');await admin.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[org]);
+        const pid=(await writer.query('SELECT pg_backend_pid() pid')).rows[0].pid;
+        const operation=(async()=>{
+          let failure;
+          const handler=router.stack.find(layer=>layer.route?.path===path&&layer.route.methods.post).route.stack.at(-1).handle;
+          await handler({body,user:{id:user,organizationId:org,storeId:store,appRole:'OWNER',name:'Owner'}},{status(){return this},json(){}},error=>{failure=error});
+          if(failure)throw failure;
+        })();
+        const rejected=assert.rejects(operation,error=>error.code===code);
+        const deadline=Date.now()+3000;
+        let waiting=false;
+        while(Date.now()<deadline){
+          waiting=(await db.query("SELECT wait_event_type='Lock' waiting FROM pg_stat_activity WHERE pid=$1",[pid])).rows[0]?.waiting;
+          if(waiting)break;
+          await new Promise(resolve=>setTimeout(resolve,20));
+        }
+        assert.equal(waiting,true);
+        await admin.query(`UPDATE organizations SET ${change} WHERE id=$1`,change.includes('$2')?[org,store]:[org]);
+        await admin.query('COMMIT');await rejected;
+        assert.equal((await db.query('SELECT count(*)::int n FROM sales WHERE organization_id=$1',[org])).rows[0].n,0);
+        assert.equal((await db.query('SELECT count(*)::int n FROM shifts WHERE organization_id=$1',[org])).rows[0].n,0);
+      }finally{await admin.query('ROLLBACK');await writer.query('ROLLBACK');admin.release();writer.release();pool.connect=originalConnect;}
+    });
+  }finally{pool.connect=originalConnect;await db.end();}
+});
+}
+
 function registerPromoReservationIntegration(){
 integration('promo reservation concurrent final slot, atomic rollback, retry, deactivation and terminal release',async(t)=>{
  const {reservePromo,consumePromoReservation,releasePromoReservation}=await import('../src/services/promoCodes.js');
@@ -596,5 +696,83 @@ integration('receipt reuse is serialized on locked receipt and rejected after pr
   }
 });
 
+integration('admin branch hold serializes against new sale authorization without deleting data',async()=>{
+  assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
+  const {lockStoreTradingAuthorization}=await import('../src/services/storeTradingHolds.js');
+  const db=testPool(3);
+  let admin,sale;
+  let adminTx=false,saleTx=false;
+  try{
+    admin=await db.connect();sale=await db.connect();
+    const org=(await db.query("INSERT INTO organizations(name,settings,license_status,expiry_date) VALUES('Branch hold rehearsal','{}'::jsonb,'ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
+    const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Second store') RETURNING id",[org])).rows[0].id;
+    await admin.query('BEGIN');adminTx=true;
+    await admin.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[org]);
+    await sale.query('BEGIN');saleTx=true;
+    await sale.query("SET LOCAL lock_timeout='200ms'");
+    await assert.rejects(lockStoreTradingAuthorization(sale,org,store),err=>err?.code==='55P03');
+    await sale.query('ROLLBACK');saleTx=false;
+    await admin.query("UPDATE organizations SET settings=jsonb_build_object('storeTradingHolds',jsonb_build_object($2::text,jsonb_build_object('reason','billing hold'))) WHERE id=$1",[org,store]);
+    await admin.query('COMMIT');adminTx=false;
+    await assert.rejects(lockStoreTradingAuthorization(sale,org,store),err=>err?.code==='STORE_TRADING_HOLD');
+    // The branch itself and all historical records are untouched.
+    const row=(await db.query('SELECT active FROM stores WHERE organization_id=$1 AND id=$2',[org,store])).rows[0];
+    assert.equal(row.active,true);
+  }finally{
+    if(saleTx)await sale.query('ROLLBACK').catch(()=>{});
+    if(adminTx)await admin.query('ROLLBACK').catch(()=>{});
+    admin?.release();sale?.release();await db.end();
+  }
+});
+
 registerInventoryCountIntegration();
 registerPromoReservationIntegration();
+registerStoreAuthorizationIntegration();
+registerQueuedRouteIntegration();
+
+integration('expired extra-store entitlement blocks excess branch without archiving existing data',async()=>{
+  assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
+  const {lockStoreTradingAuthorization}=await import('../src/services/storeTradingHolds.js');
+  const db=testPool(2);
+  try{
+    const org=(await db.query("INSERT INTO organizations(name,store_limit,timezone,license_status,expiry_date) VALUES('Expired entitlement rehearsal',1,'Asia/Tashkent','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
+    const first=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Primary') RETURNING id",[org])).rows[0].id;
+    const excess=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Paid extra') RETURNING id",[org])).rows[0].id;
+    // No active paid extra pass: only the base store may start new operations.
+    await lockStoreTradingAuthorization(db,org,first);
+    await assert.rejects(lockStoreTradingAuthorization(db,org,excess),err=>err?.code==='STORE_ENTITLEMENT_EXPIRED');
+    // A historical paid pass expired yesterday. It must NOT add to quota.
+    const paid=(await db.query(`INSERT INTO billing_payments(organization_id,order_id,type,plan,amount,status)
+      VALUES($1,$2,'EXTRA','MONTHLY',120000,'APPROVED') RETURNING id`,[org,`expired-pass-${Date.now()}`])).rows[0].id;
+    await db.query(`INSERT INTO extra_store_entitlements(organization_id,payment_id,quantity,duration,starts_on,expires_on)
+      VALUES($1,$2,1,'MONTHLY',CURRENT_DATE - interval '31 days',CURRENT_DATE - interval '1 day')`,[org,paid]);
+    await assert.rejects(lockStoreTradingAuthorization(db,org,excess),err=>err?.code==='STORE_ENTITLEMENT_EXPIRED');
+    // An independently paid pass covering today permits use immediately.
+    const active=(await db.query(`INSERT INTO billing_payments(organization_id,order_id,type,plan,amount,status)
+      VALUES($1,$2,'EXTRA','MONTHLY',120000,'APPROVED') RETURNING id`,[org,`active-pass-${Date.now()}`])).rows[0].id;
+    await db.query(`INSERT INTO extra_store_entitlements(organization_id,payment_id,quantity,duration,starts_on,expires_on)
+      VALUES($1,$2,1,'MONTHLY',CURRENT_DATE - interval '1 day',CURRENT_DATE + interval '29 days')`,[org,active]);
+    await lockStoreTradingAuthorization(db,org,excess);
+    assert.equal((await db.query('SELECT active FROM stores WHERE id=$1',[excess])).rows[0].active,true);
+  }finally{await db.end();}
+});
+
+integration('entitlements have half-open boundaries on the locked local date',async()=>{
+  const {lockStoreTradingAuthorization}=await import('../src/services/storeTradingHolds.js');
+  const db=testPool(2);
+  try{
+    const org=(await db.query("INSERT INTO organizations(name,store_limit,timezone,license_status,expiry_date) VALUES('Task 5 boundary',1,'Asia/Tashkent','ACTIVE','2026-10-09') RETURNING id")).rows[0].id;
+    await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Primary')",[org]);
+    const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Extra') RETURNING id",[org])).rows[0].id;
+    const payment=(await db.query("INSERT INTO billing_payments(organization_id,order_id,type,plan,amount,status) VALUES($1,$2,'EXTRA','MONTHLY',120000,'APPROVED') RETURNING id",[org,`task5-boundary-${org}`])).rows[0].id;
+    await db.query("INSERT INTO extra_store_entitlements(organization_id,payment_id,quantity,duration,starts_on,expires_on) VALUES($1,$2,1,'MONTHLY','2026-09-09','2026-10-09')",[org,payment]);
+    const input={organizationId:org,storeId:store,now:new Date('2026-10-08T20:00:00Z')};
+    await assert.rejects(lockStoreTradingAuthorization(db,input),{code:'STORE_ENTITLEMENT_EXPIRED'});
+    await db.query("UPDATE extra_store_entitlements SET starts_on='2026-10-10',expires_on='2026-11-10' WHERE organization_id=$1",[org]);
+    await assert.rejects(lockStoreTradingAuthorization(db,input),{code:'STORE_ENTITLEMENT_EXPIRED'});
+    await db.query("UPDATE extra_store_entitlements SET starts_on='2026-10-09' WHERE organization_id=$1",[org]);
+    const result=await lockStoreTradingAuthorization(db,input);
+    assert.equal(result.businessDate,'2026-10-09');assert.equal(result.effectiveStoreLimit,2);
+    await assert.rejects(lockStoreTradingAuthorization(db,{...input,now:new Date('2026-10-09T20:00:00Z')}),{code:'LICENSE_EXPIRED'});
+  }finally{await db.end();}
+});

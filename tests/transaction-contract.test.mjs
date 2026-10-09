@@ -176,12 +176,6 @@ test('telegram delivery ledger is per connection to prevent duplicate fan-out re
   assert.match(worker,/deliveryContext/);
 });
 
-test('store restore cannot bypass licensed store limit',()=>{
-  const stores=read('src/routes/stores.js');
-  assert.match(stores,/input\.active\s*===\s*true\s*&&\s*!store\.active/);
-  assert.match(stores,/store_limit/);
-  assert.match(stores,/STORE_LIMIT/);
-});
 
 
 test('sales enforce server-side POS pricing, discount and payment rules',()=>{

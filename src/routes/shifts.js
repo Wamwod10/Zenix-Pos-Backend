@@ -6,6 +6,7 @@ import { requireAuth, requireOrganization, requirePermission, requireActiveLicen
 import { enqueueNotification } from "../services/notifications.js";
 import { writeAudit } from "../services/audit.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
+import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js";
 import { hasPermission } from "../lib/permissions.js";
 import { assertShiftCashAvailable, shiftExpectedCash } from "../lib/shiftCash.js";
 import { branchRegisterKey, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
@@ -32,6 +33,7 @@ router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, r
 
   const shift = await withTransaction(async (client) => {
     const store = await assertOrganizationStore(client, req.user.organizationId, input.storeId);
+    await lockStoreTradingAuthorization(client, {organizationId:req.user.organizationId,storeId:input.storeId});
     const existing = await findOpenBranchShiftWithLock(client, req.user.organizationId, input.storeId);
     if (existing) throw new HttpError(409, "Bu filialda smena allaqachon ochiq", "SHIFT_ALREADY_OPEN");
     const registerKey = branchRegisterKey(input.storeId);
@@ -75,12 +77,14 @@ router.post("/:id/movements", requirePermission("moduleShifts"), asyncRoute(asyn
   }).parse(req.body);
 
   const movement = await withTransaction(async (client) => {
+    await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId});
     const shift = (await client.query(
       "SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND status='open' FOR UPDATE",
       [req.params.id, req.user.organizationId],
     )).rows[0];
     if (!shift) throw new HttpError(404, "Ochiq smena topilmadi");
     assertStoreScope(req.user, shift.store_id);
+    await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId,storeId:shift.store_id});
     assertShiftControl(req.user, shift);
     if(input.type==="out")await assertShiftCashAvailable(client,shift,input.amount);
 
@@ -114,12 +118,14 @@ router.post("/:id/close", requirePermission("moduleShifts"), asyncRoute(async (r
   }).parse(req.body);
 
   const shift = await withTransaction(async (client) => {
+    await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId});
     const current = (await client.query(
       "SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND status='open' FOR UPDATE",
       [req.params.id, req.user.organizationId],
     )).rows[0];
     if (!current) throw new HttpError(404, "Ochiq smena topilmadi");
     assertStoreScope(req.user, current.store_id);
+    await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId,storeId:current.store_id});
     assertShiftControl(req.user, current);
 
     const expectedCash = await shiftExpectedCash(client,current);

@@ -4,6 +4,7 @@ import { withTransaction } from "../db/tx.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission, requireActiveLicense } from "../middleware/auth.js";
 import { writeAudit } from "../services/audit.js";
+import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js";
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -12,9 +13,9 @@ router.use(requireActiveLicense);
 router.post("/", requirePermission("settingsWrite"), asyncRoute(async (req, res) => {
   const { name } = z.object({ name:z.string().trim().min(2).max(120) }).parse(req.body);
   const row = await withTransaction(async (client) => {
-    const org = (await client.query("SELECT store_limit FROM organizations WHERE id=$1 FOR UPDATE", [req.user.organizationId])).rows[0];
+    const org = await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId});
     const count = Number((await client.query("SELECT count(*) FROM stores WHERE organization_id=$1 AND active=true", [req.user.organizationId])).rows[0].count);
-    if (count >= Number(org.store_limit)) throw new HttpError(409, "Tarif bo‘yicha filial limiti tugagan", "STORE_LIMIT");
+    if (count >= org.effectiveStoreLimit) throw new HttpError(409, "Tarif bo‘yicha filial limiti tugagan", "STORE_LIMIT");
     const duplicate = await client.query("SELECT 1 FROM stores WHERE organization_id=$1 AND lower(name)=lower($2) LIMIT 1", [req.user.organizationId, name]);
     if (duplicate.rowCount) throw new HttpError(409, "Bu nomdagi filial allaqachon mavjud", "STORE_NAME_EXISTS");
     const store = (await client.query("INSERT INTO stores(organization_id,name) VALUES($1,$2) RETURNING *", [req.user.organizationId, name])).rows[0];
@@ -44,13 +45,13 @@ router.patch("/:id", requirePermission("settingsWrite"), asyncRoute(async (req, 
   const row = await withTransaction(async (client) => {
     // Serialize branch lifecycle changes at organization level so two concurrent
     // archive/restore requests cannot bypass the last-store or license limits.
-    const org = (await client.query("SELECT id,store_limit FROM organizations WHERE id=$1 FOR UPDATE", [orgId])).rows[0];
+    const org = await lockStoreTradingAuthorization(client,{organizationId:orgId});
     const store = (await client.query("SELECT * FROM stores WHERE id=$1 AND organization_id=$2 FOR UPDATE", [id, orgId])).rows[0];
     if (!store) throw new HttpError(404, "Filial topilmadi");
 
     if (input.active === true && !store.active) {
       const activeCount = Number((await client.query("SELECT count(*)::int AS count FROM stores WHERE organization_id=$1 AND active=true", [orgId])).rows[0]?.count || 0);
-      if (activeCount >= Number(org?.store_limit || 0)) throw new HttpError(409, "Tarif bo‘yicha filial limiti tugagan", "STORE_LIMIT");
+      if (activeCount >= org.effectiveStoreLimit) throw new HttpError(409, "Tarif bo‘yicha filial limiti tugagan", "STORE_LIMIT");
     }
 
     if (input.active === false && store.active) {

@@ -7,6 +7,7 @@ import { requireAuth, requireOrganization, requirePermission, requireActiveLicen
 import { enqueueNotification, enqueueStockLevelNotification } from "../services/notifications.js";
 import { writeAudit } from "../services/audit.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
+import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js";
 import { organizationBusinessDateISO } from "../lib/businessDate.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { assertSharedOpenShift } from "../lib/branchShift.js";
@@ -147,6 +148,7 @@ router.get("/holds",requirePermission("moduleSales"),asyncRoute(async(req,res)=>
 router.post("/holds",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
   const input=holdSchema.parse(req.body);assertStoreScope(req.user,input.storeId);
   const hold=await withTransaction(async(client)=>{
+    await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId,storeId:input.storeId});
     await assertOrganizationStore(client,req.user.organizationId,input.storeId);
     if(input.shiftId){const shift=(await client.query("SELECT 1 FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open'",[input.shiftId,req.user.organizationId,input.storeId])).rows[0];if(!shift)throw new HttpError(409,"Smena ochiq emas","SHIFT_REQUIRED");}
     const row=(await client.query(`INSERT INTO sale_holds(organization_id,store_id,user_id,shift_id,name,cart,customer,note,cart_discount_percent,total)
@@ -157,8 +159,16 @@ router.post("/holds",requirePermission("moduleSales"),asyncRoute(async(req,res)=
 }));
 
 router.delete("/holds/:id",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
-  const row=(await pool.query("DELETE FROM sale_holds WHERE id=$1 AND organization_id=$2 AND user_id=$3 RETURNING *",[req.params.id,req.user.organizationId,req.user.id])).rows[0];
-  if(!row)throw new HttpError(404,"Ushlab turilgan savat topilmadi");
+  const row=await withTransaction(async(client)=>{
+    await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId});
+    const existing=(await client.query("SELECT store_id FROM sale_holds WHERE id=$1 AND organization_id=$2 AND user_id=$3",[req.params.id,req.user.organizationId,req.user.id])).rows[0];
+    if(!existing)throw new HttpError(404,"Ushlab turilgan savat topilmadi");
+    assertStoreScope(req.user,existing.store_id);
+    await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId,storeId:existing.store_id});
+    const deleted=(await client.query("DELETE FROM sale_holds WHERE id=$1 AND organization_id=$2 AND user_id=$3 RETURNING *",[req.params.id,req.user.organizationId,req.user.id])).rows[0];
+    if(!deleted)throw new HttpError(404,"Ushlab turilgan savat topilmadi");
+    return deleted;
+  });
   ok(res,{deleted:true,hold:holdView(row)});
 }));
 
@@ -167,6 +177,7 @@ router.post("/business-days/close",requirePermission("closeBusinessDay"),asyncRo
   assertStoreScope(req.user,input.storeId);
   const day=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;
+    await lockStoreTradingAuthorization(client,{organizationId:orgId,storeId:input.storeId});
     const store=await assertOrganizationStore(client,orgId,input.storeId);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`${orgId}:${input.storeId}:${input.businessDate}`]);
     const existing=(await client.query("SELECT * FROM business_days WHERE organization_id=$1 AND store_id=$2 AND business_date=$3 FOR UPDATE",[orgId,input.storeId,input.businessDate])).rows[0];
@@ -210,7 +221,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
   const input=saleSchema.parse(req.body);assertStoreScope(req.user,input.storeId);
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;const store=await assertOrganizationStore(client,orgId,input.storeId);
-    const organization=(await client.query("SELECT settings FROM organizations WHERE id=$1",[orgId])).rows[0]||{};
+    const organization=await lockStoreTradingAuthorization(client,{organizationId:orgId,storeId:input.storeId});
     const posRules=effectivePosRules(organization.settings||{},input.storeId);
     const paymentMethods=input.payments.map((payment)=>payment.method);
     if(new Set(paymentMethods).size!==paymentMethods.length)throw new HttpError(400,"Bir xil to‘lov usulini bir savdoda takrorlamang","DUPLICATE_PAYMENT_METHOD");
@@ -302,13 +313,15 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
   }).parse(req.body);
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;
+    // Organization precedes sale/shift row locks on every protected write.
+    await lockStoreTradingAuthorization(client,{organizationId:orgId});
     if(input.clientReference){
       const duplicate=(await client.query("SELECT * FROM sale_returns WHERE organization_id=$1 AND client_reference=$2 LIMIT 1",[orgId,input.clientReference])).rows[0];
       if(duplicate)return duplicate;
     }
     const sale=(await client.query("SELECT * FROM sales WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,orgId])).rows[0];
     if(!sale)throw new HttpError(404,"Savdo topilmadi");assertStoreScope(req.user,sale.store_id);await assertOrganizationStore(client,orgId,sale.store_id);
-    const organization=(await client.query("SELECT timezone,settings FROM organizations WHERE id=$1",[orgId])).rows[0]||{};
+    const organization=await lockStoreTradingAuthorization(client,{organizationId:orgId,storeId:sale.store_id});
     const returnBusinessDate=organizationBusinessDateISO(organization);
     await lockBusinessDay(client,{organizationId:orgId,storeId:sale.store_id,businessDate:returnBusinessDate});
     const item=(await client.query("SELECT * FROM sale_items WHERE sale_id=$1 AND product_id=$2",[sale.id,input.productId])).rows[0];if(!item)throw new HttpError(404,"Savdoda bu mahsulot topilmadi");
