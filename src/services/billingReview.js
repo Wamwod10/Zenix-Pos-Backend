@@ -4,6 +4,7 @@ import { organizationCalendarDateISO } from "../lib/businessDate.js";
 import { HttpError } from "../lib/http.js";
 import { writeAudit } from "./audit.js";
 import { assertNoConflictingBillingReview } from "./pendingBillingReview.js";
+import { consumePromoReservation,releasePromoReservation } from "./promoCodes.js";
 
 // A paid renewal must never silently lift a platform administrator suspension.
 export function reviewLicenseStatus({ currentStatus, decision, expiryDate, timezone }) {
@@ -45,6 +46,8 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
   if (!reviewed) return { outcome: "alreadyReviewed", payment: row, organization: null };
 
   if (decision === "APPROVED") {
+    // The reserved immutable quote survives later promo deactivation/exhaustion.
+    await consumePromoReservation(client,row.id);
     if (row.type === "EXTRA") {
       await client.query("UPDATE organizations SET store_limit=store_limit+$2,updated_at=now() WHERE id=$1", [row.organization_id, Math.max(1, Number(row.extra_store_count || 1))]);
     } else {
@@ -53,6 +56,7 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
       await client.query("UPDATE organizations SET plan=$2,license_status=CASE WHEN license_status='SUSPENDED' THEN 'SUSPENDED' ELSE 'ACTIVE' END,expiry_date=$3,store_limit=$4,updated_at=now() WHERE id=$1", [row.organization_id, plan, row.service_period_to, storeLimit]);
     }
   } else {
+    await releasePromoReservation(client,row.id,reason||"REJECTED");
     await client.query("UPDATE organizations SET license_status=$2,updated_at=now() WHERE id=$1", [row.organization_id, reviewLicenseStatus({currentStatus:row.license_status,decision,expiryDate:row.expiry_date,timezone:row.timezone})]);
   }
 

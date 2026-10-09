@@ -21,13 +21,16 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "016_tenant_integrity_guards.sql",
   "017_catalog_pagination_indexes.sql",
   "018_platform_directory_indexes.sql",
+  "019_saaspromos.sql",
   "020_extra_store_entitlements.sql",
   "021_mvp18_concurrent_indexes.sql",
   "022_mvp18_guarded_constraints.sql",
   "023_validate_extra_store_constraints.sql",
+  "024_promo_reservations.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
+  "platform_promo_reservations_payment_tenant_fk",
   "users_store_tenant_fk",
   "inventory_balances_store_tenant_fk",
   "inventory_balances_product_tenant_fk",
@@ -142,6 +145,9 @@ export const REQUIRED_TABLES = Object.freeze([
   "auth_login_attempts",
   "auth_registration_attempts",
   "workspace_revisions",
+  "platform_promos",
+  "platform_promo_uses",
+  "platform_promo_reservations",
   "extra_store_entitlements",
 ]);
 
@@ -182,6 +188,9 @@ export const REQUIRED_FOREIGN_KEY_TABLES = Object.freeze([
   "telegram_connections",
   "notification_outbox",
   "notification_deliveries",
+  "platform_promos",
+  "platform_promo_uses",
+  "platform_promo_reservations",
   "extra_store_entitlements",
   "file_assets",
   "audit_logs",
@@ -189,6 +198,7 @@ export const REQUIRED_FOREIGN_KEY_TABLES = Object.freeze([
 ]);
 
 export const REQUIRED_UNIQUE_CONSTRAINT_TABLES = Object.freeze([
+  "platform_promo_reservations",
   "stores",
   "users",
   "auth_sessions",
@@ -215,6 +225,9 @@ export const REQUIRED_INDEXES = Object.freeze([
   "organizations_license_created_idx",
   "billing_payments_submitted_id_paging_idx",
   "billing_payments_status_submitted_idx",
+  "platform_promo_uses_org_idx",
+  "platform_promo_uses_promo_org_idx",
+  "platform_promo_reservations_active_idx",
   "extra_store_entitlements_active_idx",
   "billing_payments_org_id_unique",
   "inventory_batches_lookup_idx",

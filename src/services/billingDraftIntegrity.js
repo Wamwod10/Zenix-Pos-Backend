@@ -16,6 +16,7 @@ export function draftRecalculationInput(draft) {
     selectedEndDate: date(draft.selected_end_date),
     extraStoreCount: Number(draft.extra_store_count ?? 0),
     metadata: {},
+    ...(draft.metadata?.promoCode?{promoCode:draft.metadata.promoCode}:{}),
   };
 }
 

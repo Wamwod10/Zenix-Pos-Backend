@@ -14,5 +14,6 @@ export function buildBillingDraftMetadata(input, calculated) {
       ? `Qo‘shimcha filial limiti · ${calculated.extraStoreCount} ta`
       : `${BILLING_PLANS[calculated.plan]?.label || calculated.plan} tarif`,
     activeStores: calculated.activeStores,
+    promoId:calculated.promoId||null,promoCode:calculated.promoCode||"",promoDiscount:calculated.promoDiscount||0,promoDiscountPercent:calculated.promoDiscountPercent||0,
   };
 }

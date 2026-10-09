@@ -43,6 +43,118 @@ const testPool = (max) => new Pool({
   options: "-c lock_timeout=5s -c statement_timeout=30s",
 });
 
+function registerPromoReservationIntegration(){
+integration('promo reservation concurrent final slot, atomic rollback, retry, deactivation and terminal release',async(t)=>{
+ const {reservePromo,consumePromoReservation,releasePromoReservation}=await import('../src/services/promoCodes.js');
+ const {applyBillingReview}=await import('../src/services/billingReview.js');
+ const db=testPool(4);
+ try{
+  const orgs=(await db.query("INSERT INTO organizations(name) VALUES('Promo A'),('Promo B') RETURNING id")).rows.map(x=>x.id);
+  const users=[];
+  for(const org of orgs)users.push((await db.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Promo owner',$2,'hash','OWNER') RETURNING id",[org,`promo-${org}`])).rows[0].id);
+  const promo=(await db.query("INSERT INTO platform_promos(code,plan,discount_percent,max_uses,max_uses_per_org) VALUES($1,'MONTHLY',50,1,1) RETURNING *",[`PROMO-${Date.now()}`])).rows[0];
+  const drafts=[];
+  for(let i=0;i<2;i++)drafts.push((await db.query(`INSERT INTO billing_drafts(organization_id,created_by,order_id,type,plan,base_amount,total_amount,metadata)
+   VALUES($1,$2,$3,'LICENSE','MONTHLY',350000,175000,$4) RETURNING *`,[orgs[i],users[i],`quote-${orgs[i]}`,{promoId:promo.id,promoCode:promo.code,promoDiscount:175000,promoDiscountPercent:50}])).rows[0]);
+  const submit=(i,fail=false)=>runTransaction(db,async(client)=>{
+   await client.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[orgs[i]]);
+   const payment=(await client.query(`INSERT INTO billing_payments(organization_id,draft_id,order_id,type,plan,amount,service_period_to)
+    VALUES($1,$2,$3,'LICENSE','MONTHLY',175000,CURRENT_DATE+30) RETURNING *`,[orgs[i],drafts[i].id,`payment-${orgs[i]}-${Date.now()}`])).rows[0];
+   const reservation=await reservePromo(client,{paymentId:payment.id,organizationId:orgs[i]});
+   if(fail)throw new Error('atomic rollback');
+   return {payment,reservation,i};
+  });
+  await t.test('failed submit rolls back payment and reservation together',async()=>{
+   await assert.rejects(submit(0,true),/atomic rollback/);
+   assert.equal((await db.query('SELECT count(*)::int n FROM platform_promo_reservations WHERE promo_id=$1',[promo.id])).rows[0].n,0);
+   assert.equal((await db.query('SELECT count(*)::int n FROM billing_payments WHERE organization_id=$1',[orgs[0]])).rows[0].n,0);
+  });
+  const results=await Promise.allSettled([submit(0),submit(1)]);
+  assert.equal(results.filter(x=>x.status==='fulfilled').length,1);
+  assert.equal(results.filter(x=>x.status==='rejected'&&x.reason.code==='PROMO_EXHAUSTED').length,1);
+  const winner=results.find(x=>x.status==='fulfilled').value;
+  await db.query('UPDATE platform_promos SET active=false WHERE id=$1',[promo.id]);
+  await runTransaction(db,async(client)=>{
+   const again=await reservePromo(client,{paymentId:winner.payment.id,organizationId:orgs[winner.i]});
+   assert.equal(again.id,winner.reservation.id);
+  });
+  await t.test('approval rejects a changed payment amount while retaining reserved capacity',async()=>{
+   await db.query('UPDATE billing_payments SET amount=175001 WHERE id=$1',[winner.payment.id]);
+   await assert.rejects(runTransaction(db,client=>applyBillingReview(client,{paymentId:winner.payment.id,decision:'APPROVED'})),error=>error.code==='PROMO_QUOTE_STALE');
+   assert.equal((await db.query('SELECT status FROM billing_payments WHERE id=$1',[winner.payment.id])).rows[0].status,'REVIEW');
+   await db.query('UPDATE billing_payments SET amount=175000 WHERE id=$1',[winner.payment.id]);
+  });
+  await runTransaction(db,async(client)=>{
+   const result=await applyBillingReview(client,{paymentId:winner.payment.id,decision:'APPROVED'});
+   assert.equal(result.outcome,'approved');
+   await consumePromoReservation(client,winner.payment.id);
+   await releasePromoReservation(client,winner.payment.id,'retry');
+  });
+  assert.equal((await db.query('SELECT status FROM platform_promo_reservations WHERE payment_id=$1',[winner.payment.id])).rows[0].status,'CONSUMED');
+  assert.equal((await db.query('SELECT count(*)::int n FROM platform_promo_uses WHERE payment_id=$1',[winner.payment.id])).rows[0].n,1);
+  assert.equal((await db.query('SELECT used_count FROM platform_promos WHERE id=$1',[promo.id])).rows[0].used_count,1);
+  await db.query('UPDATE platform_promos SET active=true,max_uses=10 WHERE id=$1',[promo.id]);
+  await assert.rejects(submit(winner.i),err=>err.code==='PROMO_ORG_LIMIT');
+  const loser=1-winner.i;
+  const rejected=await submit(loser);
+  await runTransaction(db,client=>applyBillingReview(client,{paymentId:rejected.payment.id,decision:'REJECTED',reason:'Invalid evidence'}));
+  assert.equal((await db.query('SELECT status FROM platform_promo_reservations WHERE payment_id=$1',[rejected.payment.id])).rows[0].status,'RELEASED');
+  const expired=await submit(loser);
+  await runTransaction(db,async(client)=>{
+   await client.query("UPDATE billing_payments SET status='EXPIRED' WHERE id=$1",[expired.payment.id]);
+   assert.equal((await client.query('SELECT status FROM platform_promo_reservations WHERE payment_id=$1',[expired.payment.id])).rows[0].status,'RELEASED','terminal status writes must release capacity atomically');
+   await releasePromoReservation(client,expired.payment.id,'EXPIRED');
+   await releasePromoReservation(client,expired.payment.id,'duplicate');
+  });
+  assert.deepEqual((await db.query('SELECT status,release_reason FROM platform_promo_reservations WHERE payment_id=$1',[expired.payment.id])).rows[0],{status:'RELEASED',release_reason:'EXPIRED'});
+  await assert.rejects(runTransaction(db,client=>reservePromo(client,{paymentId:expired.payment.id,organizationId:orgs[winner.i]})),err=>err.code==='PAYMENT_NOT_FOUND');
+  const foreignPayment=(await db.query("INSERT INTO billing_payments(organization_id,order_id,type,plan,amount,status) VALUES($1,$2,'LICENSE','MONTHLY',350000,'APPROVED') RETURNING id",[orgs[winner.i],`foreign-${Date.now()}`])).rows[0].id;
+  await assert.rejects(db.query(`INSERT INTO platform_promo_reservations(promo_id,organization_id,payment_id,plan,discount_amount,quote_amount)
+   VALUES($1,$2,$3,'MONTHLY',175000,175000)`,[promo.id,orgs[loser],foreignPayment]),err=>err.constraint==='platform_promo_reservations_payment_tenant_fk');
+  await t.test('registered payment submit reserves atomically and retries return the same pending payment',async()=>{
+   const {default:router,calculateDraft}=await import('../src/routes/billing.js');
+   const {buildBillingDraftMetadata}=await import('../src/services/billingDraftMetadata.js');
+   const {pool}=await import('../src/db/pool.js');
+   const connect=pool.connect;
+   pool.connect=db.connect.bind(db); // Real transactions use only this bounded disposable pool.
+   try{
+    const org=(await db.query("INSERT INTO organizations(name) VALUES('Route promo owner') RETURNING id")).rows[0].id;
+    const user=(await db.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Owner',$2,'hash','OWNER') RETURNING id",[org,`route-${org}`])).rows[0].id;
+    const input={type:'LICENSE',intent:'ACTIVATE',plan:'MONTHLY',promoCode:promo.code,extraStoreCount:0,metadata:{}};
+    const quote=await runTransaction(db,client=>calculateDraft(client,{organizationId:org},input));
+    const draft=(await db.query(`INSERT INTO billing_drafts(organization_id,created_by,order_id,type,plan,current_end_date,selected_end_date,extension_days,base_amount,total_amount,metadata)
+      VALUES($1,$2,$3,'LICENSE','MONTHLY',$4,$5,$6,$7,$8,$9) RETURNING id`,[org,user,`route-${org}`,quote.currentEndDate,quote.selectedEndDate,quote.extensionDays,quote.baseAmount,quote.totalAmount,buildBillingDraftMetadata(input,quote)])).rows[0].id;
+    const receipt=(await db.query("INSERT INTO billing_receipts(organization_id,file_name,mime_type,file_size,content) VALUES($1,'proof.pdf','application/pdf',4,$2) RETURNING id",[org,Buffer.from('test')])).rows[0].id;
+    const handler=router.stack.find(layer=>layer.route?.path==='/payments'&&layer.route.methods.post).route.stack.at(-1).handle;
+    const invoke=async()=>{
+      let body,failure;
+      const res={status(){return this},json(value){body=value}};
+      await handler({body:{draftId:draft,receiptId:receipt},user:{id:user,organizationId:org}},res,error=>{failure=error});
+      if(failure)throw failure;
+      return body.data.payment;
+    };
+    const [first,retry]=await Promise.all([invoke(),invoke()]);
+    assert.equal(first.id,retry.id);
+    assert.equal((await db.query('SELECT count(*)::int n FROM platform_promo_reservations WHERE payment_id=$1',[first.id])).rows[0].n,1);
+    assert.equal((await db.query('SELECT status FROM billing_drafts WHERE id=$1',[draft])).rows[0].status,'submitted');
+    assert.equal((await db.query("SELECT count(*)::int n FROM audit_logs WHERE entity_id=$1 AND action='submit'",[first.id])).rows[0].n,1);
+   }finally{pool.connect=connect;}
+  });
+  await t.test('migration backfills valid legacy pending quotes once after deactivation',async()=>{
+   const history=(await db.query(`INSERT INTO billing_payments(organization_id,draft_id,order_id,type,plan,amount,service_period_to)
+    VALUES($1,$2,$3,'LICENSE','MONTHLY',175000,CURRENT_DATE+30) RETURNING id`,[orgs[loser],drafts[loser].id,`legacy-${Date.now()}`])).rows[0].id;
+   await db.query('UPDATE platform_promos SET active=false WHERE id=$1',[promo.id]);
+   const sql=await fs.readFile(path.join(migrationsDirectory,'024_promo_reservations.sql'),'utf8');
+   await db.query(sql);await db.query(sql);
+   const rows=(await db.query('SELECT status,quote_amount FROM platform_promo_reservations WHERE payment_id=$1',[history])).rows;
+   assert.deepEqual(rows,[{status:'RESERVED',quote_amount:'175000.00'}]);
+   const result=await runTransaction(db,client=>applyBillingReview(client,{paymentId:history,decision:'APPROVED'}));
+   assert.equal(result.outcome,'approved');
+  });
+ }finally{await db.end();}
+});
+}
+
 function registerInventoryCountIntegration(){
 integration('inventory count batch reconciliation reaches the requested total with real PostgreSQL locks',async(t)=>{
   assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
@@ -467,3 +579,4 @@ integration('receipt reuse is serialized on locked receipt and rejected after pr
 });
 
 registerInventoryCountIntegration();
+registerPromoReservationIntegration();

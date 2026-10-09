@@ -83,9 +83,10 @@ test("every tenant foreign key in migration 016 is covered by the integrity audi
   const sources=await Promise.all([
     "../migrations/016_tenant_integrity_guards.sql",
     "../migrations/022_mvp18_guarded_constraints.sql",
+    "../migrations/024_promo_reservations.sql",
   ].map(name=>fs.readFile(new URL(name,import.meta.url),"utf8")));
   const sql=sources.join("\n");
-  const migrationConstraints=[...sql.matchAll(/ADD CONSTRAINT\s+(\w+_tenant_fk)\s+FOREIGN KEY/gi)].map((match)=>match[1]);
+  const migrationConstraints=[...sql.matchAll(/CONSTRAINT\s+(\w+_tenant_fk)\s+FOREIGN KEY/gi)].map((match)=>match[1]);
   assert.deepEqual(new Set(schemaModule.REQUIRED_TENANT_CONSTRAINTS),new Set(migrationConstraints));
 });
 

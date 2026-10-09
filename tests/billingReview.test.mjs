@@ -25,6 +25,9 @@ const createClient = (overrides = {}) => {
         return { rows: [{ id: state.payment.organization_id }] };
       }
       if (/SELECT bp\.\*,o\./.test(sql)) return { rows: [state.payment] };
+      if (/SELECT \* FROM billing_payments/.test(sql)) return {rows:[state.payment]};
+      if (/SELECT \* FROM platform_promo_reservations/.test(sql)) return {rows:[]};
+      if (/SELECT metadata FROM billing_drafts/.test(sql)) return {rows:[]};
       if (/SELECT id FROM billing_payments/.test(sql)) return {rowCount: overrides.otherPending ? 1 : 0, rows:[]};
       if (/UPDATE billing_payments SET status/.test(sql)) {
         state.payment = { ...state.payment, status: params[1], reject_reason: params[2], reviewed_at: "2026-09-26T12:00:00.000Z" };
