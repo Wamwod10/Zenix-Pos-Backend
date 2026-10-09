@@ -41,7 +41,7 @@ export function buildCustomerPageQuery(input){
         s.last_purchase_at,COALESCE(lp.loyalty_points,0) loyalty_points
       FROM customers c ${customerFinancialJoin}
       WHERE c.organization_id=$1 AND c.archived=false
-        AND ($2='%%' OR c.name ILIKE $2 ESCAPE '\\' OR c.phone ILIKE $2 ESCAPE '\\' OR c.email ILIKE $2 ESCAPE '\\')
+        AND ($2='%%' OR c.name ILIKE $2 ESCAPE E'\\\\' OR c.phone ILIKE $2 ESCAPE E'\\\\' OR c.email ILIKE $2 ESCAPE E'\\\\')
     ), filtered AS MATERIALIZED (SELECT * FROM directory c WHERE ${filters[query.filter]})
     SELECT c.*,totals.total FROM (SELECT count(*)::int AS total FROM filtered) totals
       LEFT JOIN (SELECT * FROM filtered c ORDER BY ${order} LIMIT $3 OFFSET $4) c ON true

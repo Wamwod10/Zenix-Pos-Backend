@@ -23,6 +23,7 @@ test('customer page SQL binds user text, tenant, page bounds and uses determinis
     assert.match(query.text,/c.organization_id=\$1 AND c.archived=false/);
     assert.ok(query.text.includes(`ORDER BY ${expressions[sort]} ${direction.toUpperCase()},c.id ASC`));
     assert.match(query.text,/LIMIT \$3 OFFSET \$4/);
+    assert.ok(query.text.includes("ESCAPE E'\\\\'"),'PostgreSQL must receive a single-character LIKE escape');
     assert.match(query.text,/count\(\*\).*total/);
   }
   assert.throws(()=>directory.buildCustomerPageQuery({organizationId,sort:'name; DELETE FROM customers'}));
