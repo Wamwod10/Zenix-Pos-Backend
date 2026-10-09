@@ -296,7 +296,7 @@ router.post("/adjust",requirePermission("inventoryAdjust"),asyncRoute(async(req,
     const id=crypto.randomUUID();
     await client.query(`UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,input.storeId,input.productId,after]);
     await enqueueStockLevelNotification(client,{organizationId:orgId,storeId:input.storeId,eventBase:id,productId:input.productId,productName:product.name,storeName:store.name,before,after,minStock:Number(product.min_stock||0)});
-    await client.query(`INSERT INTO stock_movements(id,organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by) VALUES($1,$2,$3,$4,'adjust',$5,$6,$7,'adjustment',$1,$8,$9)`,[id,orgId,input.storeId,input.productId,input.delta,before,after,input.reason,req.user.id]);
+    await client.query(`INSERT INTO stock_movements(id,organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by) VALUES($1,$2,$3,$4,'adjust',$5,$6,$7,'adjustment',$10,$8,$9)`,[id,orgId,input.storeId,input.productId,input.delta,before,after,input.reason,req.user.id,id]);
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.storeId,action:"adjust",entityType:"inventory",entityId:id,title:"Qoldiq tuzatildi",description:`${product.name}: ${before} → ${after}`});
     return {id,productId:input.productId,product:product.name,before,quantity:after,after,delta:Number(input.delta),reason:input.reason,createdAt:new Date().toISOString()};
   });

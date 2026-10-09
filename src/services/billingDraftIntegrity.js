@@ -15,6 +15,7 @@ export function draftRecalculationInput(draft) {
     intent: draft.type === 'EXTRA' ? 'EXTRA' : draft.metadata?.intent || 'RENEW',
     selectedEndDate: date(draft.selected_end_date),
     extraStoreCount: Number(draft.extra_store_count ?? 0),
+    ...(draft.type==='EXTRA'?{extraDuration:draft.metadata?.extraDuration||'UNTIL_LICENSE'}:{}),
     metadata: {},
     ...(draft.metadata?.promoCode?{promoCode:draft.metadata.promoCode}:{}),
   };
@@ -29,6 +30,7 @@ export function assertBillingDraftCurrent(draft, calculated) {
     money(draft.base_amount) === calculated.baseAmount &&
     money(draft.extra_store_count) === calculated.extraStoreCount &&
     money(draft.extra_store_amount) === calculated.extraStoreAmount &&
+    (draft.type!=='EXTRA'||(draft.metadata?.extraDuration||'UNTIL_LICENSE')===calculated.extraDuration) &&
     money(draft.total_amount) === calculated.totalAmount &&
     // Legacy drafts may not have this hint; validate every new quote that does.
     (draft.metadata?.activeStores == null ||

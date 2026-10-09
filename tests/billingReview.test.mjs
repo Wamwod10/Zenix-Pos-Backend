@@ -111,3 +111,25 @@ test('conflicting historical pending payments may still be rejected to resolve t
   const result=await applyBillingReview(client,{paymentId:'payment-1',decision:'REJECTED'});
   assert.equal(result.outcome,'rejected');
 });
+
+test('new extra-store payment creates an expiring, single-use entitlement instead of permanent limit', async () => {
+  const client = createClient({
+    type:'EXTRA', draft_id:'draft-1', extra_store_count:2,
+    service_period_from:'2026-10-08', service_period_to:'2026-11-08',
+  });
+  const query = client.query.bind(client);
+  let inserted = null;
+  client.query = async (sql, params=[]) => {
+    if (/SELECT metadata,base_amount,total_amount FROM billing_drafts/.test(sql)) {
+      return {rows:[{metadata:{extraDuration:'MONTHLY'},base_amount:0,total_amount:240000}]};
+    }
+    if (/INSERT INTO extra_store_entitlements/.test(sql)) {
+      inserted = {sql,params};return {rowCount:1,rows:[]};
+    }
+    return query(sql,params);
+  };
+  const result=await applyBillingReview(client,{paymentId:'payment-1',decision:'APPROVED'});
+  assert.equal(result.outcome,'approved');
+  assert.equal(client.state.organizationUpdate,null);
+  assert.deepEqual(inserted.params,['org-1','payment-1',2,'MONTHLY','2026-10-08','2026-11-08']);
+});

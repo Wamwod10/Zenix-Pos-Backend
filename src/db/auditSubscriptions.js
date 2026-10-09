@@ -12,7 +12,12 @@ export async function auditSubscriptionIntegrity(db) {
     db.query(`SELECT count(*)::int AS over_limit_organizations FROM (
       SELECT o.id FROM organizations o
       LEFT JOIN stores s ON s.organization_id=o.id AND s.active=true
-      GROUP BY o.id,o.store_limit HAVING count(s.id)>o.store_limit
+      GROUP BY o.id,o.store_limit,o.timezone HAVING count(s.id)>o.store_limit+COALESCE((
+        SELECT sum(e.quantity)::int FROM extra_store_entitlements e
+        WHERE e.organization_id=o.id
+        AND e.starts_on<=(now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date
+        AND e.expires_on>(now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date
+      ),0)
     ) over_limit`),
   ]);
   const activeWithoutExpiry=Number(licenseRows.rows[0]?.active_without_expiry || 0);

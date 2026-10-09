@@ -22,7 +22,8 @@
     "test:db": "node scripts/assertTestDatabase.js && node --test --test-isolation=none tests/databaseIntegration.test.mjs",
     "worker": "node src/worker.js",
     "test:http": "node scripts/assertTestDatabase.js && node --test --test-isolation=none tests/httpIntegration.test.mjs",
-    "db:audit-subscriptions": "node src/db/auditSubscriptions.js"
+    "db:audit-subscriptions": "node src/db/auditSubscriptions.js",
+    "recovery:compare": "node scripts/compareTenantRecovery.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

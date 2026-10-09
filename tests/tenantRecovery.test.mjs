@@ -11,7 +11,7 @@ test('snapshot exposes only counts and fingerprints, with bounded scoped reads',
   const pool={connect:async()=>({query:async(sql,params)=>{
     calls.push({sql,params});
     if(sql.startsWith('SELECT id'))return {rows:[{id:ORG,name:'PRIVATE ORGANIZATION'}]};
-    if(sql.includes('AS fingerprint'))return {rows:[{fingerprint:'a'.repeat(32),id:'PRIVATE ROW',name:'PRIVATE PERSON'}]};
+    if(sql.includes('AS fingerprint'))return {rows:[{fingerprint:'a'.repeat(64),id:'PRIVATE ROW',name:'PRIVATE PERSON'}]};
     if(sql.includes('AS negative_balances'))return {rows:[{negative_balances:0,invalid_returns:0}]};
     if(sql.includes('count(*)'))return {rows:[{rows:'1',amount:'12'}]};
     return {rows:[]};

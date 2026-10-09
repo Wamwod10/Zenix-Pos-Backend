@@ -42,3 +42,10 @@ test('stale pricing, plan, expiry and branch-count quotes are rejected before pa
 test('extra branch draft always recalculates as EXTRA even if metadata is corrupted',()=>{
   assert.equal(draftRecalculationInput({...baseline,type:'EXTRA',metadata:{intent:'ACTIVATE'}}).intent,'EXTRA');
 });
+
+test('independent branch billing quotes reject a changed duration even at an equal total',()=>{
+  const row={...baseline,type:'EXTRA',metadata:{extraDuration:'MONTHLY',activeStores:2}};
+  const quote={...computed,type:'EXTRA',extraDuration:'ANNUAL',activeStores:2};
+  assert.equal(draftRecalculationInput(row).extraDuration,'MONTHLY');
+  assert.throws(()=>assertBillingDraftCurrent(row,quote),error=>error.status===409&&error.code==='BILLING_DRAFT_STALE');
+});

@@ -30,7 +30,7 @@ export const RECOVERY_ROW_SOURCES=Object.freeze([
 export const RECOVERY_ROW_TABLES=Object.freeze(RECOVERY_ROW_SOURCES.map(source=>source.table));
 export const RECOVERY_MAX_ROWS_PER_TABLE=5000;
 const SQL=Object.freeze(RECOVERY_ROW_SOURCES.map(({table,key,where})=>Object.freeze([
-  table,`SELECT md5(to_jsonb(t)::text) AS fingerprint FROM ${table} t WHERE ${where} ORDER BY ${key} LIMIT $2`,
+  table,`SELECT encode(sha256(convert_to(to_jsonb(t)::text, 'UTF8')), 'hex') AS fingerprint FROM ${table} t WHERE ${where} ORDER BY ${key} LIMIT $2`,
 ])));
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const fail=(message,code)=>Object.assign(new Error(message),{code});
@@ -47,13 +47,15 @@ export async function recoveryRowManifest(pool,organizationId,{limit=RECOVERY_MA
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');began=true;
     await client.query("SET LOCAL statement_timeout = '10000ms'");
     await client.query("SET LOCAL idle_in_transaction_session_timeout = '10000ms'");
+    await client.query("SET LOCAL TIME ZONE 'UTC'");
+    await client.query("SET LOCAL DateStyle = 'ISO, YMD'");
     if(!(await client.query('SELECT id FROM organizations WHERE id=$1 LIMIT 1',[organizationId])).rows.length)throw fail('Organization not found in snapshot','RECOVERY_ORGANIZATION_NOT_FOUND');
     const tables={};
     for(const [table,sql] of SQL){
       const {rows}=await client.query(sql,[organizationId,limit+1]);
       if(rows.length>limit)throw fail(`Recovery manifest row limit exceeded for ${table}`,'RECOVERY_LIMIT_EXCEEDED');
       const fingerprints=rows.map(row=>{
-        if(typeof row.fingerprint!=='string'||!/^[a-f0-9]{32}$/.test(row.fingerprint))throw fail('Invalid recovery fingerprint','RECOVERY_INVALID_FINGERPRINT');
+        if(!validFingerprint(row.fingerprint))throw fail('Invalid recovery fingerprint','RECOVERY_INVALID_FINGERPRINT');
         return row.fingerprint;
       }).sort();
       // Only a table-level digest leaves this function; no row keys or hashes.

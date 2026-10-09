@@ -81,13 +81,14 @@ router.post("/login",asyncRoute(async(req,res)=>{
   const usernameNorm=input.username.trim().toLowerCase();
   const ipAddress=requestIp(req);
   await assertLoginAllowed(pool,usernameNorm,ipAddress);
-  const {rows}=await pool.query(`SELECT u.*,o.name AS organization_name FROM users u LEFT JOIN organizations o ON o.id=u.organization_id WHERE lower(u.username)=lower($1) AND u.active=true ORDER BY u.created_at LIMIT 1`,[usernameNorm]);
+  const {rows}=await pool.query(`SELECT u.*,o.name AS organization_name,o.license_status AS organization_license_status FROM users u LEFT JOIN organizations o ON o.id=u.organization_id WHERE lower(u.username)=lower($1) AND u.active=true ORDER BY u.created_at LIMIT 1`,[usernameNorm]);
   const user=rows[0];
   const valid=Boolean(user)&&await bcrypt.compare(input.password,user.password_hash);
   await recordLoginDecision(pool,{usernameNorm,ipAddress,success:valid});
   if(!valid){
     throw new HttpError(401,"Kirish nomi yoki parol noto‘g‘ri","INVALID_CREDENTIALS");
   }
+  if(user.organization_license_status==="SUSPENDED")throw new HttpError(403,"Akkaunt administrator tomonidan bloklangan","ACCOUNT_SUSPENDED");
   const token=await withTransaction((client)=>createSession(client,user.id,req));
   res.cookie(env.sessionCookieName,token,cookieOptions);
   ok(res,{user:publicUser(user)});

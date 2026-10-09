@@ -15,7 +15,7 @@ function fakePool(records,{fail=false}={}){
   },release:()=>released++})};
 }
 test('manifest reads fixed bounded tenant sources and exports no identifiers or raw fields',async()=>{
-  const pool=fakePool([{fingerprint:'a'.repeat(32),id:'PRIVATE-ID',receipt:'SECRET'}]);
+  const pool=fakePool([{fingerprint:'a'.repeat(64),id:'PRIVATE-ID',receipt:'SECRET'}]);
   const result=await recoveryRowManifest(pool,ORG,{limit:100});
   assert.deepEqual(Object.keys(result.tables.products).sort(),['fingerprint','rows']);
   assert.match(result.tables.products.fingerprint,/^[a-f0-9]{64}$/);assert.equal(result.tables.products.rows,1);
@@ -28,7 +28,7 @@ test('manifest reads fixed bounded tenant sources and exports no identifiers or 
   assert.doesNotMatch(JSON.stringify(result),/PRIVATE-ID|SECRET|22222222/);
 });
 test('fingerprints stay equal after row reordering and detect same-count edits',async()=>{
-  const a={fingerprint:'a'.repeat(32)},b={fingerprint:'b'.repeat(32)},c={fingerprint:'c'.repeat(32)};
+  const a={fingerprint:'a'.repeat(64)},b={fingerprint:'b'.repeat(64)},c={fingerprint:'c'.repeat(64)};
   const first=await recoveryRowManifest(fakePool([a,b]),ORG);
   const reordered=await recoveryRowManifest(fakePool([b,a]),ORG);assert.deepEqual(first,reordered);
   const edited=await recoveryRowManifest(fakePool([a,c]),ORG);
@@ -36,7 +36,7 @@ test('fingerprints stay equal after row reordering and detect same-count edits',
   assert.equal(first.tables.products.rows,edited.tables.products.rows);
 });
 test('row cap and query errors roll back and release without exposing database contents',async()=>{
-  const pool=fakePool([{fingerprint:'a'.repeat(32)},{fingerprint:'b'.repeat(32)}]);
+  const pool=fakePool([{fingerprint:'a'.repeat(64)},{fingerprint:'b'.repeat(64)}]);
   await assert.rejects(()=>recoveryRowManifest(pool,ORG,{limit:1}),/limit exceeded/);
   assert.equal(pool.calls.at(-1).sql,'ROLLBACK');assert.equal(pool.released,1);
   const failed=fakePool([],{fail:true});
@@ -68,5 +68,14 @@ test('all linked sources use proven tenant parents and immutable allowlist entri
     assert.ok(Object.isFrozen(source));assert.match(source.table,/^[a-z_]+$/);assert.doesNotMatch(source.where,/;|--|\/\*/);
     if(parents[source.table])assert.match(source.where,new RegExp(`FROM ${parents[source.table]} p WHERE p.id=t.[a-z_]+ AND p.organization_id=\\$1`));
     else assert.match(source.where,source.table==='organizations'?/^t.id=\$1$/:/^t.organization_id=\$1$/);
+  }
+});
+test('recovery pins timestamp serialization and uses SHA-256 row fingerprints',async()=>{
+  const pool=fakePool([]);
+  await recoveryRowManifest(pool,ORG);
+  assert.ok(pool.calls.some(({sql})=>sql==="SET LOCAL TIME ZONE 'UTC'"));
+  for(const {sql} of pool.calls.filter(c=>c.sql.includes('AS fingerprint'))){
+    assert.match(sql,/sha256\(convert_to\(to_jsonb\(t\)::text, 'UTF8'\)\)/);
+    assert.doesNotMatch(sql,/md5/i);
   }
 });

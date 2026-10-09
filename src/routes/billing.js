@@ -5,7 +5,7 @@ import { pool } from "../db/pool.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission } from "../middleware/auth.js";
 import {
-  BILLING_PLANS, addMonths, daysBetween, dateISO, extraStoreExtensionPrice, makeBillingOrderId,
+  BILLING_PLANS, addMonths, daysBetween, dateISO, priceExtraStoreByMonths, makeBillingOrderId,
   planExtensionPrice,
 } from "../config/billing.js";
 import { databaseDateISO, organizationCalendarDateISO } from "../lib/businessDate.js";
@@ -17,6 +17,7 @@ import { assertBillingDraftCurrent, draftRecalculationInput } from "../services/
 import { assertNoConflictingBillingReview } from "../services/pendingBillingReview.js";
 import { assertReceiptAvailable } from "../services/receiptReuseGuard.js";
 import { lockValidPromo,consumePromo,discountForAmount,reservePromo } from "../services/promoCodes.js";
+import { quoteExtraStore, coveredExtraStoreCount } from "../services/extraStoreEntitlements.js";
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -30,6 +31,7 @@ export const draftSchema=z.object({
   selectedEndDate:z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/)
     .refine(value=>dateISO(value)===value,'Sana noto‘g‘ri').optional().nullable(),
   extraStoreCount:z.coerce.number().int().min(0).max(20).default(0),
+  extraDuration:z.enum(["UNTIL_LICENSE","MONTHLY","ANNUAL"]).default("UNTIL_LICENSE"),
   promoCode:z.string().trim().max(40).default(""),
   metadata:z.record(z.string(),z.any()).default({}),
 }).superRefine((input,ctx)=>{
@@ -93,23 +95,25 @@ export async function calculateDraft(client,user,input,{lockPromo=true}={}){
     if(!currentExpiry||currentExpiry<=today)throw new HttpError(409,"Faol tarif topilmadi. Avval tarifni aktivlashtiring.","LICENSE_REQUIRED");
     currentEndDate=today;selectedEndDate=currentExpiry;extensionDays=daysBetween(today,currentExpiry);
     extraStoreCount=Math.max(1,extraStoreCount||1);
-    baseAmount=0;extraStoreAmount=extraStoreExtensionPrice(orgPlan,extensionDays,extraStoreCount);
+    const quote=quoteExtraStore({duration:input.extraDuration||"UNTIL_LICENSE",plan:orgPlan,today,licenseExpiry:currentExpiry,count:extraStoreCount});
+    selectedEndDate=quote.selectedEndDate;extensionDays=quote.extensionDays;
+    baseAmount=0;extraStoreAmount=quote.amount;
   }else if(intent==="RENEW"){
     const renewalPlan=BILLING_PLANS[org.plan]?org.plan:plan;
     plan=renewalPlan;
     currentEndDate=futureExpiry;
     if(!selectedEndDate||selectedEndDate<=currentEndDate)throw new HttpError(400,"Uzaytirish sanasi joriy davr tugashidan keyin bo‘lishi kerak","INVALID_RENEWAL_DATE");
     extensionDays=daysBetween(currentEndDate,selectedEndDate);
-    const minimumExtras=Math.max(0,activeStores-BILLING_PLANS[renewalPlan].includedStores);
+    const minimumExtras=Math.max(0,activeStores-BILLING_PLANS[renewalPlan].includedStores-await coveredExtraStoreCount(client,org,currentEndDate,selectedEndDate));
     extraStoreCount=Math.max(minimumExtras,extraStoreCount);
     baseAmount=planExtensionPrice(renewalPlan,extensionDays);
-    extraStoreAmount=extraStoreExtensionPrice(renewalPlan,extensionDays,extraStoreCount);
+    extraStoreAmount=priceExtraStoreByMonths(renewalPlan,currentEndDate,selectedEndDate,extraStoreCount);
 
   }else{
     currentEndDate=futureExpiry;
     selectedEndDate=addMonths(currentEndDate,selectedPlan.months);
     extensionDays=daysBetween(currentEndDate,selectedEndDate);
-    const minimumExtras=Math.max(0,activeStores-selectedPlan.includedStores);
+    const minimumExtras=Math.max(0,activeStores-selectedPlan.includedStores-await coveredExtraStoreCount(client,org,currentEndDate,selectedEndDate));
     extraStoreCount=Math.max(minimumExtras,extraStoreCount);
     baseAmount=selectedPlan.amount;
     extraStoreAmount=selectedPlan.extraStoreAmount*extraStoreCount;
@@ -122,7 +126,7 @@ export async function calculateDraft(client,user,input,{lockPromo=true}={}){
     promoDiscount=discountForAmount(baseAmount,promoDiscountPercent);
     if(promoDiscount>=baseAmount)throw new HttpError(400,"100% promokodni bepul faollashtirish oynasida ishlating","PROMO_FREE_FLOW");
   }
-  return {type:input.type,plan:input.type==="EXTRA"?(BILLING_PLANS[org.plan]?org.plan:"ANNUAL"):plan,intent,currentEndDate,selectedEndDate,extensionDays,baseAmount,extraStoreCount,extraStoreAmount,totalAmount:baseAmount+extraStoreAmount-promoDiscount,activeStores,promoId,promoCode,promoDiscount,promoDiscountPercent};
+  return {type:input.type,plan:input.type==="EXTRA"?(BILLING_PLANS[org.plan]?org.plan:"ANNUAL"):plan,intent,currentEndDate,selectedEndDate,extensionDays,baseAmount,extraStoreCount,extraDuration:input.type==="EXTRA"?(input.extraDuration||"UNTIL_LICENSE"):null,extraStoreAmount,totalAmount:baseAmount+extraStoreAmount-promoDiscount,activeStores,promoId,promoCode,promoDiscount,promoDiscountPercent};
 }
 
 router.post("/promo/preview",requirePermission("moduleBilling"),asyncRoute(async(req,res)=>{

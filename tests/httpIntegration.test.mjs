@@ -8,7 +8,7 @@ import { assertSafeTestDatabaseUrl } from '../scripts/assertTestDatabase.js';
 const testUrl = process.env.TEST_DATABASE_URL;
 const integration = testUrl ? test : test.skip;
 
-integration('authenticated tenant HTTP smoke: login, product isolation, permissions and license expiry', async () => {
+integration('authenticated tenant HTTP smoke: login, product isolation, permissions and license expiry', {timeout:60000}, async () => {
   const parsed = assertSafeTestDatabaseUrl(testUrl, { nodeEnv: process.env.NODE_ENV || 'test' });
   assert.equal(process.env.NODE_ENV, 'test');
   assert.equal(process.env.DATABASE_URL, testUrl, 'app and test pool must point at the exact same disposable test database');
@@ -17,7 +17,7 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
   const [{ default: pg }, { default: bcrypt }, { app }, { pool: appPool }] = await Promise.all([
     import('pg'), import('bcryptjs'), import('../src/app.js'), import('../src/db/pool.js'),
   ]);
-  const db = new pg.Pool({ connectionString: testUrl, max: 3 });
+  const db = new pg.Pool({ connectionString: testUrl, max: 3, connectionTimeoutMillis:5000, options:'-c lock_timeout=5s -c statement_timeout=30s' });
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve, reject) => {
     server.once('listening', resolve);
@@ -34,7 +34,7 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
     if (cookie) requestHeaders.cookie = cookie;
     if (omitClientMarker) delete requestHeaders['x-zenix-client'];
     const response = await fetch(`${base}${path}`, {
-      method, headers: requestHeaders, body: body === undefined ? undefined : JSON.stringify(body),
+      method, headers: requestHeaders, body: body === undefined ? undefined : JSON.stringify(body),signal:AbortSignal.timeout(10000),
     });
     const payload = await response.json();
     return { status: response.status, payload, cookie: response.headers.get('set-cookie')?.split(';')[0] };
@@ -100,6 +100,8 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
       body: { storeId: a.storeId, productId, delta: 3, reason: 'HTTP smoke initial count' },
     });
     assert.equal(receiptStock.status, 200, `stock adjustment failed: ${JSON.stringify(receiptStock.payload)}`);
+    const movement=(await db.query("SELECT reference_id FROM stock_movements WHERE id=$1 AND organization_id=$2",[receiptStock.payload.data.id,a.orgId])).rows[0];
+    assert.equal(movement.reference_id,receiptStock.payload.data.id,'adjustment UUID remains the text audit reference');
     const opened = await request('/api/shifts/open', {
       cookie: a.cookie, method: 'POST', body: { storeId: a.storeId, openingCash: 0 },
     });
@@ -150,7 +152,8 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
 
     await db.query("UPDATE organizations SET license_status='SUSPENDED' WHERE id=$1", [a.orgId]);
     const suspended = await request('/api/products', { cookie: a.cookie });
-    assert.equal(suspended.status, 402, 'existing session cannot bypass administrator suspension');
+    assert.equal(suspended.status, 403, 'existing session cannot bypass administrator suspension');
+    assert.equal(suspended.payload.error.code,'ACCOUNT_SUSPENDED');
 
     await db.query("UPDATE organizations SET license_status='ACTIVE',expiry_date=CURRENT_DATE - interval '1 day' WHERE id=$1", [a.orgId]);
     const expired = await request('/api/products', { cookie: a.cookie });

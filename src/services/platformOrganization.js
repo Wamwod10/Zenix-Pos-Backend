@@ -13,16 +13,27 @@ const dateSchema=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value=>{
 export const organizationControlSchema=z.discriminatedUnion('action',[
   z.object({action:z.literal('SUSPEND'),reason:z.string().trim().min(8).max(1000)}).strict(),
   z.object({action:z.literal('RESTORE'),reason:z.string().trim().min(8).max(1000)}).strict(),
+  z.object({action:z.enum(['PAYWALL','RELEASE_PAYWALL','SEND_NOTICE']),reason:z.string().trim().min(8).max(1000)}).strict(),
   z.object({action:z.literal('SET_LICENSE'),reason:z.string().trim().min(8).max(1000),plan:z.enum(Object.keys(BILLING_PLANS)),expiryDate:dateSchema,storeLimit:z.number().int().min(1).max(500)}).strict(),
 ]);
 
 // Never write to a tenant without explicitly locking its organization row. All
 // administrative overrides are in the same transaction as their audit log.
 export async function applyOrganizationControl(client,{organizationId,actorId,input}){
-    const org=(await client.query('SELECT id,name,plan,license_status,expiry_date,store_limit,timezone FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
+    const org=(await client.query('SELECT id,name,plan,license_status,expiry_date,store_limit,timezone,settings FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
     if(!org)throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
     const previous={plan:org.plan,licenseStatus:org.license_status,expiryDate:databaseDateISO(org.expiry_date),storeLimit:Number(org.store_limit)};
     const today=organizationCalendarDateISO(org);
+    if(['PAYWALL','RELEASE_PAYWALL','SEND_NOTICE'].includes(input.action)){
+      const settings={...(org.settings||{})};
+      if(input.action==='PAYWALL')settings.billingHold=true;
+      if(input.action==='RELEASE_PAYWALL')settings.billingHold=false;
+      if(input.action==='SEND_NOTICE'||input.action==='PAYWALL')settings.billingNotice=input.reason;
+      settings.billingNoticeAt=new Date().toISOString();
+      await client.query('UPDATE organizations SET settings=$2::jsonb,updated_at=now() WHERE id=$1',[organizationId,JSON.stringify(settings)]);
+      await writeAudit(client,{organizationId,userId:actorId,action:'platform_billing_control',entityType:'organization',entityId:organizationId,title:'Billing ogohlantirish yoki cheklash',description:input.reason,before:{billingHold:Boolean(org.settings?.billingHold)},after:{billingHold:Boolean(settings.billingHold)},metadata:{action:input.action}});
+      return {id:organizationId,name:org.name,licenseStatus:org.license_status,billingHold:Boolean(settings.billingHold)};
+    }
     let target;
     if(input.action==='SUSPEND'){
       if(org.license_status==='SUSPENDED')throw new HttpError(409,'Tashkilot allaqachon bloklangan','ALREADY_SUSPENDED');

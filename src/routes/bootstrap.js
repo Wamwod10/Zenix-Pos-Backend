@@ -17,9 +17,10 @@ const dateParts=(value,timeZone="Asia/Tashkent")=>{
   return {dateISO,date:dateText,time};
 };
 const mapProduct=(row)=>({
+  ...(row.metadata||{}),
   id:row.id,name:row.name,sku:row.sku,barcode:row.barcode,category:row.category,brand:row.brand,unit:row.unit,
   costPrice:n(row.cost_price),sellPrice:n(row.sell_price),price:n(row.sell_price),wholesalePrice:n(row.wholesale_price),minStock:n(row.min_stock),archived:row.archived,
-  stockByStore:row.stock_by_store||{},lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},...(row.metadata||{}),
+  stockByStore:row.stock_by_store||{},lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},
 });
 const statusTransfer=(status)=>({pending:"PENDING",approved:"PENDING",dispatched:"IN_TRANSIT",received:"RECEIVED",received_with_difference:"RECEIVED_WITH_DIFFERENCE",cancelled:"REJECTED"}[status]||String(status||"").toUpperCase());
 const statusCount=(status)=>({review:"PENDING",applying:"PENDING",approved:"APPROVED",rejected:"REJECTED",conflict:"CONFLICT"}[status]||String(status||"").toUpperCase());
@@ -111,10 +112,12 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
     const parts=dateParts(row.created_at,timeZone),payments=row.payments||[];
     const mix=payments.reduce((acc,p)=>{acc[p.method]=(acc[p.method]||0)+n(p.amount);return acc},{cash:0,card:0,transfer:0});
     const methods=Object.entries(mix).filter(([,value])=>value>0).map(([key])=>key);
-    return {id:row.id,saleNumber:row.sale_number,clientReference:row.client_reference,storeId:row.store_id,store:row.store_name||storeName.get(row.store_id)||"",shiftId:row.shift_id||"",sellerId:row.seller_id||"",sellerAccountId:row.seller_id||"",sellerName:row.seller_name||"",seller:row.seller_name||"",subtotal:n(row.subtotal),discountTotal:n(row.discount_amount),total:n(row.total),saleTotal:n(row.total),returnedAmount:n(row.returned_amount),customer:row.customer||{},items:(row.items||[]).map((item)=>({...item,...(item.metadata||{}),tracking:item.metadata?.tracking||null,returnedQty:0})),payments,paymentBreakdown:methods.length>1?mix:null,paymentMethod:methods.length>1?"split":(methods[0]||"cash"),businessDateISO:databaseDateISO(row.business_date||parts.dateISO),dateISO:parts.dateISO,date:parts.date,time:parts.time,createdAt:row.created_at,status:row.status,...(row.metadata||{})};
+    // Historical metadata must NEVER override database-authoritative amounts,
+    // identifiers or refunded totals. Older sales may contain stale snapshots.
+    return {...(row.metadata||{}),id:row.id,saleNumber:row.sale_number,clientReference:row.client_reference,storeId:row.store_id,store:row.store_name||storeName.get(row.store_id)||"",shiftId:row.shift_id||"",sellerId:row.seller_id||"",sellerAccountId:row.seller_id||"",sellerName:row.seller_name||"",seller:row.seller_name||"",subtotal:n(row.subtotal),discountTotal:n(row.discount_amount),total:n(row.total),saleTotal:n(row.total),returnedAmount:n(row.returned_amount),returnedTotal:n(row.returned_amount),customer:row.customer||{},items:(row.items||[]).map((item)=>({...(item.metadata||{}),...item,tracking:item.metadata?.tracking||null,returnedQty:0})),payments,paymentBreakdown:methods.length>1?mix:null,paymentMethod:methods.length>1?"split":(methods[0]||"cash"),businessDateISO:databaseDateISO(row.business_date||parts.dateISO),dateISO:parts.dateISO,date:parts.date,time:parts.time,createdAt:row.created_at,status:row.status};
   };
   const sales=salesResult.rows.map(saleMap);
-  const returns=returnsResult.rows.map((row)=>{const parts=dateParts(row.created_at,timeZone);return {id:row.id,saleId:row.sale_id,storeId:row.store_id,productId:row.product_id,productName:row.product_name,quantity:n(row.quantity),amount:n(row.amount),reason:row.reason,refundMethod:row.refund_method,businessDateISO:databaseDateISO(row.business_date||parts.dateISO),dateISO:parts.dateISO,date:parts.date,time:parts.time,createdAt:row.created_at,...(row.metadata||{})}});
+  const returns=returnsResult.rows.map((row)=>{const parts=dateParts(row.created_at,timeZone);return {...(row.metadata||{}),id:row.id,saleId:row.sale_id,storeId:row.store_id,productId:row.product_id,productName:row.product_name,quantity:n(row.quantity),amount:n(row.amount),reason:row.reason,refundMethod:row.refund_method,businessDateISO:databaseDateISO(row.business_date||parts.dateISO),dateISO:parts.dateISO,date:parts.date,time:parts.time,createdAt:row.created_at}});
   const returnedBySaleProduct=new Map();for(const row of returns){const key=`${row.saleId}:${row.productId}`;returnedBySaleProduct.set(key,n(returnedBySaleProduct.get(key))+row.quantity)}
   for(const sale of sales)for(const item of sale.items)item.returnedQty=n(returnedBySaleProduct.get(`${sale.id}:${item.productId}`));
 

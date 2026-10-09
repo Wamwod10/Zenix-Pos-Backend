@@ -1,10 +1,17 @@
 import { Router } from "express";
 import { z } from "zod";
+import bcrypt from "bcryptjs";
+import { withTransaction } from "../db/tx.js";
+import { writeAudit } from "../services/audit.js";
+import { normalizePromoCode } from "../services/promoCodes.js";
 import { pool } from "../db/pool.js";
 import { BILLING_PLANS } from "../config/billing.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requirePermission } from "../middleware/auth.js";
 import { reviewBillingPayment } from "../services/billingReview.js";
+import { activeExtraStoreCount, storeLimitReconciliation } from "../services/extraStoreEntitlements.js";
+import { recoverySnapshot } from "../services/tenantRecovery.js";
+import { controlStoreTradingHold } from "../services/storeTradingHolds.js";
 import { controlOrganization, organizationControlSchema } from "../services/platformOrganization.js";
 import { organizationPageSchema, paymentPageSchema, organizationPageSql, paymentPageSql, fetchDirectoryPage, effectiveLicenseStatusSql } from "../services/platformDirectory.js";
 
@@ -21,7 +28,81 @@ const paymentView=(row)=>({
 
 const organizationView=(row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),storeLimit:Number(row.store_limit||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,createdAt:row.created_at,billingHold:Boolean(row.settings?.billingHold),trialEndsAt:row.settings?.trialEndsAt||null});
 
+// Read-only recovery/expiry diagnostics. These endpoints never mutate tenant data.
+router.get("/organizations/:id/recovery-preview",asyncRoute(async(req,res)=>{
+  const id=z.string().uuid().parse(req.params.id);
+  let snapshot;
+  try{snapshot=await recoverySnapshot(pool,id)}catch(error){
+    if(error?.message==='Organization not found in snapshot')throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
+    throw error;
+  }
+  ok(res,{snapshot,restoreAvailable:false});
+}));
+router.get("/organizations/:id/store-reconciliation",asyncRoute(async(req,res)=>{
+  const id=z.string().uuid().parse(req.params.id);
+  const org=(await pool.query('SELECT id,store_limit,timezone,settings FROM organizations WHERE id=$1',[id])).rows[0];
+  if(!org)throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
+  const reconciliation=await storeLimitReconciliation(pool,org);
+  reconciliation.heldStoreIds=Object.keys(org.settings?.storeTradingHolds||{});
+  ok(res,{reconciliation});
+}));
+
+// Explicit, reversible hold; never auto-select a store or destroy its data.
+router.post('/organizations/:id/stores/:storeId/trading-hold',asyncRoute(async(req,res)=>{
+  const organizationId=z.string().uuid().parse(req.params.id);
+  const storeId=z.string().uuid().parse(req.params.storeId);
+  const input=z.object({action:z.enum(['HOLD','RELEASE']),reason:z.string().trim().min(10).max(500)}).strict().parse(req.body);
+  const result=await controlStoreTradingHold({organizationId,storeId,actorId:req.user.id,...input});
+  ok(res,{result});
+}));
+
 // The platform dashboard must not download every tenant, user and payment on login.
+router.get("/promos",asyncRoute(async(req,res)=>{
+ const rows=(await pool.query(`SELECT p.*,
+  (SELECT count(*)::int FROM platform_promo_uses u WHERE u.promo_id=p.id) AS uses
+  FROM platform_promos p ORDER BY p.created_at DESC LIMIT 250`)).rows;
+ ok(res,{promos:rows.map(p=>({id:p.id,code:p.code,plan:p.plan,percent:p.discount_percent,maxUses:p.max_uses,uses:Number(p.uses),perBusiness:p.max_uses_per_org,active:p.active,expiresAt:p.expires_at}))});
+}));
+router.post("/promos",asyncRoute(async(req,res)=>{
+ const input=z.object({code:z.string().trim().regex(/^[a-z0-9-]{4,40}$/i),plan:z.enum(["MONTHLY","ANNUAL","BOTH"]),percent:z.union([z.literal(20),z.literal(50),z.literal(75),z.literal(100)]),maxUses:z.number().int().min(1).max(100000),perBusiness:z.number().int().min(1).max(100000).default(1),expiresAt:z.string().datetime().nullable().optional()}).parse(req.body);
+ const code=normalizePromoCode(input.code);
+ const row=(await pool.query(`INSERT INTO platform_promos(code,plan,discount_percent,max_uses,max_uses_per_org,expires_at,created_by)
+ VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,code,plan,discount_percent,max_uses,max_uses_per_org,active,expires_at`,
+ [code,input.plan,input.percent,input.maxUses,input.perBusiness,input.expiresAt||null,req.user.id])).rows[0];
+ ok(res,{promo:row},201);
+}));
+router.post("/promos/:id/deactivate",asyncRoute(async(req,res)=>{
+ const id=z.string().uuid().parse(req.params.id);
+ const row=(await pool.query("UPDATE platform_promos SET active=false WHERE id=$1 RETURNING id,code,active",[id])).rows[0];
+ if(!row)throw new HttpError(404,"Promokod topilmadi");
+ ok(res,{promo:row});
+}));
+// Passwords are never readable. Reset creates only a bcrypt hash and invalidates all sessions.
+router.post("/organizations/:orgId/users/:userId/reset-password",asyncRoute(async(req,res)=>{
+ const orgId=z.string().uuid().parse(req.params.orgId),userId=z.string().uuid().parse(req.params.userId);
+ const body=z.object({password:z.string().min(12).max(128),reason:z.string().trim().min(10).max(500)}).parse(req.body);
+ const hash=await bcrypt.hash(body.password,12);
+ await withTransaction(async(client)=>{
+   await client.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE",[orgId]);
+   const row=(await client.query("UPDATE users SET password_hash=$3,must_change_password=true,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING name",[userId,orgId,hash])).rows[0];
+   if(!row)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
+   await client.query("UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[userId]);
+   await writeAudit(client,{organizationId:orgId,userId:req.user.id,action:'password_reset',entityType:'user',entityId:userId,title:'Parol tiklandi',description:body.reason});
+ });ok(res,{success:true});
+}));
+// Usage is an estimate of the rows' JSON payload + uploaded file bytes, not an exact PostgreSQL billing allocation.
+router.get("/organizations/:id/usage",asyncRoute(async(req,res)=>{
+ const id=z.string().uuid().parse(req.params.id);
+ const rows=(await pool.query(`SELECT
+  (SELECT count(*)::int FROM products WHERE organization_id=$1) products,
+  (SELECT count(*)::int FROM sales WHERE organization_id=$1) sales,
+  (SELECT count(*)::int FROM users WHERE organization_id=$1) users,
+  (SELECT count(*)::int FROM stores WHERE organization_id=$1) stores,
+  (SELECT COALESCE(sum(octet_length(content)),0)::bigint FROM billing_receipts WHERE organization_id=$1) receipt_bytes,
+  (SELECT COALESCE(sum(pg_column_size(row_to_json(s))),0)::bigint FROM sales s WHERE s.organization_id=$1) sales_approx_bytes`,[id])).rows[0];
+ ok(res,{usage:{products:rows.products,sales:rows.sales,users:rows.users,stores:rows.stores,receiptBytes:Number(rows.receipt_bytes||0),estimatedBytes:Number(rows.receipt_bytes||0)+Number(rows.sales_approx_bytes||0),estimate:true}});
+}));
+
 router.get("/overview",asyncRoute(async(_req,res)=>{
   const effectiveStatus=effectiveLicenseStatusSql();
   const [organizations,stores,payments]=await Promise.all([
@@ -53,15 +134,23 @@ router.get("/organizations/:id/detail",asyncRoute(async(req,res)=>{
       ORDER BY u.created_at ASC,u.id ASC LIMIT 1
     ) owner ON true WHERE o.id=$1`,[organizationId]);
   if(!rows.length)throw new HttpError(404,"Tashkilot topilmadi","ORG_NOT_FOUND");
-  const [users,stores,payments]=await Promise.all([
+  const [users,stores,payments,passes,activeExtraStores]=await Promise.all([
     pool.query("SELECT id,store_id,name,username,phone,app_role,active,created_at FROM users WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 100",[organizationId]),
     pool.query("SELECT id,name,active,created_at FROM stores WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 100",[organizationId]),
     pool.query(`SELECT bp.*,o.name AS organization_name,bd.metadata->>'intent' AS draft_intent
       FROM billing_payments bp JOIN organizations o ON o.id=bp.organization_id
       LEFT JOIN billing_drafts bd ON bd.id=bp.draft_id WHERE bp.organization_id=$1
       ORDER BY bp.submitted_at DESC,bp.id DESC LIMIT 20`,[organizationId]),
+    pool.query(`SELECT e.id,e.quantity,e.duration,e.starts_on,e.expires_on,e.created_at,
+      (e.starts_on<=(now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date
+       AND e.expires_on>(now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date) AS active
+      FROM extra_store_entitlements e JOIN organizations o ON o.id=e.organization_id
+      WHERE e.organization_id=$1 ORDER BY e.created_at DESC LIMIT 100`,[organizationId]),
+    activeExtraStoreCount(pool,rows[0]),
   ]);
   ok(res,{organization:{...organizationView({...rows[0],license_status:rows[0].effective_license_status}),
+    activeExtraStores,effectiveStoreLimit:Number(rows[0].store_limit||0)+activeExtraStores,
+    extraStoreEntitlements:passes.rows.map(e=>({id:e.id,quantity:Number(e.quantity),duration:e.duration,startsOn:e.starts_on,expiresOn:e.expires_on,active:Boolean(e.active)})),
     users:users.rows.map(u=>({id:u.id,storeId:u.store_id,name:u.name,username:u.username,phone:u.phone,role:u.app_role,active:u.active,createdAt:u.created_at})),
     storeRows:stores.rows.map(st=>({id:st.id,name:st.name,active:st.active,createdAt:st.created_at})),
   },payments:payments.rows.map(paymentView)});
@@ -83,7 +172,7 @@ router.get("/bootstrap",asyncRoute(async(_req,res)=>{
   const usersByOrg=new Map();for(const row of users.rows){const key=String(row.organization_id);const list=usersByOrg.get(key)||[];list.push({id:row.id,storeId:row.store_id,name:row.name,username:row.username,phone:row.phone,role:row.app_role,active:row.active,createdAt:row.created_at});usersByOrg.set(key,list)}
   const storesByOrg=new Map();for(const row of stores.rows){const key=String(row.organization_id);const list=storesByOrg.get(key)||[];list.push({id:row.id,name:row.name,active:row.active,createdAt:row.created_at});storesByOrg.set(key,list)}
   ok(res,{
-    organizations:orgs.rows.map((row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),storeLimit:Number(row.store_limit||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,createdAt:row.created_at,users:usersByOrg.get(String(row.id))||[],storeRows:storesByOrg.get(String(row.id))||[]})),
+    organizations:orgs.rows.map((row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),storeLimit:Number(row.store_limit||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,createdAt:row.created_at,billingHold:Boolean(row.settings?.billingHold),users:usersByOrg.get(String(row.id))||[],storeRows:storesByOrg.get(String(row.id))||[]})),
     payments:payments.rows.map(paymentView),
   });
 }));

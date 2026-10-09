@@ -48,12 +48,22 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
   if (decision === "APPROVED") {
     // The reserved immutable quote survives later promo deactivation/exhaustion.
     await consumePromoReservation(client,row.id);
+    const draft=row.draft_id?(await client.query("SELECT metadata,base_amount,total_amount FROM billing_drafts WHERE id=$1 AND organization_id=$2",[row.draft_id,row.organization_id])).rows[0]:null;
     if (row.type === "EXTRA") {
-      await client.query("UPDATE organizations SET store_limit=store_limit+$2,updated_at=now() WHERE id=$1", [row.organization_id, Math.max(1, Number(row.extra_store_count || 1))]);
+      if(draft?.metadata?.extraDuration){
+        // New purchases are time-bound. Keep historical permanent allowances
+        // unchanged; the dynamic entitlement is added when limits are read.
+        await client.query(`INSERT INTO extra_store_entitlements
+          (organization_id,payment_id,quantity,duration,starts_on,expires_on)
+          VALUES($1,$2,$3,$4,$5,$6)`,[row.organization_id,row.id,Math.max(1,Number(row.extra_store_count||1)),draft.metadata.extraDuration,row.service_period_from,row.service_period_to]);
+      }else{
+        // Old approved payments predate duration tracking; preserve semantics.
+        await client.query("UPDATE organizations SET store_limit=store_limit+$2,updated_at=now() WHERE id=$1", [row.organization_id, Math.max(1, Number(row.extra_store_count || 1))]);
+      }
     } else {
       const plan = BILLING_PLANS[row.plan] ? row.plan : "ANNUAL";
       const storeLimit = BILLING_PLANS[plan].includedStores + Math.max(0, Number(row.extra_store_count || 0));
-      await client.query("UPDATE organizations SET plan=$2,license_status=CASE WHEN license_status='SUSPENDED' THEN 'SUSPENDED' ELSE 'ACTIVE' END,expiry_date=$3,store_limit=$4,updated_at=now() WHERE id=$1", [row.organization_id, plan, row.service_period_to, storeLimit]);
+      await client.query("UPDATE organizations SET plan=$2,license_status=CASE WHEN license_status='SUSPENDED' THEN 'SUSPENDED' ELSE 'ACTIVE' END,expiry_date=$3,store_limit=$4,settings=CASE WHEN license_status='SUSPENDED' THEN settings ELSE jsonb_set(COALESCE(settings,'{}'::jsonb),'{billingHold}','false'::jsonb,true) END,updated_at=now() WHERE id=$1", [row.organization_id, plan, row.service_period_to, storeLimit]);
     }
   } else {
     await releasePromoReservation(client,row.id,reason||"REJECTED");
