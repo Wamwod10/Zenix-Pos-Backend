@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {billableMonths,priceExtraStoreByMonths} from '../src/config/billing.js';
 import {lockValidPromo,consumePromo,discountForAmount} from '../src/services/promoCodes.js';
 import * as promos from '../src/services/promoCodes.js';
 
@@ -92,6 +93,38 @@ test('promo reservation translates only its known named unique and tenant constr
  ])await assert.rejects(()=>promos.reservePromo(reservationClient({insertError:{constraint,code:constraint.endsWith('unique')?'23505':'23503'}}),{paymentId:'payment',organizationId:'org'}),{code});
  const unknown=Object.assign(new Error('unknown constraint'),{constraint:'unrelated_unique',code:'23505'});
  await assert.rejects(()=>promos.reservePromo(reservationClient({insertError:unknown}),{paymentId:'payment',organizationId:'org'}),error=>error===unknown);
+});
+test('9 calendar months extra branch costs 825000 on annual plan',()=>{
+  assert.equal(billableMonths('2026-10-08','2027-07-08'),9);
+  assert.equal(priceExtraStoreByMonths('ANNUAL','2026-10-08','2027-07-08',1),825000);
+  assert.equal(priceExtraStoreByMonths('MONTHLY','2026-10-08','2026-11-08',1),120000);
+});
+test('partial month has deterministic rounding; blank period costs nothing',()=>{
+  assert.equal(billableMonths('2026-10-08','2026-11-09'),2);
+  assert.equal(billableMonths('2026-11-09','2026-10-08'),0);
+});
+test('extra-store billing counts exactly 120 and 121 calendar months',()=>{
+  assert.equal(billableMonths('2020-01-15','2030-01-15'),120);
+  assert.equal(billableMonths('2020-01-15','2030-02-15'),121);
+  assert.equal(billableMonths('2020-01-15','2030-03-15'),122);
+});
+test('extra-store billing covers the full accepted four-digit calendar range',()=>{
+  assert.equal(billableMonths('0100-01-01','9999-12-31'),118800);
+});
+test('extra-store billing preserves leap-year and month-end semantics',()=>{
+  assert.equal(billableMonths('2024-01-31','2024-02-29'),1);
+  assert.equal(billableMonths('2024-02-29','2025-02-28'),12);
+  assert.equal(billableMonths('2024-02-29','2025-03-01'),13);
+});
+test('same-day, invalid, and reversed periods fail closed',()=>{
+  assert.equal(billableMonths('2026-10-08','2026-10-08'),0);
+  assert.equal(billableMonths('2026-02-30','2026-03-01'),0);
+  assert.equal(billableMonths('not-a-date','2026-03-01'),0);
+  assert.equal(billableMonths('2026-03-01','2026-02-28'),0);
+});
+test('UZS extra-store rounding remains at the explicit 1000 increment',()=>{
+  assert.equal(priceExtraStoreByMonths('ANNUAL','2026-10-08','2026-11-08',1),92000);
+  assert.equal(priceExtraStoreByMonths('ANNUAL','2026-10-08','2027-07-08',1),825000);
 });
 test('promo quota and per-business quota are validated before consumption',async()=>{
  const promo={id:'promo-test',code:'ZENIX-50',active:true,plan:'MONTHLY',discount_percent:50,max_uses:5,max_uses_per_org:1,used_count:3};

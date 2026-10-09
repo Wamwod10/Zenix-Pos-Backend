@@ -44,4 +44,14 @@ export const extraStoreExtensionPrice=(planKey,days,count)=>{
   const plan=BILLING_PLANS[planKey]||BILLING_PLANS.ANNUAL;
   return Math.round(Number(plan.extraStoreAmount)*Math.max(0,Number(days||0))/Math.max(1,Number(plan.referenceDays)))*Math.max(0,Number(count||0));
 };
+export const billableMonths=(start,end)=>{
+  const from=dateISO(start),until=dateISO(end);
+  if(!from||!until||from>=until)return 0;
+  const [fromYear,fromMonth]=from.split('-').map(Number);
+  const [untilYear,untilMonth]=until.split('-').map(Number);
+  let whole=(untilYear-fromYear)*12+untilMonth-fromMonth;
+  if(addMonths(from,whole)>until)whole--;
+  return whole+(addMonths(from,whole)<until?1:0);
+};
+export const priceExtraStoreByMonths=(plan,start,end,count)=>{const months=billableMonths(start,end),rate=plan==="MONTHLY"?BILLING_PLANS.MONTHLY.extraStoreAmount:BILLING_PLANS.ANNUAL.extraStoreAmount/12;return Math.round(rate*months/1000)*1000*Math.max(0,Number(count||0))};
 export const makeBillingOrderId=()=>`ZX-${crypto.randomUUID().slice(0,10).toUpperCase()}`;
