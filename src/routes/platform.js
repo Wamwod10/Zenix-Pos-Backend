@@ -84,6 +84,8 @@ router.post("/organizations/:orgId/users/:userId/reset-password",asyncRoute(asyn
  const hash=await bcrypt.hash(body.password,12);
  await withTransaction(async(client)=>{
    await client.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE",[orgId]);
+   const target=(await client.query("SELECT id FROM users WHERE id=$1 AND organization_id=$2 FOR UPDATE",[userId,orgId])).rows[0];
+   if(!target)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
    const row=(await client.query("UPDATE users SET password_hash=$3,must_change_password=true,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING name",[userId,orgId,hash])).rows[0];
    if(!row)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
    await client.query("UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[userId]);

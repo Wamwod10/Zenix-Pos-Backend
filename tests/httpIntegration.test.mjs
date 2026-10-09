@@ -8,7 +8,7 @@ import { assertSafeTestDatabaseUrl } from '../scripts/assertTestDatabase.js';
 const testUrl = process.env.TEST_DATABASE_URL;
 const integration = testUrl ? test : test.skip;
 
-integration('authenticated tenant HTTP smoke: login, product isolation, permissions and license expiry', {timeout:60000}, async () => {
+integration('authenticated tenant HTTP smoke: login, product isolation, permissions and license expiry', {timeout:60000}, async (t) => {
   const parsed = assertSafeTestDatabaseUrl(testUrl, { nodeEnv: process.env.NODE_ENV || 'test' });
   assert.equal(process.env.NODE_ENV, 'test');
   assert.equal(process.env.DATABASE_URL, testUrl, 'app and test pool must point at the exact same disposable test database');
@@ -149,6 +149,41 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
       cookie: a.cookie, method: 'POST', body: { name: 'Forbidden post' }, omitClientMarker: true,
     });
     assert.equal(missingClientMarker.status, 403);
+
+    await t.test('password reset cannot leave an old-password login session alive',async()=>{
+      const adminName=`reset_admin_${suffix}`;
+      await db.query("INSERT INTO users(name,username,password_hash,app_role) VALUES('Reset test admin',$1,$2,'PLATFORM_ADMIN')",[adminName,passwordHash]);
+      const adminLogin=await request('/api/auth/login',{method:'POST',body:{username:adminName,password}});
+      assert.equal(adminLogin.status,200);
+      const originalCompare=bcrypt.compare;
+      for(const resetWins of [true,false]){
+        const username=`reset_race_${resetWins}_${suffix}`;
+        const userId=(await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Reset race test',$3,$4,'OWNER') RETURNING id",[a.orgId,a.storeId,username,passwordHash])).rows[0].id;
+        let releaseVerification,observedVerification,barrierTimeout;
+        const verified=new Promise(resolve=>observedVerification=resolve);
+        const released=new Promise(resolve=>releaseVerification=resolve);
+        try{
+          if(resetWins)bcrypt.compare=async(candidate,hash)=>{
+            const result=await originalCompare(candidate,hash);
+            if(candidate===password&&hash===passwordHash){observedVerification();await released;}
+            return result;
+          };
+          const pendingLogin=request('/api/auth/login',{method:'POST',body:{username,password}});
+          let login;
+          if(resetWins){
+            await Promise.race([verified,new Promise((_,reject)=>barrierTimeout=setTimeout(()=>reject(Error('Login verification barrier timed out')),5000))]);
+            clearTimeout(barrierTimeout);
+          }else login=await pendingLogin;
+          const reset=await request(`/api/platform/organizations/${a.orgId}/users/${userId}/reset-password`,{cookie:adminLogin.cookie,method:'POST',body:{password:`Reset-Disposable!${suffix}`,reason:'Deterministic reset race regression'}});
+          assert.equal(reset.status,200);
+          releaseVerification();
+          if(resetWins){login=await pendingLogin;assert.equal(login.status,401,'a verified snapshot must fail if reset committed before session creation');assert.equal(login.payload.error.code,'INVALID_CREDENTIALS');}
+          else{assert.equal(login.status,200);assert.equal((await request('/api/auth/me',{cookie:login.cookie})).status,401,'a session committed before reset must be revoked');}
+          const live=await db.query('SELECT count(*)::int AS count FROM auth_sessions WHERE user_id=$1 AND revoked_at IS NULL',[userId]);
+          assert.equal(live.rows[0].count,0,'no old-password session can survive the reset');
+        }finally{clearTimeout(barrierTimeout);releaseVerification();bcrypt.compare=originalCompare;}
+      }
+    });
 
     await db.query("UPDATE organizations SET license_status='SUSPENDED' WHERE id=$1", [a.orgId]);
     const suspended = await request('/api/products', { cookie: a.cookie });

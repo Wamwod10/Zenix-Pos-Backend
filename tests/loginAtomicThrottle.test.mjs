@@ -73,8 +73,15 @@ test('successful login atomically clears old failures', async () => {
 
 test('session creation uses a transaction-scoped user lock before bounded cleanup', async () => {
   const { readFileSync } = await import('node:fs');
+  const {runInNewContext}=await import('node:vm');
   const auth = readFileSync(new URL('../src/routes/auth.js', import.meta.url), 'utf8');
-  assert.match(auth, /session:\$\{userId\}/);
-  assert.match(auth, /const token=await withTransaction\(\(client\)=>createSession\(client,user\.id,req\)\)/);
-  assert.match(auth, /ORDER BY created_at DESC OFFSET 20/);
+  const createSession=runInNewContext(auth.slice(auth.indexOf('async function createSession('),auth.indexOf('const registrationWindow'))+'; createSession',{
+    randomToken:()=> 'synthetic-token',sha256:()=> 'synthetic-digest',env:{sessionTtlDays:1},
+  });
+  const calls=[];
+  const token=await createSession({query:async(sql,params)=>{calls.push({sql,params});return {rows:[]};}},'test-user',{get:()=> 'test agent',ip:'127.0.0.1'});
+  assert.equal(token,'synthetic-token');
+  assert.match(calls[0].sql,/pg_advisory_xact_lock/);assert.equal(calls[0].params[0],'session:test-user');
+  assert.match(calls[1].sql,/INSERT INTO auth_sessions/);assert.equal(calls[1].params[0],'test-user');
+  assert.match(calls[2].sql,/ORDER BY created_at DESC OFFSET 20/);assert.equal(calls[2].params[0],'test-user');
 });

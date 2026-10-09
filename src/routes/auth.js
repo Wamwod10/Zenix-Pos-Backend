@@ -89,9 +89,22 @@ router.post("/login",asyncRoute(async(req,res)=>{
     throw new HttpError(401,"Kirish nomi yoki parol noto‘g‘ri","INVALID_CREDENTIALS");
   }
   if(user.organization_license_status==="SUSPENDED")throw new HttpError(403,"Akkaunt administrator tomonidan bloklangan","ACCOUNT_SUSPENDED");
-  const token=await withTransaction((client)=>createSession(client,user.id,req));
-  res.cookie(env.sessionCookieName,token,cookieOptions);
-  ok(res,{user:publicUser(user)});
+  const result=await withTransaction(async(client)=>{
+    // Credential writers lock this same user row before updating the hash and
+    // revoking sessions. A bcrypt result from before that lock is only a hint.
+    const current=(await client.query(`SELECT u.*,o.name AS organization_name,o.license_status AS organization_license_status
+      FROM users u LEFT JOIN organizations o ON o.id=u.organization_id
+      WHERE u.id=$1 FOR UPDATE OF u`,[user.id])).rows[0];
+    if(!current||!current.active||current.password_hash!==user.password_hash||
+      Boolean(current.must_change_password)!==Boolean(user.must_change_password)||
+      current.organization_id!==user.organization_id||String(current.username).toLowerCase()!==usernameNorm){
+      throw new HttpError(401,"Kirish nomi yoki parol noto‘g‘ri","INVALID_CREDENTIALS");
+    }
+    if(current.organization_license_status==="SUSPENDED")throw new HttpError(403,"Akkaunt administrator tomonidan bloklangan","ACCOUNT_SUSPENDED");
+    return {token:await createSession(client,current.id,req),user:current};
+  });
+  res.cookie(env.sessionCookieName,result.token,cookieOptions);
+  ok(res,{user:publicUser(result.user)});
 }));
 
 router.post("/logout",requireAuth,asyncRoute(async(req,res)=>{
