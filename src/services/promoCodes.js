@@ -1,4 +1,5 @@
 import { HttpError } from "../lib/http.js";
+import { databaseDateISO } from "../lib/businessDate.js";
 export const normalizePromoCode = value => String(value||"").trim().toUpperCase();
 export function discountForAmount(amount,percentage){return Math.round(Number(amount||0)*Number(percentage||0)/100)}
 export async function lockValidPromo(client,{code,plan,organizationId,lock=true}){
@@ -23,6 +24,20 @@ export async function consumePromo(client,{promo,organizationId,plan,discountAmo
 }
 
 const staleQuote = () => new HttpError(409, "Promokod hisobi mos emas. Yangi to'lov hisobini yarating.", "PROMO_QUOTE_STALE");
+
+// PostgreSQL dates can arrive as local-midnight Date objects or ISO strings.
+// Nullable dates and an absent branch allowance have one canonical snapshot.
+function entitlementQuote(payment) {
+  const count = Number(payment.extra_store_count ?? 0);
+  if (!Number.isSafeInteger(count) || count < 0) throw staleQuote();
+  try {
+    return {
+      from: payment.service_period_from == null ? null : databaseDateISO(payment.service_period_from),
+      to: payment.service_period_to == null ? null : databaseDateISO(payment.service_period_to),
+      count,
+    };
+  } catch { throw staleQuote(); }
+}
 
 // Translate only our named constraints. Unknown database failures propagate.
 function reservationError(error) {
@@ -70,9 +85,11 @@ export async function reservePromo(client, { paymentId, organizationId }) {
       Number(draft.metadata.promoDiscount) !== discount || draft.plan !== payment.plan ||
       Number(draft.total_amount) !== Number(draft.base_amount) + Number(draft.extra_store_amount) - discount ||
       Number(payment.amount) !== Number(draft.total_amount)) throw staleQuote();
+  const quote = entitlementQuote(payment);
   try {
-    return (await client.query(`INSERT INTO platform_promo_reservations(promo_id,organization_id,payment_id,plan,discount_amount,quote_amount)
-      VALUES($1,$2,$3,$4,$5,$6) RETURNING *`, [promo.id, payment.organization_id, payment.id, payment.plan, discount, payment.amount])).rows[0];
+    return (await client.query(`INSERT INTO platform_promo_reservations
+      (promo_id,organization_id,payment_id,plan,discount_amount,quote_amount,quote_service_period_from,quote_service_period_to,quote_extra_store_count)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [promo.id, payment.organization_id, payment.id, payment.plan, discount, payment.amount, quote.from, quote.to, quote.count])).rows[0];
   } catch (error) { throw reservationError(error); }
 }
 
@@ -87,6 +104,13 @@ export async function consumePromoReservation(client, paymentId) {
   if (reservation.status === "CONSUMED") return reservation;
   if (reservation.status === "RELEASED" || payment.status !== "APPROVED") throw new HttpError(409, "Promokodni faqat tasdiqlangan to'lov ishlatishi mumkin", "PROMO_RESERVATION_STATE");
   if (payment.type !== "LICENSE" || payment.plan !== reservation.plan || Number(payment.amount) !== Number(reservation.quote_amount)) throw staleQuote();
+  const quote = entitlementQuote(payment);
+  const reservedQuote = entitlementQuote({
+    service_period_from: reservation.quote_service_period_from,
+    service_period_to: reservation.quote_service_period_to,
+    extra_store_count: reservation.quote_extra_store_count,
+  });
+  if (quote.from !== reservedQuote.from || quote.to !== reservedQuote.to || quote.count !== reservedQuote.count) throw staleQuote();
   await consumePromo(client, { promo: { id: reservation.promo_id }, organizationId: payment.organization_id, paymentId, plan: reservation.plan, discountAmount: reservation.discount_amount });
   return (await client.query(`UPDATE platform_promo_reservations SET status='CONSUMED',consumed_at=now()
     WHERE payment_id=$1 AND organization_id=$2 AND status='RESERVED' RETURNING *`, [paymentId, payment.organization_id])).rows[0];

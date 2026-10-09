@@ -73,17 +73,31 @@ integration('promo reservation concurrent final slot, atomic rollback, retry, de
   assert.equal(results.filter(x=>x.status==='fulfilled').length,1);
   assert.equal(results.filter(x=>x.status==='rejected'&&x.reason.code==='PROMO_EXHAUSTED').length,1);
   const winner=results.find(x=>x.status==='fulfilled').value;
+  assert.equal(winner.reservation.quote_service_period_from,null);
+  assert.equal(winner.reservation.quote_service_period_to.getTime(),winner.payment.service_period_to.getTime());
+  assert.equal(winner.reservation.quote_extra_store_count,0);
   await db.query('UPDATE platform_promos SET active=false WHERE id=$1',[promo.id]);
   await runTransaction(db,async(client)=>{
    const again=await reservePromo(client,{paymentId:winner.payment.id,organizationId:orgs[winner.i]});
    assert.equal(again.id,winner.reservation.id);
   });
-  await t.test('approval rejects a changed payment amount while retaining reserved capacity',async()=>{
-   await db.query('UPDATE billing_payments SET amount=175001 WHERE id=$1',[winner.payment.id]);
-   await assert.rejects(runTransaction(db,client=>applyBillingReview(client,{paymentId:winner.payment.id,decision:'APPROVED'})),error=>error.code==='PROMO_QUOTE_STALE');
-   assert.equal((await db.query('SELECT status FROM billing_payments WHERE id=$1',[winner.payment.id])).rows[0].status,'REVIEW');
-   await db.query('UPDATE billing_payments SET amount=175000 WHERE id=$1',[winner.payment.id]);
-  });
+  const originalOrganization=(await db.query('SELECT plan,license_status,expiry_date,store_limit FROM organizations WHERE id=$1',[orgs[winner.i]])).rows[0];
+  for(const [field,value] of [['amount',175001],['service_period_from','2099-10-09'],['service_period_to','2099-11-09'],['extra_store_count',20]]){
+   await t.test(`approval rejects changed ${field} and rolls back promo use and all entitlements`,async()=>{
+    await assert.rejects(runTransaction(db,async(client)=>{
+     await client.query(`UPDATE billing_payments SET ${field}=$2 WHERE id=$1`,[winner.payment.id,value]);
+     await assert.rejects(applyBillingReview(client,{paymentId:winner.payment.id,decision:'APPROVED'}),error=>error.code==='PROMO_QUOTE_STALE');
+     throw new Error('expected quote test rollback');
+    }),/expected quote test rollback/);
+    assert.equal((await db.query('SELECT status FROM billing_payments WHERE id=$1',[winner.payment.id])).rows[0].status,'REVIEW');
+    assert.equal((await db.query('SELECT status FROM platform_promo_reservations WHERE payment_id=$1',[winner.payment.id])).rows[0].status,'RESERVED');
+    assert.equal((await db.query('SELECT count(*)::int n FROM platform_promo_uses WHERE payment_id=$1',[winner.payment.id])).rows[0].n,0);
+    assert.equal((await db.query('SELECT used_count FROM platform_promos WHERE id=$1',[promo.id])).rows[0].used_count,0);
+    assert.equal((await db.query('SELECT count(*)::int n FROM extra_store_entitlements WHERE payment_id=$1',[winner.payment.id])).rows[0].n,0);
+    assert.equal((await db.query("SELECT count(*)::int n FROM audit_logs WHERE entity_id=$1 AND action='approve'",[winner.payment.id])).rows[0].n,0);
+    assert.deepEqual((await db.query('SELECT plan,license_status,expiry_date,store_limit FROM organizations WHERE id=$1',[orgs[winner.i]])).rows[0],originalOrganization);
+   });
+  }
   await runTransaction(db,async(client)=>{
    const result=await applyBillingReview(client,{paymentId:winner.payment.id,decision:'APPROVED'});
    assert.equal(result.outcome,'approved');
@@ -146,8 +160,12 @@ integration('promo reservation concurrent final slot, atomic rollback, retry, de
    await db.query('UPDATE platform_promos SET active=false WHERE id=$1',[promo.id]);
    const sql=await fs.readFile(path.join(migrationsDirectory,'024_promo_reservations.sql'),'utf8');
    await db.query(sql);await db.query(sql);
-   const rows=(await db.query('SELECT status,quote_amount FROM platform_promo_reservations WHERE payment_id=$1',[history])).rows;
-   assert.deepEqual(rows,[{status:'RESERVED',quote_amount:'175000.00'}]);
+   const rows=(await db.query(`SELECT status,quote_amount,quote_service_period_from,quote_service_period_to,quote_extra_store_count
+     FROM platform_promo_reservations WHERE payment_id=$1`,[history])).rows;
+   assert.equal(rows.length,1);
+   assert.equal(rows[0].status,'RESERVED');assert.equal(rows[0].quote_amount,'175000.00');
+   assert.equal(rows[0].quote_service_period_from,null);assert.equal(rows[0].quote_extra_store_count,0);
+   assert.equal(rows[0].quote_service_period_to.getTime(),winner.payment.service_period_to.getTime());
    const result=await runTransaction(db,client=>applyBillingReview(client,{paymentId:history,decision:'APPROVED'}));
    assert.equal(result.outcome,'approved');
   });

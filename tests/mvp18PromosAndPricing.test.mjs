@@ -3,6 +3,40 @@ import assert from 'node:assert/strict';
 import {lockValidPromo,consumePromo,discountForAmount} from '../src/services/promoCodes.js';
 import * as promos from '../src/services/promoCodes.js';
 
+const consumptionClient=(paymentChanges={},reservationChanges={})=>{
+ const payment={id:'payment',organization_id:'org',status:'APPROVED',type:'LICENSE',plan:'MONTHLY',amount:'175000.00',service_period_from:'2026-10-09',service_period_to:'2026-11-09',extra_store_count:1,...paymentChanges};
+ const reservation={id:'reservation',payment_id:'payment',organization_id:'org',promo_id:'promo',status:'RESERVED',plan:'MONTHLY',discount_amount:'175000.00',quote_amount:'175000.00',quote_service_period_from:'2026-10-09',quote_service_period_to:'2026-11-09',quote_extra_store_count:1,...reservationChanges};
+ const writes=[];
+ return {writes,query:async(sql)=>{
+  if(sql.includes('SELECT organization_id'))return {rows:[{organization_id:'org'}]};
+  if(sql.includes('FROM organizations'))return {rows:[{id:'org'}]};
+  if(sql.includes('FROM billing_payments'))return {rows:[payment]};
+  if(sql.includes('FROM platform_promo_reservations'))return {rows:[reservation]};
+  if(sql.includes('FROM platform_promos'))return {rows:[{id:'promo'}]};
+  writes.push(sql);
+  return {rowCount:1,rows:[{...reservation,status:'CONSUMED'}]};
+ }};
+};
+
+for(const [field,value] of [['service_period_from','2026-10-10'],['service_period_to','2099-11-09'],['extra_store_count',20]]){
+ test(`promo reservation approval refuses changed ${field} before any use or entitlement write`,async()=>{
+  const client=consumptionClient({[field]:value});
+  await assert.rejects(()=>promos.consumePromoReservation(client,'payment'),{code:'PROMO_QUOTE_STALE'});
+  assert.deepEqual(client.writes,[]);
+ });
+}
+
+test('promo reservation approval compares PostgreSQL Date objects with ISO snapshot dates',async()=>{
+ const client=consumptionClient({service_period_from:new Date(2026,9,9),service_period_to:new Date(2026,10,9),extra_store_count:'1'});
+ assert.equal((await promos.consumePromoReservation(client,'payment')).status,'CONSUMED');
+});
+
+test('promo reservation normalizes nullable license fields to null dates and zero branches',async()=>{
+ const client=consumptionClient({service_period_from:undefined,service_period_to:null,extra_store_count:null},
+  {quote_service_period_from:null,quote_service_period_to:null,quote_extra_store_count:0});
+ assert.equal((await promos.consumePromoReservation(client,'payment')).status,'CONSUMED');
+});
+
 test('promo reservation rejects a payment owned by another tenant before quota changes',async()=>{
  const client={query:async(sql)=>({rows:sql.includes('SELECT organization_id')?[{organization_id:'org-a'}]:[]})};
  await assert.rejects(()=>promos.reservePromo(client,{paymentId:'p',organizationId:'org-b'}),{code:'PAYMENT_NOT_FOUND'});

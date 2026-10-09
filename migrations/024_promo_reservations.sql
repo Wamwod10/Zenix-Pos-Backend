@@ -7,6 +7,9 @@ CREATE TABLE IF NOT EXISTS platform_promo_reservations (
   plan text NOT NULL CHECK (plan IN ('MONTHLY','ANNUAL')),
   discount_amount numeric(18,2) NOT NULL CHECK (discount_amount>=0),
   quote_amount numeric(18,2) NOT NULL CHECK (quote_amount>=0),
+  quote_service_period_from date,
+  quote_service_period_to date,
+  quote_extra_store_count integer NOT NULL DEFAULT 0 CHECK (quote_extra_store_count>=0),
   status text NOT NULL DEFAULT 'RESERVED' CHECK (status IN ('RESERVED','CONSUMED','RELEASED')),
   reserved_at timestamptz NOT NULL DEFAULT now(),
   consumed_at timestamptz,
@@ -23,8 +26,10 @@ CREATE INDEX IF NOT EXISTS platform_promo_reservations_active_idx
   ON platform_promo_reservations(promo_id,organization_id) WHERE status='RESERVED';
 
 -- Preserve pre-reservation pending immutable quotes, even after deactivation.
-INSERT INTO platform_promo_reservations(promo_id,organization_id,payment_id,plan,discount_amount,quote_amount,reserved_at)
-SELECT p.id,b.organization_id,b.id,b.plan,snapshot.discount,b.amount,b.submitted_at
+INSERT INTO platform_promo_reservations
+  (promo_id,organization_id,payment_id,plan,discount_amount,quote_amount,quote_service_period_from,quote_service_period_to,quote_extra_store_count,reserved_at)
+SELECT p.id,b.organization_id,b.id,b.plan,snapshot.discount,b.amount,b.service_period_from,b.service_period_to,
+  COALESCE(b.extra_store_count,0),b.submitted_at
 FROM billing_payments b
 JOIN billing_drafts d ON d.id=b.draft_id AND d.organization_id=b.organization_id
 JOIN platform_promos p ON p.id::text=d.metadata->>'promoId' AND p.code=d.metadata->>'promoCode'
@@ -37,6 +42,7 @@ WHERE b.status='REVIEW' AND b.type='LICENSE' AND d.type='LICENSE' AND b.plan=d.p
     WHEN d.metadata->>'promoDiscountPercent' IN ('20','50','75','100')
     THEN (d.metadata->>'promoDiscountPercent')::integer END)/100)
   AND b.amount=d.total_amount
+  AND COALESCE(b.extra_store_count,0)>=0
   AND d.base_amount+d.extra_store_amount-snapshot.discount=d.total_amount
 ON CONFLICT(payment_id) DO NOTHING;
 
