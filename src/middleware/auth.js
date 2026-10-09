@@ -21,12 +21,13 @@ export async function requireAuth(req, _res, next) {
       LIMIT 1`, [tokenHash]);
     const row = rows[0];
     if (!row || row.active === false) throw new HttpError(401, "Sessiya yakunlangan", "SESSION_EXPIRED");
+    if(row.license_status==="SUSPENDED" && row.organization_id)throw new HttpError(403,"Akkaunt administrator tomonidan bloklangan","ACCOUNT_SUSPENDED");
     req.user = {
       id:row.id, organizationId:row.organization_id, storeId:row.store_id, name:row.name, username:row.username,
       phone:row.phone, appRole:row.app_role, permissionOverrides:row.permission_overrides || {}, organizationName:row.organization_name,
       sessionId:row.session_id, licenseStatus:row.license_status, expiryDate:row.expiry_date, organizationTimezone:row.organization_timezone,
       licenseDateValid:row.license_date_valid!==false,
-      rolePermissions:row.organization_settings?.rolePermissions || {},
+      rolePermissions:row.organization_settings?.rolePermissions || {}, organizationSettings:row.organization_settings||{},
     };
     const lastSeenAt=row.last_seen_at?new Date(row.last_seen_at).getTime():0;
     if(!lastSeenAt||Date.now()-lastSeenAt>60_000){
@@ -48,8 +49,9 @@ export const requireOrganization = (req, _res, next) => {
 
 export const requireActiveLicense = (req, _res, next) => {
   const status = String(req.user?.licenseStatus || "PAYMENT_REQUIRED").toUpperCase();
+  if (status === "SUSPENDED") return next(new HttpError(403, "Akkaunt administrator tomonidan bloklangan", "ACCOUNT_SUSPENDED"));
   const dateValid = req.user?.licenseDateValid !== false;
-  const active = (status === "ACTIVE" || status === "APPROVED") && dateValid;
-  if (!active) return next(new HttpError(402, "Zenix POS tarifini faollashtiring", status === "REVIEW" ? "LICENSE_REVIEW" : status === "EXPIRED" || !dateValid ? "LICENSE_EXPIRED" : "PAYMENT_REQUIRED"));
+  const active = (status === "ACTIVE" || status === "APPROVED") && dateValid && !req.user?.organizationSettings?.billingHold;
+  if (!active) return next(new HttpError(402, "Zenix POS tarifini faollashtiring", req.user?.organizationSettings?.billingHold ? "BILLING_HOLD" : status === "REVIEW" ? "LICENSE_REVIEW" : status === "EXPIRED" || !dateValid ? "LICENSE_EXPIRED" : "PAYMENT_REQUIRED"));
   next();
 };
