@@ -40,7 +40,7 @@ export function organizationPageSql(input){
     AND ($2='all' OR (${effectiveStatus})=$2)`;
   return {
     countSql:`SELECT count(*)::int AS total ${from} ${where}`,
-    rowsSql:`SELECT o.id,o.name,o.phone,o.plan,${effectiveStatus} AS license_status,o.expiry_date,o.store_limit,o.created_at,
+    rowsSql:`SELECT o.id,o.name,o.phone,o.plan,o.settings,${effectiveStatus} AS license_status,o.expiry_date,o.store_limit,o.created_at,
       owner.name AS owner_name,owner.phone AS owner_phone,
       (SELECT count(*)::int FROM stores st WHERE st.organization_id=o.id AND st.active=true) AS store_count
       ${from} ${where} ORDER BY o.created_at DESC,o.id DESC LIMIT $3 OFFSET $4`,

@@ -42,6 +42,11 @@ test('platform paging executes parameterized bounded queries and returns total',
   assert.equal(queries[0][1][3],30);
 });
 
+test('platform organization page selects the settings consumed by list and detail views',()=>{
+  const query=organizationPageSql(organizationPageSchema.parse({}));
+  assert.match(query.rowsSql,/SELECT[\s\S]*\bo\.settings\b[\s\S]*FROM organizations o/);
+});
+
 test('platform endpoints require platform admin and lazy-load a single tenant detail',()=>{
   const src=readFileSync(new URL('../src/routes/platform.js',import.meta.url),'utf8');
   assert.match(src,/router\.use\(requireAuth,requirePermission\("platformAdmin"\)\)/);

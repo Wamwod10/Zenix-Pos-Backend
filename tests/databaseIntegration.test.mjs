@@ -43,6 +43,101 @@ const testPool = (max) => new Pool({
   options: "-c lock_timeout=5s -c statement_timeout=30s",
 });
 
+function registerDirectoryIntegration(){
+integration('complete customer directory and platform metadata through authenticated HTTP', {timeout:30_000}, async()=>{
+  assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});
+  assert.equal(process.env.DATABASE_URL,integrationUrl);
+  const [{app},{pool:appPool},{default:bcrypt},{parseCustomerDirectoryQuery,buildCustomerPageQuery}]=await Promise.all([
+    import('../src/app.js'),import('../src/db/pool.js'),import('bcryptjs'),import('../src/services/customerDirectory.js'),
+  ]);
+  const db=testPool(3);
+  const server=app.listen(0,'127.0.0.1');
+  await new Promise((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject)});
+  const base=`http://127.0.0.1:${server.address().port}`;
+  const headers={origin:'http://localhost:5173','x-zenix-client':'web','content-type':'application/json'};
+  async function request(path,cookie,body){
+    const response=await fetch(`${base}${path}`,{method:body?'POST':'GET',headers:{...headers,...(cookie?{cookie}:{})},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(5000)});
+    return {status:response.status,body:await response.json(),cookie:response.headers.get('set-cookie')?.split(';')[0]};
+  }
+  try{
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date,settings) VALUES('Task 6 Directory','ACTIVE',CURRENT_DATE+30,$1) RETURNING id",[{billingHold:false,trialEndsAt:'2026-11-01T00:00:00Z'}])).rows[0].id;
+    const foreign=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Task 6 Foreign','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
+    const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Directory store') RETURNING id",[org])).rows[0].id;
+    const password='DirectoryTask6!';const hash=await bcrypt.hash(password,4);
+    const owner=`dir-owner-${org}`,admin=`dir-admin-${org}`;
+    const user=(await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Directory owner',$3,$4,'OWNER') RETURNING id",[org,store,owner,hash])).rows[0].id;
+    await db.query("INSERT INTO users(name,username,password_hash,app_role) VALUES('Directory admin',$1,$2,'PLATFORM_ADMIN')",[admin,hash]);
+    const ids=(await db.query("INSERT INTO customers(organization_id,name,customer_type) SELECT $1,'Customer '||lpad(g::text,3,'0'),CASE WHEN g%3=0 THEN 'VIP' ELSE 'REGULAR' END FROM generate_series(1,75) g RETURNING id,name",[org])).rows;
+    await db.query("INSERT INTO customers(organization_id,name) VALUES($1,'Customer 001'),($1,'Customer foreign')",[foreign]);
+    await db.query("INSERT INTO customers(organization_id,name,archived) VALUES($1,'Customer archived',true)",[org]);
+    for(let i=0;i<ids.length;i++){
+      if(i%2===0)await db.query("INSERT INTO customer_ledger(organization_id,customer_id,entry_type,amount,due_date) VALUES($1,$2,'CREDIT_SALE',$3,CASE WHEN $4 THEN CURRENT_DATE-1 ELSE CURRENT_DATE+1 END)",[org,ids[i].id,(i+1)*10,i%4===0]);
+      await db.query("INSERT INTO sales(organization_id,store_id,seller_id,sale_number,total,customer_id) VALUES($1,$2,$3,$4,$5,$6)",[org,store,user,`dir-${org}-${i}`,i+1,ids[i].id]);
+    }
+    // Unallocated and partially allocated overdue debt must be calculated tenant-wide.
+    const credit=(await db.query("SELECT id FROM customer_ledger WHERE organization_id=$1 AND customer_id=$2",[org,ids[0].id])).rows[0].id;
+    const payment=(await db.query("INSERT INTO customer_ledger(organization_id,customer_id,entry_type,amount) VALUES($1,$2,'PAYMENT',-4) RETURNING id",[org,ids[0].id])).rows[0].id;
+    await db.query("INSERT INTO customer_payment_allocations(organization_id,customer_id,payment_ledger_id,credit_ledger_id,amount) VALUES($1,$2,$3,$4,4)",[org,ids[0].id,payment,credit]);
+    const login=await request('/api/auth/login',null,{username:owner,password});assert.equal(login.status,200);
+    const adminLogin=await request('/api/auth/login',null,{username:admin,password});assert.equal(adminLogin.status,200);
+    const page=await request('/api/customers?limit=20&offset=60',login.cookie);
+    assert.equal(page.status,200);assert.deepEqual(Object.keys(page.body.data).sort(),['items','limit','offset','total']);
+    assert.equal(page.body.data.total,75);assert.equal(page.body.data.items.length,15);
+    assert.equal(page.body.data.items[0].name,'Customer 061');assert.equal(page.body.data.items.at(-1).name,'Customer 075');
+    const beyond=await request('/api/customers?offset=1000',login.cookie);assert.equal(beyond.body.data.total,75);assert.deepEqual(beyond.body.data.items,[]);
+    for(const [filter,total] of [['all',75],['debtors',38],['overdue',19],['vip',25]]){
+      const result=await request(`/api/customers?filter=${filter}&limit=10`,login.cookie);assert.equal(result.status,200);assert.equal(result.body.data.total,total);assert.equal(result.body.data.items.length,10);
+    }
+    for(const [sort,firstAsc,firstDesc] of [['name','Customer 001','Customer 075'],['spend','Customer 001','Customer 075'],['debt',null,'Customer 075'],['overdue',null,'Customer 073']])for(const direction of ['asc','desc']){
+      const result=await request(`/api/customers?sort=${sort}&direction=${direction}&limit=100`,login.cookie);
+      assert.equal(result.status,200);assert.equal(result.body.data.items.length,75);
+      const first=direction==='asc'?firstAsc:firstDesc;if(first)assert.equal(result.body.data.items[0].name,first);
+      const field={name:'name',spend:'totalPurchases',debt:'balance',overdue:'overdue'}[sort];
+      for(let i=1;i<75;i++){const a=result.body.data.items[i-1],b=result.body.data.items[i];const cmp=sort==='name'?a.name.localeCompare(b.name):a[field]-b[field];assert.ok(direction==='asc'?cmp<=0:cmp>=0);if(cmp===0)assert.ok(a.id<b.id,'ID tie-break is ascending');}
+    }
+    const searched=await request('/api/customers?q=Customer%20075&filter=vip',login.cookie);assert.equal(searched.body.data.total,1);assert.equal(searched.body.data.items[0].id,ids[74].id);
+    const literal=await request('/api/customers?q=%25',login.cookie);assert.equal(literal.body.data.total,0);
+    const injection=await request('/api/customers?q='+encodeURIComponent("' OR true --"),login.cookie);assert.equal(injection.body.data.total,0);
+    const tieIds=[ids[1].id,ids[3].id].sort();
+    await db.query("UPDATE customers SET name='Directory tie',email=$2,phone='9987654321' WHERE id=ANY($1::uuid[])",[tieIds,'literal_%\\']);
+    await db.query("UPDATE sales SET total=0 WHERE organization_id=$1 AND customer_id=ANY($2::uuid[])",[org,tieIds]);
+    for(const sort of ['name','spend','debt','overdue'])for(const direction of ['asc','desc']){
+      const result=await request(`/api/customers?q=Directory%20tie&sort=${sort}&direction=${direction}`,login.cookie);
+      assert.equal(result.body.data.total,2);assert.deepEqual(result.body.data.items.map(row=>row.id),tieIds);
+    }
+    for(const search of ['LITERAL_%\\','9987654321']){
+      const result=await request('/api/customers?q='+encodeURIComponent(search),login.cookie);
+      assert.equal(result.body.data.total,2,'phone/email search and literal wildcards apply to full directory');
+    }
+    const empty=(await db.query("INSERT INTO organizations(name) VALUES('Task 6 Empty') RETURNING id")).rows[0].id;
+    const emptyQuery=buildCustomerPageQuery({organizationId:empty,...parseCustomerDirectoryQuery({})});
+    const emptyRows=(await db.query(emptyQuery.text,emptyQuery.values)).rows;
+    assert.equal(emptyRows.length,1);assert.equal(emptyRows[0].total,0);assert.equal(emptyRows[0].id,null);
+    for(const query of ['filter=bad','sort=bad','direction=bad','limit=101','offset=-1','offset=1000001','q='+('x'.repeat(101))]){
+      const result=await request('/api/customers?'+query,login.cookie);assert.equal(result.status,400);assert.equal(result.body.error.code,'VALIDATION_ERROR');
+    }
+    const tenantQuery=buildCustomerPageQuery({organizationId:foreign,...parseCustomerDirectoryQuery({})});
+    assert.equal((await db.query(tenantQuery.text,tenantQuery.values)).rows[0].total,2);
+    await db.query("UPDATE organizations SET settings=settings||'{\"billingHold\":true}'::jsonb WHERE id=$1",[org]);
+    const list=await request('/api/platform/organizations/page?q=Task%206%20Directory',adminLogin.cookie);
+    const detail=await request(`/api/platform/organizations/${org}/detail`,adminLogin.cookie);
+    assert.equal(list.status,200);assert.equal(detail.status,200);assert.equal(list.body.data.total,1);
+    for(const key of ['billingHold','trialEndsAt'])assert.equal(list.body.data.items[0][key],detail.body.data.organization[key]);
+    assert.equal(list.body.data.items[0].billingHold,true);assert.equal(list.body.data.items[0].trialEndsAt,'2026-11-01T00:00:00Z');
+    const foreignList=await request('/api/platform/organizations/page?q=Task%206%20Foreign',adminLogin.cookie);
+    const foreignDetail=await request(`/api/platform/organizations/${foreign}/detail`,adminLogin.cookie);
+    assert.equal(foreignList.body.data.items[0].billingHold,false);assert.equal(foreignDetail.body.data.organization.billingHold,false);
+    assert.equal(foreignList.body.data.items[0].trialEndsAt,null);assert.equal(foreignDetail.body.data.organization.trialEndsAt,null);
+    const denied=await request('/api/platform/organizations/page',login.cookie);assert.equal(denied.status,403);
+    assert.equal((await request('/api/customers',null)).status,401);
+  }finally{
+    server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await db.end();
+    // Other integration cases reuse the configured app pool in this process.
+    void appPool;
+  }
+});
+}
+
 function registerStoreAuthorizationIntegration(){
 integration('queued store authorization observes committed access changes before business mutation', {timeout:30_000}, async(t)=>{
   const {lockStoreTradingAuthorization}=await import('../src/services/storeTradingHolds.js');
@@ -729,6 +824,7 @@ registerInventoryCountIntegration();
 registerPromoReservationIntegration();
 registerStoreAuthorizationIntegration();
 registerQueuedRouteIntegration();
+registerDirectoryIntegration();
 
 integration('expired extra-store entitlement blocks excess branch without archiving existing data',async()=>{
   assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});

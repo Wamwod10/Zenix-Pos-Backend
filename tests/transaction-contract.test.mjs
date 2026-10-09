@@ -9,6 +9,24 @@ import { z } from 'zod';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const read=(relative)=>fs.readFileSync(path.join(here,'..',relative),'utf8');
+const directory = await import('../src/services/customerDirectory.js').catch(()=>({}));
+
+test('customer page SQL binds user text, tenant, page bounds and uses deterministic allowlisted order',()=>{
+  assert.equal(typeof directory.buildCustomerPageQuery,'function');
+  const organizationId='00000000-0000-4000-8000-000000000001';
+  const expressions={name:'lower(c.name)',spend:'c.total_purchases',debt:'c.balance',overdue:'c.overdue'};
+  for(const filter of ['all','debtors','overdue','vip'])for(const sort of Object.keys(expressions))for(const direction of ['asc','desc']){
+    const input={organizationId,q:"O'Reilly_%\\",filter,sort,direction,limit:20,offset:60};
+    const query=directory.buildCustomerPageQuery(input);
+    assert.deepEqual(query.values,[organizationId,"%O'Reilly\\_\\%\\\\%",20,60]);
+    assert.doesNotMatch(query.text,/O'Reilly/);
+    assert.match(query.text,/c.organization_id=\$1 AND c.archived=false/);
+    assert.ok(query.text.includes(`ORDER BY ${expressions[sort]} ${direction.toUpperCase()},c.id ASC`));
+    assert.match(query.text,/LIMIT \$3 OFFSET \$4/);
+    assert.match(query.text,/count\(\*\).*total/);
+  }
+  assert.throws(()=>directory.buildCustomerPageQuery({organizationId,sort:'name; DELETE FROM customers'}));
+});
 
 // Execute the real transaction helpers without loading the configured app pool.
 const inventorySource=read('src/routes/inventory.js');

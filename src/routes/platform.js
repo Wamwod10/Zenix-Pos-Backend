@@ -19,7 +19,7 @@ const paymentView=(row)=>({
   receiptId:row.receipt_id,receiptName:row.receipt_name,receiptType:row.receipt_type,rejectReason:row.reject_reason||"",submittedAt:row.submitted_at,reviewedAt:row.reviewed_at,
 });
 
-const organizationView=(row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),storeLimit:Number(row.store_limit||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,createdAt:row.created_at});
+const organizationView=(row)=>({id:row.id,name:row.name,owner:row.owner_name||"",phone:row.owner_phone||row.phone||"",stores:Number(row.store_count||0),storeLimit:Number(row.store_limit||0),plan:row.plan,licenseStatus:row.license_status,expiryDate:row.expiry_date,createdAt:row.created_at,billingHold:Boolean(row.settings?.billingHold),trialEndsAt:row.settings?.trialEndsAt||null});
 
 // The platform dashboard must not download every tenant, user and payment on login.
 router.get("/overview",asyncRoute(async(_req,res)=>{
