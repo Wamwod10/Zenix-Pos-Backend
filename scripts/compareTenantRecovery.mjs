@@ -11,6 +11,9 @@ const safeTarget=value=>{
   const parsed=assertSafeTestDatabaseUrl(value);
   const database=decodeURIComponent(parsed.pathname.slice(1));
   if(/prod|production|live/i.test(database)||parsed.hash||[...parsed.searchParams.keys()].some(key=>key!=='sslmode'))throw Error('Unsafe target');
+  // Pin the same port for the independence check and pg. An omitted URL port
+  // otherwise inherits PGPORT in node-postgres despite the check assuming 5432.
+  if(!parsed.port)parsed.port='5432';
   return parsed;
 };
 const endpoint=url=>`${['localhost','127.0.0.1','[::1]','::1'].includes(url.hostname)?'loopback':url.hostname}:${url.port||'5432'}:${decodeURIComponent(url.pathname)}`;
@@ -28,7 +31,7 @@ if(!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id||'')||!sourceUrl||!
     const pools=[];
     try{
       const [{default:pg},{createMigrationPoolConfig}]=await Promise.all([import('pg'),import('../src/db/config.js')]);
-      for(const databaseUrl of [sourceUrl,targetUrl])pools.push(new pg.Pool(createMigrationPoolConfig({
+      for(const databaseUrl of [source.href,target.href])pools.push(new pg.Pool(createMigrationPoolConfig({
         databaseUrl,isProduction:false,connectionTimeoutMs:10000,statementTimeoutMs:10000,queryTimeoutMs:10000,idleTransactionTimeoutMs:10000,
       })));
       const [before,after]=await Promise.all(pools.map(pool=>rowLevel?recoveryRowManifest(pool,id):recoverySnapshot(pool,id)));

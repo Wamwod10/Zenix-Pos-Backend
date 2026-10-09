@@ -55,3 +55,46 @@ test('CLI rejects production and unsafe targets without exposing secrets or conn
     assert.doesNotMatch(result.stdout+result.stderr,/SECRET_PASSWORD|postgres:\/\/|prod\.neon\.tech|ECONNREFUSED/);
   }
 });
+
+test('CLI pins driver endpoints to canonical ports despite ambient PGPORT',()=>{
+  // Replace only database transport. Real pg.Client resolves the exact config
+  // handed to each pool, so ambient-port drift cannot hide behind a mock parser.
+  const runner=`
+    import pg from 'pg';
+    process.argv.splice(1,0,'scripts/compareTenantRecovery.mjs');
+    const connections=[];
+    pg.Pool=class {
+      constructor(config){
+        const resolved=new pg.Client(config).connectionParameters;
+        connections.push([resolved.host,resolved.port,resolved.database,resolved.user]);
+      }
+      async connect(){return {query:async sql=>({rows:sql.startsWith('SELECT id')?[{id:'exists'}]:[]}),release(){}};}
+      async end(){}
+    };
+    await import('./scripts/compareTenantRecovery.mjs');
+    console.log('TEST_CONNECTIONS='+JSON.stringify(connections));
+  `;
+  const cases=[
+    ['postgres://user:SECRET_PASSWORD@127.0.0.1/recovery_test_same',
+      'postgres://user:SECRET_PASSWORD@127.0.0.1:5544/recovery_test_same',0,
+      [['127.0.0.1',5432,'recovery_test_same','user'],['127.0.0.1',5544,'recovery_test_same','user']]],
+    ['postgres://user:SECRET_PASSWORD@127.0.0.1/recovery_test_same',
+      'postgres://user:SECRET_PASSWORD@localhost:5432/recovery_test_same',2,[]],
+    ['postgres://user:SECRET_PASSWORD@127.0.0.1:5544/recovery_test_same',
+      'postgres://user:SECRET_PASSWORD@127.0.0.1:5545/recovery_test_same',0,
+      [['127.0.0.1',5544,'recovery_test_same','user'],['127.0.0.1',5545,'recovery_test_same','user']]],
+    ['postgres://user:SECRET_PASSWORD@127.0.0.1/recovery_test_source',
+      'postgres://user:SECRET_PASSWORD@127.0.0.1/recovery_test_target',0,
+      [['127.0.0.1',5432,'recovery_test_source','user'],['127.0.0.1',5432,'recovery_test_target','user']]],
+  ];
+  for(const [source,target,status,want] of cases){
+    const result=spawnSync(process.execPath,['--input-type=module','--eval',runner,ORG],{
+      cwd:new URL('../',import.meta.url),encoding:'utf8',timeout:4000,
+      env:{...process.env,NODE_ENV:'test',PGPORT:'5544',RECOVERY_SOURCE_DATABASE_URL:source,RECOVERY_TARGET_DATABASE_URL:target},
+    });
+    assert.equal(result.status,status,result.stderr);
+    const actual=JSON.parse(result.stdout.split('TEST_CONNECTIONS=')[1]);
+    assert.deepEqual(actual,want,'validated endpoints and actual driver endpoints must agree');
+    assert.doesNotMatch(result.stdout+result.stderr,/SECRET_PASSWORD|postgres:\/\//);
+  }
+});
