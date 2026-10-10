@@ -19,7 +19,7 @@ test('customer page SQL binds user text, tenant, page bounds and uses determinis
   for(const filter of ['all','debtors','overdue','vip'])for(const sort of Object.keys(expressions))for(const direction of ['asc','desc']){
     const input={organizationId,q:"O'Reilly_%\\",filter,sort,direction,limit:20,offset:60};
     const query=directory.buildCustomerPageQuery(input);
-    assert.deepEqual(query.values,[organizationId,"%O'Reilly\\_\\%\\\\%",20,60]);
+    assert.deepEqual(query.values,[organizationId,"%O'Reilly\\_\\%\\\\%",20,60,[]]);
     assert.doesNotMatch(query.text,/O'Reilly/);
     assert.match(query.text,/c.organization_id=\$1 AND c.archived=false/);
     assert.ok(query.text.includes(`ORDER BY ${expressions[sort]} ${direction.toUpperCase()} NULLS LAST,c.id ASC`));

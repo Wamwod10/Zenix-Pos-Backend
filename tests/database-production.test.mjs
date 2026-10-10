@@ -10,9 +10,9 @@ const customerDirectory = await import("../src/services/customerDirectory.js").c
 test('customer directory validates allowlists and established pagination bounds', () => {
   assert.equal(typeof customerDirectory.parseCustomerDirectoryQuery, 'function');
   const parse = customerDirectory.parseCustomerDirectoryQuery;
-  assert.deepEqual(parse({}), {q:'',filter:'all',sort:'name',direction:'asc',limit:30,offset:0});
+  assert.deepEqual(parse({}), {q:'',filter:'all',sort:'name',direction:'asc',limit:30,offset:0,tags:[]});
   assert.deepEqual(parse(new URLSearchParams('q=%20Ada%20&filter=vip&sort=spend&direction=desc&limit=100&offset=1000000')),
-    {q:'Ada',filter:'vip',sort:'spend',direction:'desc',limit:100,offset:1000000});
+    {q:'Ada',filter:'vip',sort:'spend',direction:'desc',limit:100,offset:1000000,tags:[]});
   for (const input of [{q:'a'.repeat(101)},{filter:'DEBT'},{sort:'updated_at'},{direction:'ASC; DROP TABLE customers'},
     {limit:0},{limit:101},{limit:1.2},{limit:'many'},{offset:-1},{offset:1000001},{offset:1.5},{q:['Ada']}]) {
     assert.throws(() => parse(input), undefined, JSON.stringify(input));
