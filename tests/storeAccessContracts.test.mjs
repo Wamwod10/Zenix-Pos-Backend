@@ -121,10 +121,13 @@ test('trial dates use the organization calendar across UTC midnight',()=>{
 });
 
 test('registration persists trial expiry from the returned organization timezone',async(t)=>{
+  const savedOtpEnv={NODE_ENV:process.env.NODE_ENV,SMS_PROVIDER:process.env.SMS_PROVIDER,OTP_HMAC_SECRET:process.env.OTP_HMAC_SECRET};
+  process.env.NODE_ENV='test';process.env.SMS_PROVIDER='test';process.env.OTP_HMAC_SECRET='unit-only-otp-secret-with-more-than32-bytes';
   t.mock.timers.enable({apis:['Date'],now:new Date('2026-10-09T01:00:00Z')});
   const originalConnect=pool.connect,originalQuery=pool.query;
   let expiryDate;
   const query=async(sql,params)=>{
+    if(sql.startsWith('UPDATE auth_otp_challenges'))return {rows:[{id:ID,verified_at:new Date()}],rowCount:1};
     if(sql.startsWith('INSERT INTO organizations'))return {rows:[{id:ORG,name:'Business',timezone:'America/Los_Angeles',created_at:new Date()}],rowCount:1};
     if(sql.startsWith('UPDATE organizations'))expiryDate=params[3];
     if(sql.startsWith('INSERT INTO stores'))return {rows:[{id:STORE}],rowCount:1};
@@ -133,8 +136,8 @@ test('registration persists trial expiry from the returned organization timezone
   pool.connect=async()=>({query,release(){}});pool.query=query;
   try{
     let failure;
-    const req={body:{businessName:'Business',ownerName:'Owner',phone:'+998901234567',username:'owner-task5',password:'test-password',startOption:'TRIAL'},ip:'127.0.0.1',get(){return 'Test'}};
+    const req={body:{businessName:'Business',ownerName:'Owner',phone:'+998901234567',username:'owner-task5',password:'test-password',startOption:'TRIAL',registrationToken:'x'.repeat(43)},ip:'127.0.0.1',get(){return 'Test'}};
     await handler(auth.default,'/register','post')(req,{cookie(){return this},status(){return this},json(){}},error=>{failure=error});
     assert.ifError(failure);assert.equal(expiryDate,'2026-10-22');
-  }finally{pool.connect=originalConnect;pool.query=originalQuery;}
+  }finally{pool.connect=originalConnect;pool.query=originalQuery;for(const [key,value] of Object.entries(savedOtpEnv)){if(value===undefined)delete process.env[key];else process.env[key]=value}}
 });

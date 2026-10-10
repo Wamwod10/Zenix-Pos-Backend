@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 try {
   await import("dotenv/config");
 } catch (error) {
@@ -38,6 +40,16 @@ export const parseTelegramAdminUserIds = (value = "") => {
 
 export const parseRuntimeEnvironment = (source = process.env) => {
   const nodeEnv = source.NODE_ENV || "development";
+  const proxyValue = String(source.TRUST_PROXY || "").trim();
+  const trustedProxies = proxyValue ? proxyValue.split(",").map((entry) => {
+    const value = entry.trim();
+    const [address, prefix, ...extra] = value.split("/");
+    const version = isIP(address);
+    if (!version || extra.length || (prefix !== undefined && (!/^\d+$/.test(prefix) || Number(prefix) < 1 || Number(prefix) > (version === 4 ? 32 : 128)))) {
+      throw new Error("TRUST_PROXY must contain explicit IP addresses or bounded CIDR ranges");
+    }
+    return value;
+  }) : (nodeEnv === "test" ? ["loopback"] : false);
   const isProduction = nodeEnv === "production";
   const productionValue = (name, developmentFallback = "") => source[name] || (isProduction ? "" : developmentFallback);
   const required = (name, fallback = "") => {
@@ -53,6 +65,7 @@ export const parseRuntimeEnvironment = (source = process.env) => {
 
   return Object.freeze({
     nodeEnv,
+    trustedProxies,
     port: parseBoundedInteger(source, "PORT", 4000, 1, 65535),
     databaseUrl: required("DATABASE_URL"),
     migrationDatabaseUrl: source.MIGRATION_DATABASE_URL || (isProduction ? "" : required("DATABASE_URL")),
@@ -65,6 +78,8 @@ export const parseRuntimeEnvironment = (source = process.env) => {
     frontendOrigins,
     sessionCookieName: source.SESSION_COOKIE_NAME || "zenix_session",
     sessionTtlDays: parseBoundedInteger(source, "SESSION_TTL_DAYS", 30, 1, 365),
+    smsProvider: source.SMS_PROVIDER || "",
+    otpHmacSecret: source.OTP_HMAC_SECRET || "",
     telegramBotToken: productionValue("TELEGRAM_BOT_TOKEN"),
     telegramWebhookSecret: productionValue("TELEGRAM_WEBHOOK_SECRET"),
     telegramBotUsername: (source.TELEGRAM_BOT_USERNAME || "zenixposbot").replace(/^@/, ""),
