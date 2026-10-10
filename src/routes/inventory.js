@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import {requestFingerprint} from '../services/posReplay.js';
+import {roundMoney,lineAmount,sumMoney} from '../lib/posMoney.js';
 import { Router } from "express";
 import { z } from "zod";
 import { withTransaction } from "../db/tx.js";
@@ -11,7 +13,7 @@ import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js"
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
-const qty=z.coerce.number().positive();
+const qty=z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin');
 const uniqueProductArray=(schema,message="Bir mahsulot faqat bitta qatorda bo‘lishi mumkin")=>z.array(schema).min(1).superRefine((items,ctx)=>{
   const seen=new Set();
   items.forEach((item,index)=>{if(seen.has(item.productId))ctx.addIssue({code:z.ZodIssueCode.custom,path:[index,"productId"],message});seen.add(item.productId)});
@@ -78,26 +80,29 @@ async function reconcileCountBatches(client,{organizationId,storeId,productId,re
   const rows=(await client.query(`SELECT id,remaining_quantity FROM inventory_batches
     WHERE organization_id=$1 AND store_id=$2 AND product_id=$3
     ORDER BY expiry_date ASC NULLS LAST,created_at ASC,id ASC FOR UPDATE`,[organizationId,storeId,productId])).rows;
-  if(!rows.length)return;
+  const tracking={policy:'FEFO_FIFO',batches:[]};
+  if(!rows.length)return tracking;
   // Batch quantities are numeric(18,3). Work in thousandths so decimal equality
   // (e.g. 0.1 + 0.2 = 0.3) does not create or consume a spurious lot.
   const lockedBatchSum=rows.reduce((sum,row)=>sum+countQuantityUnits(row.remaining_quantity),0n);
   const delta=countQuantityUnits(requestedBalance)-lockedBatchSum;
-  if(delta===0n)return;
+  if(delta===0n)return tracking;
   if(delta<0n){
     let toRemove=-delta;
     for(const row of rows){
       if(toRemove===0n)break;
       const remaining=countQuantityUnits(row.remaining_quantity),n=toRemove<remaining?toRemove:remaining;
-      if(n>0n)await client.query("UPDATE inventory_batches SET remaining_quantity=remaining_quantity-$2 WHERE id=$1",[row.id,countQuantityDecimal(n)]);
+      if(n>0n){await client.query("UPDATE inventory_batches SET remaining_quantity=remaining_quantity-$2 WHERE id=$1",[row.id,countQuantityDecimal(n)]);tracking.batches.push({id:row.id,before:countQuantityDecimal(remaining),after:countQuantityDecimal(remaining-n),delta:countQuantityDecimal(-n)});}
       toRemove-=n;
     }
-    return;
+    return tracking;
   }
-  await client.query(`INSERT INTO inventory_batches
+  const inserted=await client.query(`INSERT INTO inventory_batches
     (organization_id,store_id,product_id,reference_id,batch_no,expiry_date,received_quantity,remaining_quantity,unit_cost)
-    VALUES ($1,$2,$3,'INVENTORY-COUNT','INVENTORY-COUNT / EXPIRY-UNKNOWN',NULL,$4,$4,0)`,
+    VALUES ($1,$2,$3,'INVENTORY-COUNT','INVENTORY-COUNT / EXPIRY-UNKNOWN',NULL,$4,$4,0) RETURNING id`,
     [organizationId,storeId,productId,countQuantityDecimal(delta)]);
+  tracking.batches.push({id:inserted.rows[0].id,before:'0.000',after:countQuantityDecimal(delta),delta:countQuantityDecimal(delta),origin:'UNKNOWN',expiryDate:null});
+  return tracking;
 }
 
 async function allocateTransferTracking(client,{orgId,transferId,storeId,productId,quantity,balanceQuantity}){
@@ -221,14 +226,20 @@ router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req
     batchNo:z.string().trim().max(120).default(""),expiryDate:z.string().optional().nullable(),serials:z.array(z.string().trim().min(1).max(180)).default([]),metadata:z.record(z.string(),z.any()).default({}),note:z.string().trim().max(500).default(""),
   }).refine((line)=>Boolean(line.productId||line.name),{message:"Mahsulot ID yoki nomi kerak"});
   const input=z.object({
-    storeId:z.string().uuid(),lines:z.array(lineSchema).min(1),supplierId:z.string().uuid().optional().nullable(),newSupplier:z.object({name:z.string().trim().min(2).max(180),phone:z.string().trim().max(40).default("")}).optional().nullable(),
+    storeId:z.string().uuid(),lines:z.array(lineSchema).min(1).max(250),supplierId:z.string().uuid().optional().nullable(),newSupplier:z.object({name:z.string().trim().min(2).max(180),phone:z.string().trim().max(40).default("")}).optional().nullable(),
     settlement:z.object({status:z.enum(["paid","partial","credit"]).default("paid"),paidAmount:z.coerce.number().min(0).default(0),invoiceNo:z.string().trim().max(120).default(""),dueDate:z.string().optional().nullable(),note:z.string().trim().max(500).default("")}).default({}),
-    reference:z.string().trim().max(160).default(""),note:z.string().trim().max(500).default(""),
+    clientReference:z.string().trim().max(160).default(""),reference:z.string().trim().max(160).default(""),note:z.string().trim().max(500).default(""),
   }).refine((value)=>!(value.supplierId&&value.newSupplier),{message:"Mavjud yoki yangi ta’minotchidan bittasini tanlang"}).parse(req.body);
   assertStoreScope(req.user,input.storeId);
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId,receiptId=crypto.randomUUID(),updated=[],purchaseLines=[];
     const store=await assertOrganizationStore(client,orgId,input.storeId);
+    const fingerprint=requestFingerprint({userId:req.user.id,...input});
+    if(input.clientReference){
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`inventory-receipt:${orgId}:${input.clientReference}`]);
+      const previous=(await client.query("SELECT metadata FROM audit_logs WHERE organization_id=$1 AND action='receive' AND entity_type='inventory' AND metadata->>'clientReference'=$2",[orgId,input.clientReference])).rows[0];
+      if(previous){if(previous.metadata.fingerprint!==fingerprint)throw new HttpError(409,'Kirim identifikatori boshqa malumot bilan ishlatilgan','IDEMPOTENCY_CONFLICT');return previous.metadata.response;}
+    }
     let supplier=null;
     if(input.supplierId){
       supplier=(await client.query(`SELECT * FROM suppliers WHERE id=$1 AND organization_id=$2 AND archived=false FOR UPDATE`,[input.supplierId,orgId])).rows[0];
@@ -263,11 +274,11 @@ router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req
         VALUES($1,$2,$3,'receive',$4,$5,$6,$7,'receipt',$8,$9,$10,$11::jsonb)`,[orgId,input.storeId,product.id,incomingQty,before,after,incomingCost,receiptId,line.note||input.note||input.reference||"",req.user.id,JSON.stringify({supplierId:supplier?.id||null,reference:input.reference||input.settlement.invoiceNo||"",batchNo:line.batchNo||"",expiryDate:line.expiryDate||null})]);
       if(line.batchNo||line.expiryDate)await client.query(`INSERT INTO inventory_batches(organization_id,store_id,product_id,reference_id,batch_no,expiry_date,received_quantity,remaining_quantity,unit_cost) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8)`,[orgId,input.storeId,product.id,receiptId,line.batchNo,line.expiryDate||null,incomingQty,incomingCost]);
       for(const serial of serials)await client.query(`INSERT INTO product_serials(organization_id,store_id,product_id,serial,reference_id) VALUES($1,$2,$3,$4,$5)`,[orgId,input.storeId,product.id,serial,receiptId]);
-      const total=incomingQty*incomingCost;
+      const total=lineAmount(incomingQty,incomingCost);
       purchaseLines.push({productId:product.id,product:product.name,quantity:incomingQty,unitCost:incomingCost,total,metadata:line.metadata||{}});
-      updated.push({productId:product.id,id:product.id,name:product.name,quantity:after,avgCost:avg,costPrice:avg,before,delta:incomingQty,serials,batchNo:line.batchNo||"",expiryDate:line.expiryDate||null});
+      updated.push({productId:product.id,id:product.id,name:product.name,unit:product.unit,quantity:after,avgCost:avg,costPrice:avg,before,delta:incomingQty,serials,batchNo:line.batchNo||"",expiryDate:line.expiryDate||null});
     }
-    const purchaseTotal=purchaseLines.reduce((sum,line)=>sum+line.total,0);
+    const purchaseTotal=sumMoney(purchaseLines.map(line=>line.total));
     let invoice=null;
     if(supplier&&purchaseTotal>0){
       let paid=0;
@@ -279,9 +290,10 @@ router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req
       for(const line of purchaseLines)await client.query(`INSERT INTO supplier_invoice_items(invoice_id,product_id,product_name,quantity,unit_cost,total,metadata) VALUES($1,$2,$3,$4,$5,$6,$7)`,[invoice.id,line.productId,line.product,line.quantity,line.unitCost,line.total,line.metadata||{}]);
       if(paid>0)await client.query(`INSERT INTO supplier_payments(organization_id,supplier_id,invoice_id,store_id,amount,method,note,metadata,created_by) VALUES($1,$2,$3,$4,$5,'purchase',$6,$7,$8)`,[orgId,supplier.id,invoice.id,input.storeId,paid,"Kirimdagi to‘lov",{receiptId},req.user.id]);
     }
-    await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.storeId,action:"receive",entityType:"inventory",entityId:receiptId,title:"Omborga kirim",description:`${input.lines.length} ta mahsulot qatori`});
+    const response={receiptId,updated,purchaseLines,total:purchaseTotal,supplier,invoice,settlement:{paidAmount:invoice?Number(invoice.paid_amount):0,balance:invoice?Math.max(0,Number(invoice.total)-Number(invoice.paid_amount)):0,status:input.settlement.status}};
+    await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.storeId,action:"receive",entityType:"inventory",entityId:receiptId,title:"Omborga kirim",description:`${input.lines.length} ta mahsulot qatori`,metadata:{clientReference:input.clientReference,fingerprint,response}});
     await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"inventory.received",eventId:receiptId,payload:{receiptId,lineCount:input.lines.length,total:purchaseTotal,storeId:input.storeId,storeName:store.name,supplierId:supplier?.id||null,supplierName:supplier?.name||""}});
-    return {receiptId,updated,purchaseLines,total:purchaseTotal,supplier,invoice,settlement:{paidAmount:invoice?Number(invoice.paid_amount):0,balance:invoice?Math.max(0,Number(invoice.total)-Number(invoice.paid_amount)):0,status:input.settlement.status}};
+    return response;
   });
   ok(res,result,201);
 }));
@@ -406,11 +418,13 @@ async function applyCount(client,{orgId,storeId,changes,userId,countId,strictSna
     const delta=countQuantityUnits(after)-countQuantityUnits(current);
     const canReconcile=await assertManualQuantityChangeSafe(client,{orgId,storeId,productId:change.productId,current,after,allowBatchReconciliation:true});
     if(canReconcile===false)continue;
-    await reconcileCountBatches(client,{organizationId:orgId,storeId,productId:change.productId,requestedBalance:after});
-    if(delta===0n)continue;
+    const tracking=await reconcileCountBatches(client,{organizationId:orgId,storeId,productId:change.productId,requestedBalance:after});
+    if(delta===0n&&!tracking.batches.length)continue;
     await client.query(`UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,storeId,change.productId,after]);
     const move=(await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by) VALUES($1,$2,$3,'count',$4,$5,$6,'inventory_count',$7,'Inventarizatsiya',$8) RETURNING *`,[orgId,storeId,change.productId,countQuantityDecimal(delta),current,after,countId,userId])).rows[0];
     movements.push({...move,product:product.name});
+    await client.query('UPDATE stock_movements SET metadata=$2::jsonb WHERE id=$1',[move.id,JSON.stringify({tracking})]);
+    await writeAudit(client,{organizationId:orgId,userId,storeId,action:'count',entityType:'inventory',entityId:countId,title:'Inventarizatsiya',description:`${product.name}: ${current} → ${after}`,metadata:{productId:change.productId,before:current,after,tracking}});
   }
   return {conflicts,movements};
 }
@@ -457,4 +471,5 @@ router.post("/counts/:id/review",requirePermission("inventoryCountApprove"),asyn
   ok(res,{count:result});
 }));
 
+export {reconcileCountBatches};
 export default router;
