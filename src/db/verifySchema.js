@@ -32,6 +32,7 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "027_customer_payment_replay.sql",
   "028_inventory_receipt_replay.sql",
   "029_trial_phone_verification.sql",
+  "030_registration_phone_throttle.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([

@@ -42,8 +42,8 @@ export async function verifyTrialOtp(db,{challengeId,phone,code,ip}){
 }
 // Must run in the SAME transaction as organization creation and trial claim.
 export async function consumeTrialVerification(client,{phone,registrationToken}){
- assertSmsConfigured(smsConfiguration());keyValue();
  if(!/^[A-Za-z0-9_-]{43}$/.test(registrationToken||''))throw new HttpError(400,'Sinov uchun telefonni SMS orqali tasdiqlang','OTP_REQUIRED');
+ assertSmsConfigured(smsConfiguration());keyValue();
  const phoneHash=sha256('phone:'+normalizeOtpPhone(phone));
  const consumed=await client.query(`UPDATE auth_otp_challenges SET consumed_at=now() WHERE registration_token_hash=$1 AND phone_hash=$2 AND verified_at IS NOT NULL AND consumed_at IS NULL AND registration_expires_at>now() RETURNING id,verified_at`,[sha256(registrationToken),phoneHash]);
  if(!consumed.rowCount)throw invalid();

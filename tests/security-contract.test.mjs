@@ -122,7 +122,7 @@ test('registration is IP throttled before creating organizations',()=>{
   assert.match(auth,/maxRegistrationsPerIp=8/);
   assert.match(auth,/REGISTRATION_RATE_LIMITED/);
   assert.match(auth,/pg_advisory_xact_lock/);
-  assert.match(auth,/recordRegistrationAttempt\(requestIp\(req\)\)/);
+  assert.match(auth,/recordRegistrationAttempt\(requestIp\(req\),input.phone\)/);
 });
 
 test('telegram group links are one-time and branch scoped',()=>{

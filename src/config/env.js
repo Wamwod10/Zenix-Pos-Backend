@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { trialVerificationPolicy } from "../services/trialVerificationPolicy.js";
 
 try {
   await import("dotenv/config");
@@ -40,6 +41,7 @@ export const parseTelegramAdminUserIds = (value = "") => {
 
 export const parseRuntimeEnvironment = (source = process.env) => {
   const nodeEnv = source.NODE_ENV || "development";
+  trialVerificationPolicy(source);
   const proxyValue = String(source.TRUST_PROXY || "").trim();
   const trustedProxies = proxyValue ? proxyValue.split(",").map((entry) => {
     const value = entry.trim();

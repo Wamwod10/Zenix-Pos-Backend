@@ -12,6 +12,7 @@ import { requireAuth, requirePermission } from "../middleware/auth.js";
 import { reviewBillingPayment } from "../services/billingReview.js";
 import { activeExtraStoreCount, storeLimitReconciliation } from "../services/extraStoreEntitlements.js";
 import { recoverySnapshot } from "../services/tenantRecovery.js";
+import { trialVerificationPolicy } from "../services/trialVerificationPolicy.js";
 import { backupHistory, backupPage, backupPageSchema, recoveryPreview } from "../services/backupProvider.js";
 import { controlStoreTradingHold } from "../services/storeTradingHolds.js";
 import { controlOrganization, organizationControlSchema } from "../services/platformOrganization.js";
@@ -156,7 +157,7 @@ router.get("/overview",asyncRoute(async(_req,res)=>{
     pool.query("SELECT count(*) FILTER (WHERE status='REVIEW')::int AS review,COALESCE(sum(amount) FILTER (WHERE status='APPROVED'),0) AS revenue,count(*) FILTER (WHERE status='APPROVED' AND type='LICENSE')::int AS subscriptions FROM billing_payments"),
   ]);
   const row=organizations.rows[0];
-  ok(res,{overview:{organizations:Number(row.total),active:Number(row.active),trial:Number(row.trial),suspended:Number(row.suspended),paymentBlocked:Number(row.payment_blocked),expired:Number(row.expired),plans:{MONTHLY:Number(row.monthly),ANNUAL:Number(row.annual)},revenue:Number(payments.rows[0].revenue),subscriptions:Number(payments.rows[0].subscriptions),stores:Number(stores.rows[0].total),review:Number(payments.rows[0].review)}});
+  ok(res,{overview:{trialVerification:trialVerificationPolicy(),organizations:Number(row.total),active:Number(row.active),trial:Number(row.trial),suspended:Number(row.suspended),paymentBlocked:Number(row.payment_blocked),expired:Number(row.expired),plans:{MONTHLY:Number(row.monthly),ANNUAL:Number(row.annual)},revenue:Number(payments.rows[0].revenue),subscriptions:Number(payments.rows[0].subscriptions),stores:Number(stores.rows[0].total),review:Number(payments.rows[0].review)}});
 }));
 
 router.get("/organizations/page",asyncRoute(async(req,res)=>{
