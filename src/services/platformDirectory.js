@@ -8,7 +8,7 @@ const basePageSchema = z.object({
 }).strict();
 
 export const organizationPageSchema = basePageSchema.extend({
-  status: z.enum(['all','ACTIVE','EXPIRED','SUSPENDED','PAYMENT_REQUIRED','REVIEW','REJECTED']).default('all'),
+  status: z.enum(['all','ACTIVE','EXPIRED','SUSPENDED','PAYMENT_REQUIRED','REVIEW','REJECTED','TRIAL','BILLING_HOLD']).default('all'),
 });
 export const paymentPageSchema = basePageSchema.extend({
   status: z.enum(['all','REVIEW','APPROVED','REJECTED']).default('all'),
@@ -24,8 +24,9 @@ export function likeTerm(query){
 // auth middleware's business-timezone expiry decision.
 export const effectiveLicenseStatusSql = () => `CASE
   WHEN o.license_status IN ('ACTIVE','APPROVED')
-    AND o.expiry_date IS NOT NULL
-    AND o.expiry_date < (now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date
+    AND ((o.expiry_date IS NOT NULL
+    AND o.expiry_date < (now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date)
+    OR (NULLIF(o.settings->>'trialEndsAt','') IS NOT NULL AND (o.settings->>'trialEndsAt')::timestamptz<=now()))
   THEN 'EXPIRED' ELSE o.license_status END`;
 
 export function organizationPageSql(input){
@@ -37,7 +38,9 @@ export function organizationPageSql(input){
     ) owner ON true`;
   const effectiveStatus=effectiveLicenseStatusSql();
   const where=`WHERE ($1='%%' OR o.name ILIKE $1 ESCAPE '\\' OR owner.name ILIKE $1 ESCAPE '\\' OR owner.phone ILIKE $1 ESCAPE '\\' OR o.phone ILIKE $1 ESCAPE '\\')
-    AND ($2='all' OR (${effectiveStatus})=$2)`;
+    AND ($2='all' OR (${effectiveStatus})=$2
+      OR ($2='BILLING_HOLD' AND o.settings->>'billingHold'='true')
+      OR ($2='TRIAL' AND (${effectiveStatus}) IN ('ACTIVE','APPROVED') AND NULLIF(o.settings->>'trialEndsAt','') IS NOT NULL AND (o.settings->>'trialEndsAt')::timestamptz>now()))`;
   return {
     countSql:`SELECT count(*)::int AS total ${from} ${where}`,
     rowsSql:`SELECT o.id,o.name,o.phone,o.plan,o.settings,${effectiveStatus} AS license_status,o.expiry_date,

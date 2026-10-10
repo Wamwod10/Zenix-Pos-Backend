@@ -15,6 +15,7 @@ export function buildBillingDraftMetadata(input, calculated) {
       : `${BILLING_PLANS[calculated.plan]?.label || calculated.plan} tarif`,
     activeStores: calculated.activeStores,
     extraDuration:calculated.type==='EXTRA'?calculated.extraDuration:null,
+    ...(calculated.pricingRule?{pricingRule:calculated.pricingRule}:{}),
     promoId:calculated.promoId||null,promoCode:calculated.promoCode||"",promoDiscount:calculated.promoDiscount||0,promoDiscountPercent:calculated.promoDiscountPercent||0,
   };
 }

@@ -19,11 +19,13 @@ export const RECOVERY_ROW_SOURCES=Object.freeze([
   ].map(scoped),
   Object.freeze({table:'inventory_balances',key:"(t.store_id::text || ':' || t.product_id::text)",where:'t.organization_id=$1'}),
   Object.freeze({table:'workspace_revisions',key:'t.organization_id',where:'t.organization_id=$1'}),
+  Object.freeze({table:'organization_trial_claims',key:'t.organization_id',where:'t.organization_id=$1'}),
   linked('sale_items','sales','sale_id'),
   linked('sale_payments','sales','sale_id'),
   linked('supplier_invoice_items','supplier_invoices','invoice_id'),
   linked('stock_transfer_items','stock_transfers','transfer_id'),
   linked('auth_sessions','users','user_id'),
+  linked('password_reset_tokens','users','user_id'),
   linked('user_preferences','users','user_id','t.user_id'),
   linked('notification_deliveries','notification_outbox','outbox_id'),
 ]);

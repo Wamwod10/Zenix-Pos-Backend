@@ -29,7 +29,7 @@ test('payment submission locks the selected receipt before reuse check and inser
   const source=readFileSync(new URL('../src/routes/billing.js',import.meta.url),'utf8');
   const receiptLock=source.indexOf('FROM billing_receipts WHERE id=$1 AND organization_id=$2 FOR UPDATE');
   const reuseCheck=source.indexOf('await assertReceiptAvailable(client');
-  const insert=source.indexOf('INSERT INTO billing_payments(');
+  const insert=source.indexOf('INSERT INTO billing_payments(',receiptLock);
   assert.ok(receiptLock>=0 && receiptLock<reuseCheck && reuseCheck<insert);
   assert.match(source,/SELECT id FROM organizations WHERE id=\$1 FOR UPDATE/);
 });

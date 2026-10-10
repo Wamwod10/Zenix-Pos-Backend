@@ -52,7 +52,8 @@ export async function applyOrganizationControl(client,{organizationId,actorId,in
       const pending=(await client.query("SELECT 1 FROM billing_payments WHERE organization_id=$1 AND status='REVIEW' LIMIT 1",[organizationId])).rowCount;
       if(pending)throw new HttpError(409,'Tekshiruvdagi to‘lov tugamaguncha tarifni qo‘lda o‘zgartirib bo‘lmaydi','PENDING_BILLING_REVIEW');
     }
-    await client.query('UPDATE organizations SET plan=$2,license_status=$3,expiry_date=$4,store_limit=$5,updated_at=now() WHERE id=$1',[organizationId,target.plan,target.licenseStatus,target.expiryDate,target.storeLimit]);
+    await client.query("UPDATE organizations SET plan=$2,license_status=$3,expiry_date=$4,store_limit=$5,settings=CASE WHEN $6 THEN COALESCE(settings,'{}'::jsonb)-'trialEndsAt' ELSE settings END,updated_at=now() WHERE id=$1",[organizationId,target.plan,target.licenseStatus,target.expiryDate,target.storeLimit,input.action==='SET_LICENSE']);
+    if(input.action==='SUSPEND')await client.query('UPDATE auth_sessions SET revoked_at=now() WHERE user_id IN (SELECT id FROM users WHERE organization_id=$1) AND revoked_at IS NULL',[organizationId]);
     await writeAudit(client,{organizationId,userId:actorId,action:'platform_override',entityType:'organization',entityId:organizationId,title:'Platform administratori tashkilotni boshqardi',description:input.reason,before:previous,after:target,metadata:{action:input.action}});
     return {id:organizationId,name:org.name,plan:target.plan,licenseStatus:target.licenseStatus,expiryDate:target.expiryDate,storeLimit:target.storeLimit};
 }

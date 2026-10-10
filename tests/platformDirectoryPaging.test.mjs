@@ -69,5 +69,5 @@ test('platform license statistics and filters use effective expiry in tenant tim
   const platform=readFileSync(new URL('../src/routes/platform.js',import.meta.url),'utf8');
   assert.match(platform,/effectiveLicenseStatusSql\(\)/);
   assert.match(platform,/effective_license_status/);
-  assert.match(platform,/FILTER \(WHERE \(\$\{effectiveStatus\}\) IN \('ACTIVE','APPROVED'\)\)/);
+  assert.match(platform,/FILTER \(WHERE \(\$\{effectiveStatus\}\) IN \('ACTIVE','APPROVED'\) AND COALESCE\(o.settings->>'billingHold','false'\)<>'true'\)/);
 });

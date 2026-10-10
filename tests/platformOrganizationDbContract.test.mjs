@@ -50,3 +50,11 @@ test('restore does not activate an expired license',async()=>{
  const org=await applyOrganizationControl(client,{organizationId:id,actorId,input:{action:'RESTORE',reason:'Investigation is complete'}});
  assert.equal(org.licenseStatus,'EXPIRED');
 });
+test('manual license activation clears trial expiry without removing independent billing hold',async()=>{
+ const client=fakeClient();
+ await applyOrganizationControl(client,{organizationId:id,actorId,input:{action:'SET_LICENSE',reason:'Verified subscription correction',plan:'MONTHLY',expiryDate:'2099-12-31',storeLimit:3}});
+ const write=client.calls.find(c=>c.sql.startsWith('UPDATE organizations'));
+ assert.match(write.sql,/-'trialEndsAt'/);
+ assert.equal(write.params[5],true);
+ assert.doesNotMatch(write.sql,/billingHold/);
+});

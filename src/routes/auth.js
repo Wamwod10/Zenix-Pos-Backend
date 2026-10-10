@@ -9,6 +9,10 @@ import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth } from "../middleware/auth.js";
 import { assertLoginAllowed, recordLoginDecision } from "../services/loginThrottle.js";
 import { organizationCalendarDateISO } from "../lib/businessDate.js";
+import {consumePasswordReset} from '../services/passwordReset.js';
+import {requestTrialOtp,verifyTrialOtp,consumeTrialVerification,normalizeOtpPhone} from '../services/trialOtp.js';
+import {writeAudit} from '../services/audit.js';
+import {trialVerificationPolicy} from '../services/trialVerificationPolicy.js';
 
 export function trialPeriod(organization,now=new Date()){
   const expiry=new Date(`${organizationCalendarDateISO(organization,now)}T12:00:00Z`);
@@ -19,7 +23,13 @@ export function trialPeriod(organization,now=new Date()){
 const router=Router();
 const cookieOptions={httpOnly:true,secure:env.isProduction,sameSite:env.isProduction?"none":"lax",path:"/",maxAge:env.sessionTtlDays*86400000};
 const loginSchema=z.object({username:z.string().trim().min(1).max(120),password:z.string().min(1).max(300)});
-const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().min(5).max(40),username:z.string().trim().min(3).max(120),password:z.string().min(8).max(300),startOption:z.enum(["TRIAL","MONTHLY","ANNUAL"]).default("TRIAL")});
+export const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().max(40).refine(value=>/^998\d{9}$/.test(value.replace(/\D/g,'')),'Telefon raqamini to‘liq kiriting'),username:z.string().trim().min(3).max(120),password:z.string().min(8).max(300),startOption:z.enum(["TRIAL","MONTHLY","ANNUAL"]).default("TRIAL"),registrationToken:z.string().max(100).optional()});
+
+export async function claimOrganizationTrial(client,organizationId,phone){
+  const phoneHash=sha256(`phone:${phone.replace(/\D/g,'')}`);
+  const result=await client.query('INSERT INTO organization_trial_claims(organization_id,phone_hash) VALUES($1,$2) ON CONFLICT(phone_hash) DO NOTHING RETURNING organization_id',[organizationId,phoneHash]);
+  if(!result.rowCount)throw new HttpError(409,'Bu biznes telefoni sinovdan foydalangan. Pullik tarifni tanlang','TRIAL_ALREADY_USED');
+}
 
 const publicUser=(row)=>({id:row.id,organizationId:row.organization_id,organizationName:row.organization_name||row.organizationName||"",storeId:row.store_id,name:row.name,username:row.username,phone:row.phone,appRole:row.app_role,permissionOverrides:row.permission_overrides||{},mustChangePassword:Boolean(row.must_change_password),forcePasswordChange:Boolean(row.must_change_password)});
 
@@ -44,31 +54,58 @@ async function createSession(client,userId,req){
 const registrationWindow="1 hour";
 const maxRegistrationsPerIp=8;
 const requestIp=(req)=>String(req.ip||req.socket?.remoteAddress||"unknown").slice(0,120);
-async function recordRegistrationAttempt(ipAddress){
+async function recordRegistrationAttempt(ipAddress,phone){
+  const phoneHash=sha256('phone:'+phone.replace(/\D/g,''));
   await withTransaction(async(client)=>{
     // Serialize registrations from the same network so simultaneous requests cannot
     // race past the rate limit before their ledger rows become visible.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`register:${ipAddress}`]);
-    const inserted=await client.query(`INSERT INTO auth_registration_attempts(ip_address)
-      SELECT $1
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[`register-phone:${phoneHash}`]);
+    const inserted=await client.query(`INSERT INTO auth_registration_attempts(ip_address,phone_hash)
+      SELECT $1,$4
       WHERE (SELECT count(*) FROM auth_registration_attempts WHERE ip_address=$1 AND created_at>now()-$2::interval)<$3
-      RETURNING id`,[ipAddress,registrationWindow,maxRegistrationsPerIp]);
+        AND (SELECT count(*) FROM auth_registration_attempts WHERE phone_hash=$4 AND created_at>now()-$2::interval)<5
+      RETURNING id`,[ipAddress,registrationWindow,maxRegistrationsPerIp,phoneHash]);
     if(!inserted.rowCount)throw new HttpError(429,"Bu tarmoqdan juda ko‘p ro‘yxatdan o‘tish urinishi bo‘ldi. Birozdan keyin qayta urinib ko‘ring.","REGISTRATION_RATE_LIMITED");
   });
   pool.query("DELETE FROM auth_registration_attempts WHERE created_at<now()-interval '48 hours'").catch(()=>{});
 }
 
+router.get('/registration-config',asyncRoute(async(_req,res)=>{
+  const {configuredMode,temporaryExpired,...publicPolicy}=trialVerificationPolicy();
+  res.set('Cache-Control','no-store');
+  ok(res,publicPolicy);
+}));
+router.post('/otp/request',asyncRoute(async(req,res)=>{
+  const input=z.object({phone:z.string().max(40)}).strict().parse(req.body);
+  ok(res,await requestTrialOtp(pool,{phone:normalizeOtpPhone(input.phone),ip:requestIp(req)}));
+}));
+router.post('/otp/verify',asyncRoute(async(req,res)=>{
+  const input=z.object({challengeId:z.string().uuid(),phone:z.string().max(40),code:z.string().regex(/^\d{6}$/)}).strict().parse(req.body);
+  ok(res,await verifyTrialOtp(pool,{...input,ip:requestIp(req)}));
+}));
 router.post("/register",asyncRoute(async(req,res)=>{
   const input=registerSchema.parse(req.body);
-  await recordRegistrationAttempt(requestIp(req));
+  await recordRegistrationAttempt(requestIp(req),input.phone);
   const result=await withTransaction(async(client)=>{
+    const policy=trialVerificationPolicy();
+    const verification=input.startOption==='TRIAL'&&policy.phoneVerificationRequired?await consumeTrialVerification(client,input):null;
     const passwordHash=await bcrypt.hash(input.password,12);
+    if(input.startOption==='TRIAL'&&!verification&&trialVerificationPolicy().phoneVerificationRequired)throw new HttpError(400,'Sinov uchun telefonni SMS orqali tasdiqlang','OTP_REQUIRED');
     // Read the database's organization timezone before deriving any trial date.
     const org=(await client.query(`INSERT INTO organizations(name,phone) VALUES($1,$2) RETURNING *`,[input.businessName,input.phone])).rows[0];
-    const trial=input.startOption==='TRIAL'?trialPeriod(org):null;
+    if(input.startOption==='TRIAL')await claimOrganizationTrial(client,org.id,input.phone);
+    const trial=input.startOption==='TRIAL'?trialPeriod(org,new Date(org.created_at)):null;
+    if(trial){
+      trial.settings.trialPhoneVerification=verification?'SMS_VERIFIED':'TEMPORARILY_UNVERIFIED';
+      if(verification)trial.settings.phoneVerifiedAt=verification.verified_at;
+      else trial.settings.trialPhoneVerificationExceptionUntil=policy.temporaryUntil;
+    }
     await client.query(`UPDATE organizations SET plan=$2,license_status=$3,expiry_date=$4,settings=$5::jsonb WHERE id=$1`,[org.id,input.startOption==='MONTHLY'?'MONTHLY':'ANNUAL',trial?'ACTIVE':'PAYMENT_REQUIRED',trial?.expiryDate||null,JSON.stringify(trial?.settings||{trialUsed:false})]);
     const store=(await client.query(`INSERT INTO stores(organization_id,name) VALUES($1,'Asosiy filial') RETURNING *`,[org.id])).rows[0];
     const user=(await client.query(`INSERT INTO users(organization_id,store_id,name,username,phone,password_hash,app_role) VALUES($1,$2,$3,$4,$5,$6,'OWNER') RETURNING *`,[org.id,store.id,input.ownerName,input.username.toLowerCase(),input.phone,passwordHash])).rows[0];
+    if(verification)await writeAudit(client,{organizationId:org.id,userId:user.id,storeId:store.id,action:'trial_phone_verified',entityType:'organization',entityId:org.id,title:'Trial phone verified',metadata:{challengeId:verification.id}});
+    else if(trial)await writeAudit(client,{organizationId:org.id,userId:user.id,storeId:store.id,action:'trial_phone_verification_deferred',entityType:'organization',entityId:org.id,title:'Trial admitted without phone verification',metadata:{mode:policy.mode,exceptionUntil:policy.temporaryUntil,phoneVerified:false}});
     const token=await createSession(client,user.id,req);
     return {token,user:{...user,organization_name:org.name}};
   });
@@ -107,6 +144,17 @@ router.post("/login",asyncRoute(async(req,res)=>{
   ok(res,{user:publicUser(result.user)});
 }));
 
+router.post('/reset-password',asyncRoute(async(req,res)=>{
+  const input=z.object({token:z.string().regex(/^[A-Za-z0-9_-]{43}$/),password:z.string().min(12).max(128)}).strict().parse(req.body);
+  const ip=requestIp(req),key=`password-reset:${ip}`;
+  await assertLoginAllowed(pool,key,ip);
+  // Count attempts before work so parallel invalid tokens cannot bypass limits.
+  await recordLoginDecision(pool,{usernameNorm:key,ipAddress:ip,success:false});
+  const hash=await bcrypt.hash(input.password,12);
+  await withTransaction(client=>consumePasswordReset(client,{token:input.token,passwordHash:hash}));
+  res.clearCookie(env.sessionCookieName,{...cookieOptions,maxAge:undefined});
+  ok(res,{success:true});
+}));
 router.post("/logout",requireAuth,asyncRoute(async(req,res)=>{
   await pool.query("UPDATE auth_sessions SET revoked_at=now() WHERE id=$1",[req.user.sessionId]);
   res.clearCookie(env.sessionCookieName,{...cookieOptions,maxAge:undefined});

@@ -19,9 +19,9 @@
     "platform:admin": "node scripts/createPlatformAdmin.js",
     "seed:zenix-market": "node scripts/seedZenixMarket.js",
     "test": "node --test tests/*.test.mjs",
-    "test:db": "node scripts/assertTestDatabase.js && node --test --test-isolation=none tests/databaseIntegration.test.mjs",
+    "test:db": "node scripts/assertTestDatabase.js && node --test tests/databaseIntegration.test.mjs",
     "worker": "node src/worker.js",
-    "test:http": "node scripts/assertTestDatabase.js && node --test --test-isolation=none tests/httpIntegration.test.mjs",
+    "test:http": "node scripts/assertTestDatabase.js && node --test tests/httpIntegration.test.mjs",
     "db:audit-subscriptions": "node src/db/auditSubscriptions.js",
     "recovery:compare": "node scripts/compareTenantRecovery.mjs"
   },

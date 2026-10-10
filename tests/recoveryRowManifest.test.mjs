@@ -63,7 +63,7 @@ test('comparison emits only validated count and fingerprint summaries',()=>{
 });
 test('all linked sources use proven tenant parents and immutable allowlist entries',()=>{
   assert.equal(new Set(RECOVERY_ROW_TABLES).size,RECOVERY_ROW_SOURCES.length);
-  const parents={sale_items:'sales',sale_payments:'sales',supplier_invoice_items:'supplier_invoices',stock_transfer_items:'stock_transfers',auth_sessions:'users',user_preferences:'users',notification_deliveries:'notification_outbox'};
+  const parents={sale_items:'sales',sale_payments:'sales',supplier_invoice_items:'supplier_invoices',stock_transfer_items:'stock_transfers',auth_sessions:'users',password_reset_tokens:'users',user_preferences:'users',notification_deliveries:'notification_outbox'};
   for(const source of RECOVERY_ROW_SOURCES){
     assert.ok(Object.isFrozen(source));assert.match(source.table,/^[a-z_]+$/);assert.doesNotMatch(source.where,/;|--|\/\*/);
     if(parents[source.table])assert.match(source.where,new RegExp(`FROM ${parents[source.table]} p WHERE p.id=t.[a-z_]+ AND p.organization_id=\\$1`));

@@ -6,7 +6,7 @@ import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission } from "../middleware/auth.js";
 import {
   BILLING_PLANS, addMonths, daysBetween, dateISO, priceExtraStoreByMonths, makeBillingOrderId,
-  planExtensionPrice,
+  planExtensionPrice,billableMonths,
 } from "../config/billing.js";
 import { databaseDateISO, organizationCalendarDateISO } from "../lib/businessDate.js";
 import { writeAudit } from "../services/audit.js";
@@ -16,7 +16,9 @@ import { buildBillingDraftMetadata } from "../services/billingDraftMetadata.js";
 import { assertBillingDraftCurrent, draftRecalculationInput } from "../services/billingDraftIntegrity.js";
 import { assertNoConflictingBillingReview } from "../services/pendingBillingReview.js";
 import { assertReceiptAvailable } from "../services/receiptReuseGuard.js";
-import { lockValidPromo,consumePromo,discountForAmount,reservePromo } from "../services/promoCodes.js";
+import { lockValidPromo,discountForAmount,reservePromo,normalizePromoCode } from "../services/promoCodes.js";
+import {applyBillingReview} from '../services/billingReview.js';
+import {sha256} from '../lib/crypto.js';
 import { quoteExtraStore, coveredExtraStoreCount } from "../services/extraStoreEntitlements.js";
 
 const router=Router();
@@ -124,40 +126,55 @@ export async function calculateDraft(client,user,input,{lockPromo=true}={}){
     const promo=await lockValidPromo(client,{code:input.promoCode,plan,organizationId:user.organizationId,lock:lockPromo});
     promoId=promo.id;promoCode=promo.code;promoDiscountPercent=Number(promo.discount_percent);
     promoDiscount=discountForAmount(baseAmount,promoDiscountPercent);
-    if(promoDiscount>=baseAmount)throw new HttpError(400,"100% promokodni bepul faollashtirish oynasida ishlating","PROMO_FREE_FLOW");
+    // A 100% coupon covers the base plan only; paid branches may still be due.
   }
-  return {type:input.type,plan:input.type==="EXTRA"?(BILLING_PLANS[org.plan]?org.plan:"ANNUAL"):plan,intent,currentEndDate,selectedEndDate,extensionDays,baseAmount,extraStoreCount,extraDuration:input.type==="EXTRA"?(input.extraDuration||"UNTIL_LICENSE"):null,extraStoreAmount,totalAmount:baseAmount+extraStoreAmount-promoDiscount,activeStores,promoId,promoCode,promoDiscount,promoDiscountPercent};
+  const pricingRule=input.type==='EXTRA'?(input.extraDuration==='MONTHLY'?'1 oy uchun qat’iy narx':input.extraDuration==='ANNUAL'?'1 yil uchun qat’iy narx':`${billableMonths(currentEndDate,selectedEndDate)} kalendar oy × ${org.plan==='MONTHLY'?BILLING_PLANS.MONTHLY.extraStoreAmount:BILLING_PLANS.ANNUAL.extraStoreAmount/12} so‘m. Boshlangan oy to‘liq; har filial summasi eng yaqin 1 000 so‘mga yaxlitlanadi. ${extraStoreCount} filial.`):null;
+  return {type:input.type,plan:input.type==="EXTRA"?(BILLING_PLANS[org.plan]?org.plan:"ANNUAL"):plan,intent,currentEndDate,selectedEndDate,extensionDays,baseAmount,extraStoreCount,extraDuration:input.type==="EXTRA"?(input.extraDuration||"UNTIL_LICENSE"):null,extraStoreAmount,totalAmount:baseAmount+extraStoreAmount-promoDiscount,activeStores,promoId,promoCode,promoDiscount,promoDiscountPercent,pricingRule};
+}
+
+export async function activateFreePromo(client,user,input){
+  const org=(await client.query('SELECT * FROM organizations WHERE id=$1 FOR UPDATE',[user.organizationId])).rows[0];
+  if(!org)throw new HttpError(404,'Biznes topilmadi','ORG_NOT_FOUND');
+  const orderId=`FREE-${input.requestId||sha256(`${normalizePromoCode(input.code)}:${input.plan}`)}`;
+  const existing=(await client.query(`SELECT bp.*,bd.metadata->>'promoCode' AS promo_code FROM billing_payments bp
+    JOIN billing_drafts bd ON bd.id=bp.draft_id AND bd.organization_id=bp.organization_id
+    WHERE bp.organization_id=$1 AND bp.order_id=$2`,[org.id,orderId])).rows[0];
+  if(existing){
+    if(existing.plan!==input.plan||existing.promo_code!==normalizePromoCode(input.code)||existing.status!=='APPROVED')throw new HttpError(409,'To‘lov kaliti boshqa hisobga tegishli','IDEMPOTENCY_CONFLICT');
+    return {plan:existing.plan,expiryDate:databaseDateISO(existing.service_period_to),paymentId:existing.id};
+  }
+  if(org.license_status==="SUSPENDED")throw new HttpError(409,'Akkaunt administrator tomonidan bloklangan','ORG_SUSPENDED');
+  await assertNoConflictingBillingReview(client,org.id);
+  const legacyExtras=Math.max(0,Number(org.store_limit||0)-(BILLING_PLANS[org.plan]?.includedStores||2));
+  const draftInput={type:'LICENSE',plan:input.plan,intent:'ACTIVATE',promoCode:input.code,extraStoreCount:legacyExtras,metadata:{}};
+  const quote=await calculateDraft(client,user,draftInput);
+  if(quote.promoDiscountPercent!==100||quote.totalAmount!==0)throw new HttpError(409,'Qo‘shimcha filial yoki tarif to‘lovi bor. Checkout orqali davom eting','PROMO_PAYMENT_REQUIRED');
+  const draft=(await client.query(`INSERT INTO billing_drafts(order_id,organization_id,created_by,type,plan,current_end_date,selected_end_date,extension_days,base_amount,extra_store_count,extra_store_amount,total_amount,metadata)
+    VALUES($1,$2,$3,'LICENSE',$4,$5,$6,$7,$8,0,0,0,$9) RETURNING *`,[orderId,org.id,user.id,input.plan,quote.currentEndDate,quote.selectedEndDate,quote.extensionDays,quote.baseAmount,buildBillingDraftMetadata(draftInput,quote)])).rows[0];
+  const payment=(await client.query(`INSERT INTO billing_payments(organization_id,draft_id,order_id,type,plan,amount,service_period_from,service_period_to,extension_days,extra_store_count,submitted_by)
+    VALUES($1,$2,$3,'LICENSE',$4,0,$5,$6,$7,0,$8) RETURNING *`,[org.id,draft.id,orderId,input.plan,quote.currentEndDate,quote.selectedEndDate,quote.extensionDays,user.id])).rows[0];
+  await reservePromo(client,{paymentId:payment.id,organizationId:org.id});
+  await client.query("UPDATE billing_drafts SET status='submitted' WHERE id=$1 AND organization_id=$2",[draft.id,org.id]);
+  await applyBillingReview(client,{paymentId:payment.id,decision:'APPROVED',actor:{source:'free_promo',internalUserId:user.id}});
+  await writeAudit(client,{organizationId:org.id,userId:user.id,action:'redeem',entityType:'promo',entityId:quote.promoId,title:'0 so‘mlik obuna faollashtirildi',metadata:{paymentId:payment.id}});
+  return {plan:input.plan,expiryDate:quote.selectedEndDate,paymentId:payment.id};
 }
 
 router.post("/promo/preview",requirePermission("moduleBilling"),asyncRoute(async(req,res)=>{
  const input=z.object({code:z.string().min(4).max(40),plan:z.enum(["MONTHLY","ANNUAL"])}).parse(req.body);
  const result=await withTransaction(async(client)=>{
-   await client.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE",[req.user.organizationId]);
+   const org=(await client.query("SELECT * FROM organizations WHERE id=$1 FOR UPDATE",[req.user.organizationId])).rows[0];
+   if(!org)throw new HttpError(404,'Biznes topilmadi','ORG_NOT_FOUND');
    const promo=await lockValidPromo(client,{code:input.code,plan:input.plan,organizationId:req.user.organizationId});
-   const original=BILLING_PLANS[input.plan].amount,discount=discountForAmount(original,promo.discount_percent);
-   return {code:promo.code,plan:input.plan,percent:promo.discount_percent,original,discount,due:original-discount};
+   const quote=await calculateDraft(client,req.user,{type:'LICENSE',intent:'ACTIVATE',plan:input.plan,promoCode:input.code,extraStoreCount:Math.max(0,Number(org.store_limit||0)-(BILLING_PLANS[org.plan]?.includedStores||2)),metadata:{}});
+   return {code:promo.code,plan:input.plan,percent:promo.discount_percent,original:quote.baseAmount,discount:quote.promoDiscount,extraStoreAmount:quote.extraStoreAmount,due:quote.totalAmount};
  });ok(res,{promo:result});
 }));
 router.post("/promo/redeem-free",requirePermission("billingWrite"),asyncRoute(async(req,res)=>{
- const input=z.object({code:z.string().min(4).max(40),plan:z.enum(["MONTHLY","ANNUAL"])}).parse(req.body);
- const result=await withTransaction(async(client)=>{
-   const org=(await client.query("SELECT * FROM organizations WHERE id=$1 FOR UPDATE",[req.user.organizationId])).rows[0];
-   if(!org)throw new HttpError(404,"Biznes topilmadi");
-   if(org.license_status==="SUSPENDED")throw new HttpError(409,"Akkaunt administrator tomonidan bloklangan","ORG_SUSPENDED");
-   const pending=(await client.query("SELECT 1 FROM billing_payments WHERE organization_id=$1 AND status='REVIEW' LIMIT 1",[org.id])).rowCount;
-   if(pending)throw new HttpError(409,"To‘lov tekshiruvi tugashini kuting","PAYMENT_REVIEW_PENDING");
-   const promo=await lockValidPromo(client,{code:input.code,plan:input.plan,organizationId:org.id});
-   if(Number(promo.discount_percent)!==100)throw new HttpError(409,"Bu promokod faqat chegirma beradi; to‘lovni davom ettiring","PROMO_PAYMENT_REQUIRED");
-   const today=organizationCalendarDateISO(org);
-   const base=org.expiry_date&&databaseDateISO(org.expiry_date)>today?databaseDateISO(org.expiry_date):today;
-   const until=addMonths(base,BILLING_PLANS[input.plan].months);
-   await consumePromo(client,{promo,organizationId:org.id,plan:input.plan,discountAmount:BILLING_PLANS[input.plan].amount});
-   await client.query("UPDATE organizations SET license_status='ACTIVE',plan=$2,expiry_date=$3,settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{billingHold}','false'::jsonb,true),updated_at=now() WHERE id=$1",[org.id,input.plan,until]);
-   await writeAudit(client,{organizationId:org.id,userId:req.user.id,action:'redeem',entityType:'promo',entityId:promo.id,title:'Bepul promokod faollashtirildi',description:`${promo.code} · ${input.plan} · ${until}`});
-   return {plan:input.plan,expiryDate:until};
- });ok(res,{subscription:result});
+ const input=z.object({code:z.string().min(4).max(40),plan:z.enum(["MONTHLY","ANNUAL"]),requestId:z.string().uuid().optional()}).strict().parse(req.body);
+ const result=await withTransaction(client=>activateFreePromo(client,req.user,input));
+ ok(res,{subscription:result});
 }));
-
 router.get("/draft",requirePermission("moduleBilling"),asyncRoute(async(req,res)=>{
   const {rows}=await pool.query("SELECT * FROM billing_drafts WHERE organization_id=$1 AND created_by=$2 AND status='open' AND expires_at>now() ORDER BY created_at DESC LIMIT 1",[req.user.organizationId,req.user.id]);
   ok(res,{draft:publicDraft(rows[0]||null)});

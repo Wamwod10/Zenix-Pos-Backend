@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { withTransaction } from "../db/tx.js";
 import { writeAudit } from "../services/audit.js";
 import { normalizePromoCode } from "../services/promoCodes.js";
+import {issuePasswordReset} from '../services/passwordReset.js';
 import { pool } from "../db/pool.js";
 import { BILLING_PLANS } from "../config/billing.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
@@ -11,9 +12,11 @@ import { requireAuth, requirePermission } from "../middleware/auth.js";
 import { reviewBillingPayment } from "../services/billingReview.js";
 import { activeExtraStoreCount, storeLimitReconciliation } from "../services/extraStoreEntitlements.js";
 import { recoverySnapshot } from "../services/tenantRecovery.js";
+import { trialVerificationPolicy } from "../services/trialVerificationPolicy.js";
+import { backupHistory, backupPage, backupPageSchema, recoveryPreview } from "../services/backupProvider.js";
 import { controlStoreTradingHold } from "../services/storeTradingHolds.js";
 import { controlOrganization, organizationControlSchema } from "../services/platformOrganization.js";
-import { organizationPageSchema, paymentPageSchema, organizationPageSql, paymentPageSql, fetchDirectoryPage, effectiveLicenseStatusSql } from "../services/platformDirectory.js";
+import { organizationPageSchema, paymentPageSchema, organizationPageSql, paymentPageSql, fetchDirectoryPage, effectiveLicenseStatusSql, likeTerm } from "../services/platformDirectory.js";
 
 const router=Router();
 router.use(requireAuth,requirePermission("platformAdmin"));
@@ -31,12 +34,26 @@ const organizationView=(row)=>({id:row.id,name:row.name,owner:row.owner_name||""
 // Read-only recovery/expiry diagnostics. These endpoints never mutate tenant data.
 router.get("/organizations/:id/recovery-preview",asyncRoute(async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id);
+  const input=backupPageSchema.parse(req.query);
   let snapshot;
   try{snapshot=await recoverySnapshot(pool,id)}catch(error){
     if(error?.message==='Organization not found in snapshot')throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
     throw error;
   }
-  ok(res,{snapshot,restoreAvailable:false});
+  await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'recovery_diagnostics',entityType:'organization',entityId:id,title:'Recovery diagnostikasi ochildi'});
+  const backups=await backupHistory(id);
+  let preview=null;
+  if(input.snapshotId){try{preview=recoveryPreview(id,backups,input.snapshotId)}catch(error){throw new HttpError(409,'Snapshot tekshirilmagan yoki biznesga mos emas',error.code)}}
+  await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'recovery_preview',entityType:'organization',entityId:id,title:'Read-only recovery preview',metadata:{snapshotId:input.snapshotId||null,scope:preview?.scope||backups.scope||'UNKNOWN',restoreAvailable:false,diffComputed:false}});
+  ok(res,{snapshot,backups:backupPage(backups,input),preview,restoreAvailable:false,backupsAvailable:backups.available,reason:backups.reason});
+  // No restore is offered without a tested backup provider and rollback plan.
+}));
+router.get('/organizations/:id/backups',asyncRoute(async(req,res)=>{
+  const id=z.string().uuid().parse(req.params.id),input=backupPageSchema.parse(req.query);
+  if(!(await pool.query('SELECT id FROM organizations WHERE id=$1',[id])).rows.length)throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
+  const history=await backupHistory(id);
+  await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'backup_history',entityType:'organization',entityId:id,title:'Read-only backup history',metadata:{available:history.available,scope:history.scope||'UNKNOWN',offset:input.offset}});
+  ok(res,{backups:backupPage(history,input)});
 }));
 router.get("/organizations/:id/store-reconciliation",asyncRoute(async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id);
@@ -58,41 +75,61 @@ router.post('/organizations/:id/stores/:storeId/trading-hold',asyncRoute(async(r
 
 // The platform dashboard must not download every tenant, user and payment on login.
 router.get("/promos",asyncRoute(async(req,res)=>{
+ const input=z.object({q:z.string().trim().max(100).default(''),limit:z.coerce.number().int().min(1).max(100).default(20),offset:z.coerce.number().int().min(0).default(0)}).parse(req.query);
  const rows=(await pool.query(`SELECT p.*,
-  (SELECT count(*)::int FROM platform_promo_uses u WHERE u.promo_id=p.id) AS uses
-  FROM platform_promos p ORDER BY p.created_at DESC LIMIT 250`)).rows;
- ok(res,{promos:rows.map(p=>({id:p.id,code:p.code,plan:p.plan,percent:p.discount_percent,maxUses:p.max_uses,uses:Number(p.uses),perBusiness:p.max_uses_per_org,active:p.active,expiresAt:p.expires_at}))});
+  (SELECT count(*)::int FROM platform_promo_uses u WHERE u.promo_id=p.id) AS uses,
+  (SELECT count(*)::int FROM platform_promo_reservations r WHERE r.promo_id=p.id AND r.status='RESERVED') AS reserved
+  FROM platform_promos p WHERE code ILIKE $1 ESCAPE '\\' ORDER BY p.created_at DESC,p.id DESC LIMIT $2 OFFSET $3`,[likeTerm(input.q),input.limit,input.offset])).rows;
+ const total=Number((await pool.query("SELECT count(*)::int AS n FROM platform_promos WHERE code ILIKE $1 ESCAPE '\\'",[likeTerm(input.q)])).rows[0].n);
+ ok(res,{total,promos:rows.map(p=>({id:p.id,code:p.code,plan:p.plan,percent:p.discount_percent,maxUses:p.max_uses,uses:Number(p.uses),reserved:Number(p.reserved),remaining:Math.max(0,p.max_uses-Number(p.uses)-Number(p.reserved)),perBusiness:p.max_uses_per_org,active:p.active,startsAt:p.starts_at,expiresAt:p.expires_at}))});
 }));
 router.post("/promos",asyncRoute(async(req,res)=>{
- const input=z.object({code:z.string().trim().regex(/^[a-z0-9-]{4,40}$/i),plan:z.enum(["MONTHLY","ANNUAL","BOTH"]),percent:z.union([z.literal(20),z.literal(50),z.literal(75),z.literal(100)]),maxUses:z.number().int().min(1).max(100000),perBusiness:z.number().int().min(1).max(100000).default(1),expiresAt:z.string().datetime().nullable().optional()}).parse(req.body);
+ const input=z.object({code:z.string().trim().regex(/^[a-z0-9-]{4,40}$/i),plan:z.enum(["MONTHLY","ANNUAL","BOTH"]),percent:z.union([z.literal(20),z.literal(50),z.literal(75),z.literal(100)]),maxUses:z.number().int().min(1).max(100000),perBusiness:z.number().int().min(1).max(100000).default(1),startsAt:z.string().datetime().nullable().optional(),expiresAt:z.string().datetime().nullable().optional(),active:z.boolean().default(true)}).refine(v=>!v.startsAt||!v.expiresAt||Date.parse(v.startsAt)<Date.parse(v.expiresAt),'Tugash sanasi boshlanishdan keyin bo‘lsin').parse(req.body);
  const code=normalizePromoCode(input.code);
- const row=(await pool.query(`INSERT INTO platform_promos(code,plan,discount_percent,max_uses,max_uses_per_org,expires_at,created_by)
- VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,code,plan,discount_percent,max_uses,max_uses_per_org,active,expires_at`,
- [code,input.plan,input.percent,input.maxUses,input.perBusiness,input.expiresAt||null,req.user.id])).rows[0];
+ const row=await withTransaction(async client=>{
+ const row=(await client.query(`INSERT INTO platform_promos(code,plan,discount_percent,max_uses,max_uses_per_org,expires_at,created_by,starts_at,active)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,code,plan,discount_percent,max_uses,max_uses_per_org,active,starts_at,expires_at`,
+ [code,input.plan,input.percent,input.maxUses,input.perBusiness,input.expiresAt||null,req.user.id,input.startsAt||null,input.active])).rows[0];
+ await writeAudit(client,{organizationId:null,userId:req.user.id,action:'promo_create',entityType:'platform_promo',entityId:row.id,title:'Promokod yaratildi',after:input});
+ return row;
+ });
  ok(res,{promo:row},201);
 }));
 router.post("/promos/:id/deactivate",asyncRoute(async(req,res)=>{
  const id=z.string().uuid().parse(req.params.id);
- const row=(await pool.query("UPDATE platform_promos SET active=false WHERE id=$1 RETURNING id,code,active",[id])).rows[0];
+ const row=await withTransaction(async client=>{
+ const row=(await client.query("UPDATE platform_promos SET active=false WHERE id=$1 RETURNING id,code,active",[id])).rows[0];
  if(!row)throw new HttpError(404,"Promokod topilmadi");
+ await writeAudit(client,{organizationId:null,userId:req.user.id,action:'promo_deactivate',entityType:'platform_promo',entityId:id,title:'Promokod to‘xtatildi'});
+ return row;
+ });
  ok(res,{promo:row});
 }));
 // Passwords are never readable. Reset creates only a bcrypt hash and invalidates all sessions.
+router.post('/organizations/:orgId/users/:userId/reset-token',asyncRoute(async(req,res)=>{
+ const organizationId=z.string().uuid().parse(req.params.orgId),userId=z.string().uuid().parse(req.params.userId);
+ const body=z.object({reason:z.string().trim().min(10).max(500),identityVerified:z.literal(true)}).strict().parse(req.body);
+ const reset=await withTransaction(client=>issuePasswordReset(client,{organizationId,userId,actorId:req.user.id,...body}));
+ ok(res,{reset},201);
+}));
 router.post("/organizations/:orgId/users/:userId/reset-password",asyncRoute(async(req,res)=>{
  const orgId=z.string().uuid().parse(req.params.orgId),userId=z.string().uuid().parse(req.params.userId);
- const body=z.object({password:z.string().min(12).max(128),reason:z.string().trim().min(10).max(500)}).parse(req.body);
+ const body=z.object({password:z.string().min(12).max(128),reason:z.string().trim().min(10).max(500),identityVerified:z.literal(true)}).strict().parse(req.body);
  const hash=await bcrypt.hash(body.password,12);
  await withTransaction(async(client)=>{
    await client.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE",[orgId]);
    const target=(await client.query("SELECT id FROM users WHERE id=$1 AND organization_id=$2 FOR UPDATE",[userId,orgId])).rows[0];
    if(!target)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
+   const recent=Number((await client.query("SELECT count(*)::int AS n FROM audit_logs WHERE organization_id=$1 AND entity_id=$2 AND action='password_reset' AND created_at>now()-interval '15 minutes'",[orgId,userId])).rows[0]?.n||0);
+   if(recent>=3)throw new HttpError(429,'Tiklash limiti tugadi','RESET_RATE_LIMITED');
    const row=(await client.query("UPDATE users SET password_hash=$3,must_change_password=true,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING name",[userId,orgId,hash])).rows[0];
    if(!row)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
    await client.query("UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",[userId]);
+   await client.query('UPDATE password_reset_tokens SET consumed_at=now() WHERE user_id=$1 AND consumed_at IS NULL',[userId]);
    await writeAudit(client,{organizationId:orgId,userId:req.user.id,action:'password_reset',entityType:'user',entityId:userId,title:'Parol tiklandi',description:body.reason});
  });ok(res,{success:true});
 }));
-// Usage is an estimate of the rows' JSON payload + uploaded file bytes, not an exact PostgreSQL billing allocation.
+// Exact stored binary payload, separated from estimated database row storage.
 router.get("/organizations/:id/usage",asyncRoute(async(req,res)=>{
  const id=z.string().uuid().parse(req.params.id);
  const rows=(await pool.query(`SELECT
@@ -101,18 +138,26 @@ router.get("/organizations/:id/usage",asyncRoute(async(req,res)=>{
   (SELECT count(*)::int FROM users WHERE organization_id=$1) users,
   (SELECT count(*)::int FROM stores WHERE organization_id=$1) stores,
   (SELECT COALESCE(sum(octet_length(content)),0)::bigint FROM billing_receipts WHERE organization_id=$1) receipt_bytes,
+  (SELECT COALESCE(sum(octet_length(content)),0)::bigint FROM file_assets WHERE organization_id=$1) asset_bytes,
   (SELECT COALESCE(sum(pg_column_size(row_to_json(s))),0)::bigint FROM sales s WHERE s.organization_id=$1) sales_approx_bytes`,[id])).rows[0];
- ok(res,{usage:{products:rows.products,sales:rows.sales,users:rows.users,stores:rows.stores,receiptBytes:Number(rows.receipt_bytes||0),estimatedBytes:Number(rows.receipt_bytes||0)+Number(rows.sales_approx_bytes||0),estimate:true}});
+ ok(res,{usage:{products:rows.products,sales:rows.sales,users:rows.users,stores:rows.stores,receiptBytes:Number(rows.receipt_bytes||0),fileBytes:Number(rows.receipt_bytes||0)+Number(rows.asset_bytes||0),fileScope:'Database-managed uploads only; external files are not measured',estimatedDatabaseBytes:Number(rows.sales_approx_bytes||0),estimate:true}});
 }));
 
 router.get("/overview",asyncRoute(async(_req,res)=>{
   const effectiveStatus=effectiveLicenseStatusSql();
   const [organizations,stores,payments]=await Promise.all([
-    pool.query(`SELECT count(*)::int AS total,count(*) FILTER (WHERE (${effectiveStatus}) IN ('ACTIVE','APPROVED'))::int AS active FROM organizations o`),
+    pool.query(`SELECT count(*)::int AS total,count(*) FILTER (WHERE (${effectiveStatus}) IN ('ACTIVE','APPROVED') AND COALESCE(o.settings->>'billingHold','false')<>'true')::int AS active,
+      count(*) FILTER (WHERE o.license_status='SUSPENDED')::int AS suspended,
+      count(*) FILTER (WHERE o.settings->>'billingHold'='true')::int AS payment_blocked,
+      count(*) FILTER (WHERE (${effectiveStatus})='EXPIRED')::int AS expired,
+      count(*) FILTER (WHERE (${effectiveStatus}) IN ('ACTIVE','APPROVED') AND NULLIF(o.settings->>'trialEndsAt','') IS NOT NULL AND (o.settings->>'trialEndsAt')::timestamptz>now())::int AS trial,
+      count(*) FILTER (WHERE o.plan='MONTHLY')::int AS monthly,
+      count(*) FILTER (WHERE o.plan='ANNUAL')::int AS annual FROM organizations o`),
     pool.query("SELECT count(*)::int AS total FROM stores"),
-    pool.query("SELECT count(*)::int AS review FROM billing_payments WHERE status='REVIEW'"),
+    pool.query("SELECT count(*) FILTER (WHERE status='REVIEW')::int AS review,COALESCE(sum(amount) FILTER (WHERE status='APPROVED'),0) AS revenue,count(*) FILTER (WHERE status='APPROVED' AND type='LICENSE')::int AS subscriptions FROM billing_payments"),
   ]);
-  ok(res,{overview:{organizations:Number(organizations.rows[0].total),active:Number(organizations.rows[0].active),stores:Number(stores.rows[0].total),review:Number(payments.rows[0].review)}});
+  const row=organizations.rows[0];
+  ok(res,{overview:{trialVerification:trialVerificationPolicy(),organizations:Number(row.total),active:Number(row.active),trial:Number(row.trial),suspended:Number(row.suspended),paymentBlocked:Number(row.payment_blocked),expired:Number(row.expired),plans:{MONTHLY:Number(row.monthly),ANNUAL:Number(row.annual)},revenue:Number(payments.rows[0].revenue),subscriptions:Number(payments.rows[0].subscriptions),stores:Number(stores.rows[0].total),review:Number(payments.rows[0].review)}});
 }));
 
 router.get("/organizations/page",asyncRoute(async(req,res)=>{
@@ -150,7 +195,15 @@ router.get("/organizations/:id/detail",asyncRoute(async(req,res)=>{
       WHERE e.organization_id=$1 ORDER BY e.created_at DESC LIMIT 100`,[organizationId]),
     activeExtraStoreCount(pool,rows[0]),
   ]);
+  const metrics=(await pool.query(`SELECT
+    (SELECT count(*)::int FROM products WHERE organization_id=$1) AS products,
+    (SELECT count(*)::int FROM sales WHERE organization_id=$1) AS sales,
+    (SELECT count(*)::int FROM customers WHERE organization_id=$1) AS customers,
+    (SELECT max(s.last_seen_at) FROM auth_sessions s JOIN users u ON u.id=s.user_id WHERE u.organization_id=$1) AS last_activity,
+    (SELECT COALESCE(sum(GREATEST(balance,0)),0) FROM (SELECT sum(amount) AS balance FROM customer_ledger WHERE organization_id=$1 GROUP BY customer_id) balances) AS customer_debt,
+    (SELECT min(service_period_from) FROM billing_payments WHERE organization_id=$1 AND type='LICENSE' AND status='APPROVED') AS subscription_started_at`,[organizationId])).rows[0];
   ok(res,{organization:{...organizationView({...rows[0],license_status:rows[0].effective_license_status}),
+    metrics:{products:Number(metrics.products),sales:Number(metrics.sales),customers:Number(metrics.customers),customerDebt:Number(metrics.customer_debt)},lastActivityAt:metrics.last_activity,subscriptionStartedAt:metrics.subscription_started_at,
     activeExtraStores,effectiveStoreLimit:Number(rows[0].store_limit||0)+activeExtraStores,
     extraStoreEntitlements:passes.rows.map(e=>({id:e.id,quantity:Number(e.quantity),duration:e.duration,startsOn:e.starts_on,expiresOn:e.expires_on,active:Boolean(e.active)})),
     users:users.rows.map(u=>({id:u.id,storeId:u.store_id,name:u.name,username:u.username,phone:u.phone,role:u.app_role,active:u.active,createdAt:u.created_at})),
@@ -187,9 +240,23 @@ router.post("/organizations/:id/control",asyncRoute(async(req,res)=>{
 }));
 
 router.get("/audit-logs",asyncRoute(async(req,res)=>{
-  const input=z.object({organizationId:z.string().uuid(),limit:z.coerce.number().int().min(1).max(200).default(50),offset:z.coerce.number().int().min(0).default(0)}).parse(req.query);
-  const {rows}=await pool.query(`SELECT a.id,a.action,a.entity_type,a.entity_id,a.title,a.description,a.created_at,u.name AS user_name,st.name AS store_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN stores st ON st.id=a.store_id WHERE a.organization_id=$1 ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`,[input.organizationId,input.limit,input.offset]);
-  ok(res,{logs:rows.map(row=>({id:row.id,action:row.action,entityType:row.entity_type,entityId:row.entity_id,title:row.title,description:row.description,createdAt:row.created_at,userName:row.user_name||"",storeName:row.store_name||""}))});
+  const input=z.object({organizationId:z.string().uuid().optional(),q:z.string().trim().max(100).default(''),limit:z.coerce.number().int().min(1).max(200).default(50),offset:z.coerce.number().int().min(0).default(0)}).parse(req.query);
+  const params=[input.organizationId||null,input.limit+1,input.offset,likeTerm(input.q)];
+  const {rows}=await pool.query(`SELECT a.id,a.action,a.entity_type,a.entity_id,a.title,a.description,a.created_at,u.name AS user_name,st.name AS store_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN stores st ON st.id=a.store_id WHERE ($1::uuid IS NULL OR a.organization_id=$1) AND (a.title ILIKE $4 ESCAPE '\\' OR a.action ILIKE $4 ESCAPE '\\' OR a.description ILIKE $4 ESCAPE '\\') ORDER BY a.created_at DESC,a.id DESC LIMIT $2 OFFSET $3`,params);
+  ok(res,{hasMore:rows.length>input.limit,logs:rows.slice(0,input.limit).map(row=>({id:row.id,action:row.action,entityType:row.entity_type,entityId:row.entity_id,title:row.title,description:row.description,createdAt:row.created_at,userName:row.user_name||"",storeName:row.store_name||""}))});
+}));
+router.get('/organizations/:id/support',asyncRoute(async(req,res)=>{
+ const id=z.string().uuid().parse(req.params.id);
+ const org=(await pool.query('SELECT id,license_status,settings FROM organizations WHERE id=$1',[id])).rows[0];
+ if(!org)throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
+ const input=z.object({limit:z.coerce.number().int().min(1).max(100).default(20),offset:z.coerce.number().int().min(0).default(0)}).parse(req.query);
+ const [billing,delivery,errors]=await Promise.all([
+   pool.query("SELECT id,order_id,status,reject_reason,submitted_at FROM billing_payments WHERE organization_id=$1 AND status IN ('REVIEW','REJECTED') ORDER BY submitted_at DESC,id DESC LIMIT $2 OFFSET $3",[id,input.limit+1,input.offset]),
+   pool.query("SELECT id,status,attempts,created_at FROM notification_outbox WHERE organization_id=$1 AND (status='failed' OR attempts>0) ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3",[id,input.limit+1,input.offset]),
+   pool.query("SELECT id,title,metadata,created_at FROM audit_logs WHERE organization_id=$1 AND action IN ('api_error','api_slow') ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3",[id,input.limit+1,input.offset]),
+ ]);
+ await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'support_diagnostics',entityType:'organization',entityId:id,title:'Support diagnostikasi ochildi'});
+ ok(res,{support:{licenseStatus:org.license_status,billingHold:Boolean(org.settings?.billingHold),limit:input.limit,offset:input.offset,hasMore:{billing:billing.rows.length>input.limit,delivery:delivery.rows.length>input.limit,api:errors.rows.length>input.limit},billingIssues:billing.rows.slice(0,input.limit),deliveryIssues:delivery.rows.slice(0,input.limit),apiIssues:errors.rows.slice(0,input.limit),apiDiagnosticsAvailable:true,apiDiagnosticsReason:'Authenticated API xatolari va sekin so‘rovlar tarixi; maxfiy payload saqlanmaydi'}});
 }));
 
 router.get("/receipts/:id",asyncRoute(async(req,res)=>{
