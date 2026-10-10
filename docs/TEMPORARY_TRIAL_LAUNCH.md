@@ -29,8 +29,8 @@ Use `NODE_ENV=test`, explicit loopback disposable `TEST_DATABASE_URL` and matchi
 
 - `node --test tests/*.test.mjs` (PG-gated unit skips separately listed).
 - `node --test --test-concurrency=1 tests/temporaryTrialIntegration.test.mjs tests/trialOtpIntegration.test.mjs` (separate process isolation, sequential fixture counts).
-- `node --test --test-isolation=none tests/databaseIntegration.test.mjs` on the designated resettable disposable DB.
-- `node --test --test-isolation=none tests/finalMigrationSequence.test.mjs` with `MIGRATION_SEQUENCE_TEST_URL` pointing to a separately created empty disposable DB.
+- `npm run test:db` on the designated resettable disposable DB; compatible with the Node22 CI runner (no unsupported test-isolation flag).
+- `node --test tests/finalMigrationSequence.test.mjs` with `MIGRATION_SEQUENCE_TEST_URL` pointing to a separately created empty disposable DB.
 - Frontend `node scripts/test-frontend.mjs --with-backend`, production build and `node scripts/temporary-trial-e2e.mjs` with local API/PG.
 
 Logs/screenshots and the current status table are in the workspace's `artifacts/no-sms/` and `ZENIX_POS_NO_SMS_LAUNCH_REPORT.md`. No live customer registration was used for verification.
