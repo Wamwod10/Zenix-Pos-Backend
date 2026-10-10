@@ -8,6 +8,7 @@ const querySchema=z.object({
   direction:z.enum(['asc','desc']).default('asc'),
   limit:z.coerce.number().int().min(1).max(100).default(30),
   offset:z.coerce.number().int().min(0).max(1000000).default(0),
+  tags:z.preprocess(value=>typeof value==='string'?value.split(',').map(x=>x.trim()).filter(Boolean):value,z.array(z.string().trim().min(1).max(40)).max(20).default([])),
 }).strict();
 
 export function parseCustomerDirectoryQuery(searchParams){
@@ -48,8 +49,21 @@ export function buildCustomerPageQuery(input){
     directory AS MATERIALIZED (
       SELECT c.*,COALESCE(f.balance,0) balance,COALESCE(f.overdue,0) overdue,COALESCE(f.total_purchases,0) total_purchases,COALESCE(f.sale_count,0) sale_count,f.last_purchase_at,COALESCE(f.loyalty_points,0) loyalty_points
       FROM (SELECT * FROM customers c WHERE c.organization_id=$1 AND c.archived=${query.filter==='inactive'?'true':'false'} AND ($2='%%' OR name ILIKE $2 ESCAPE E'\\\\' OR phone ILIKE $2 ESCAPE E'\\\\' OR email ILIKE $2 ESCAPE E'\\\\')) c FULL JOIN finance f ON f.customer_id=c.id
-    ), filtered AS MATERIALIZED (SELECT * FROM directory c WHERE c.id IS NOT NULL AND ${filters[query.filter]})
+    ), filtered AS MATERIALIZED (SELECT * FROM directory c WHERE c.id IS NOT NULL AND ${filters[query.filter]} AND c.tags @> $5::text[])
     SELECT c.*,totals.total FROM (SELECT count(*)::int AS total FROM filtered) totals LEFT JOIN (SELECT * FROM filtered c ORDER BY ${order} LIMIT $3 OFFSET $4) c ON true ORDER BY ${order}`,
-    values:[organizationId,likeTerm(query.q),query.limit,query.offset],
+    values:[organizationId,likeTerm(query.q),query.limit,query.offset,query.tags],
   };
+}
+
+const historySchema=z.object({limit:z.coerce.number().int().min(1).max(100).default(50),offset:z.coerce.number().int().min(0).max(1000000).default(0),storeId:z.string().uuid().optional()}).strict();
+export const parseCustomerHistoryQuery=value=>historySchema.parse(value);
+export function buildCustomerHistoryQuery({organizationId,customerId,storeId=null,kind,limit=50,offset=0}){
+ z.string().uuid().parse(organizationId);z.string().uuid().parse(customerId);
+ if(storeId)z.string().uuid().parse(storeId);
+ const page=parseCustomerHistoryQuery({limit,offset});
+ const values=[organizationId,customerId,storeId,page.limit+1,page.offset];
+ if(kind==='sales')return {text:`SELECT s.* FROM sales s WHERE s.organization_id=$1 AND s.customer_id=$2 AND ($3::uuid IS NULL OR s.store_id=$3) ORDER BY s.created_at DESC,s.id DESC LIMIT $4 OFFSET $5`,values};
+ if(kind==='returns')return {text:`SELECT r.*,s.sale_number,p.name product_name FROM sale_returns r JOIN sales s ON s.id=r.sale_id AND s.organization_id=r.organization_id LEFT JOIN products p ON p.id=r.product_id AND p.organization_id=r.organization_id WHERE r.organization_id=$1 AND s.customer_id=$2 AND ($3::uuid IS NULL OR s.store_id=$3) ORDER BY r.created_at DESC,r.id DESC LIMIT $4 OFFSET $5`,values};
+ if(!['ledger','open-credits'].includes(kind))throw new Error('Unknown customer history');
+ return {text:`SELECT cl.*,COALESCE(a.allocated,0) allocated FROM customer_ledger cl LEFT JOIN (SELECT credit_ledger_id,sum(amount) allocated FROM customer_payment_allocations WHERE organization_id=$1 AND customer_id=$2 GROUP BY credit_ledger_id) a ON a.credit_ledger_id=cl.id WHERE cl.organization_id=$1 AND cl.customer_id=$2 AND ($3::uuid IS NULL OR cl.store_id=$3) ${kind==='open-credits'?"AND cl.entry_type='CREDIT_SALE' AND cl.amount-COALESCE(a.allocated,0)>0":''} ORDER BY cl.created_at DESC,cl.id DESC LIMIT $4 OFFSET $5`,values};
 }
