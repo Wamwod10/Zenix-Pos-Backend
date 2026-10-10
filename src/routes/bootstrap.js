@@ -6,6 +6,7 @@ import { isBranchLocked } from "../lib/storeScope.js";
 import { canReadEmployees, hasPermission } from "../lib/permissions.js";
 import { databaseDateISO, organizationCalendarDateISO } from "../lib/businessDate.js";
 import { selectActiveBranchShifts } from "../lib/branchShift.js";
+import { shiftSalesStats } from "../services/financeReport.js";
 
 const router=Router();
 const n=(value)=>Number(value||0);
@@ -117,39 +118,18 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
     return {...(row.metadata||{}),id:row.id,saleNumber:row.sale_number,clientReference:row.client_reference,storeId:row.store_id,store:row.store_name||storeName.get(row.store_id)||"",shiftId:row.shift_id||"",sellerId:row.seller_id||"",sellerAccountId:row.seller_id||"",sellerName:row.seller_name||"",seller:row.seller_name||"",subtotal:n(row.subtotal),discountTotal:n(row.discount_amount),total:n(row.total),saleTotal:n(row.total),returnedAmount:n(row.returned_amount),returnedTotal:n(row.returned_amount),customer:row.customer||{},items:(row.items||[]).map((item)=>({...(item.metadata||{}),...item,tracking:item.metadata?.tracking||null,returnedQty:n(item.returnedQty),unit:item.unit||item.metadata?.unit||"dona",unitCost:n(item.unitCost??item.metadata?.unitCost)})),payments,paymentBreakdown:methods.length>1?mix:null,paymentMethod:methods.length>1?"split":(methods[0]||"cash"),businessDateISO:databaseDateISO(row.business_date||parts.dateISO),dateISO:parts.dateISO,date:parts.date,time:parts.time,createdAt:row.created_at,status:row.status};
   };
   const sales=salesResult.rows.map(saleMap);
-  const returns=returnsResult.rows.map((row)=>{const parts=dateParts(row.created_at,timeZone);return {...(row.metadata||{}),id:row.id,saleId:row.sale_id,storeId:row.store_id,productId:row.product_id,productName:row.product_name,quantity:n(row.quantity),amount:n(row.amount),reason:row.reason,refundMethod:row.refund_method,businessDateISO:databaseDateISO(row.business_date||parts.dateISO),dateISO:parts.dateISO,date:parts.date,time:parts.time,createdAt:row.created_at}});
+  const returns=returnsResult.rows.map((row)=>{const parts=dateParts(row.created_at,timeZone);return {...(row.metadata||{}),id:row.id,saleId:row.sale_id,storeId:row.store_id,productId:row.product_id,productName:row.product_name,quantity:n(row.quantity),amount:n(row.amount),reason:row.reason,refundMethod:row.refund_method,createdBy:row.created_by,actorName:row.created_by_name,businessDateISO:databaseDateISO(row.business_date||parts.dateISO),dateISO:parts.dateISO,date:parts.date,time:parts.time,createdAt:row.created_at}});
   const closedDayKeys=new Set(businessDaysResult.rows.map((row)=>`${row.store_id}:${databaseDateISO(row.business_date)}`));
   const dailySales=sales.filter((sale)=>!closedDayKeys.has(`${sale.storeId}:${sale.businessDateISO}`));
   const salesByDay=new Map();for(const sale of sales){const key=`${sale.storeId}:${sale.businessDateISO}`;const arr=salesByDay.get(key)||[];arr.push(sale);salesByDay.set(key,arr)}
   const salesHistory=businessDaysResult.rows.map((row)=>{const businessDateISO=databaseDateISO(row.business_date);return {id:row.id,storeId:row.store_id,store:row.store_name||storeName.get(row.store_id)||"",dateISO:businessDateISO,businessDateISO,date:dateParts(`${businessDateISO}T12:00:00Z`,timeZone).date,total:n(row.total),cash:n(row.cash),card:n(row.card),transfer:n(row.transfer),count:Number(row.sale_count||0),sales:salesByDay.get(`${row.store_id}:${businessDateISO}`)||[],closedAt:row.closed_at,metadata:row.metadata||{}}});
 
   const shiftMovementsById=new Map();for(const row of shiftMovementsResult.rows){const arr=shiftMovementsById.get(row.shift_id)||[];const parts=dateParts(row.created_at,timeZone);arr.push({id:row.id,type:row.type,amount:n(row.amount),reason:row.reason,source:row.source,referenceId:row.reference_id,time:parts.time,createdAt:row.created_at});shiftMovementsById.set(row.shift_id,arr)}
-  // Shift payment totals must follow the *actual* refund method. A proportional
-  // reduction based on the original sale mix is wrong when, for example, a card
-  // sale is deliberately refunded in cash. sale_returns.metadata is the durable
-  // ledger for that allocation, so bootstrap derives the UI summary from it.
-  const refundsBySale=new Map();
-  for(const ret of returns){
-    const prev=refundsBySale.get(ret.saleId)||{cash:0,card:0,transfer:0};
-    const breakdown=ret.refundBreakdown||{};
-    prev.cash+=n(breakdown.cash);
-    prev.card+=n(breakdown.card);
-    prev.transfer+=n(breakdown.transfer);
-    refundsBySale.set(ret.saleId,prev);
-  }
-  const saleStatsByShift=new Map();
-  for(const sale of sales){
-    if(!sale.shiftId)continue;
-    const prev=saleStatsByShift.get(sale.shiftId)||{totalSales:0,cashSales:0,cardSales:0,transferSales:0};
-    const grossMix=sale.paymentBreakdown||{cash:0,card:0,transfer:0,[sale.paymentMethod]:sale.total};
-    const refunded=refundsBySale.get(sale.id)||{cash:0,card:0,transfer:0};
-    prev.totalSales+=Math.max(0,sale.total-sale.returnedAmount);
-    prev.cashSales+=Math.max(0,n(grossMix.cash)-n(refunded.cash));
-    prev.cardSales+=Math.max(0,n(grossMix.card)-n(refunded.card));
-    prev.transferSales+=Math.max(0,n(grossMix.transfer)-n(refunded.transfer));
-    saleStatsByShift.set(sale.shiftId,prev);
-  }
-  const mapShift=(row)=>{const moves=shiftMovementsById.get(row.id)||[],stats=saleStatsByShift.get(row.id)||{totalSales:0,cashSales:0,cardSales:0,transferSales:0};const opened=dateParts(row.opened_at,timeZone),closed=row.closed_at?dateParts(row.closed_at,timeZone):null;const cashIn=moves.filter(m=>m.type==="in").reduce((s,m)=>s+m.amount,0),cashOut=moves.filter(m=>m.type==="out").reduce((s,m)=>s+m.amount,0);return {id:row.id,storeId:row.store_id,storeName:row.store_name||storeName.get(row.store_id)||"",cashierId:row.cashier_id,cashierAccountId:row.cashier_id,cashierName:row.cashier_name||"",registerKey:row.register_key,openingCash:n(row.opening_cash),expectedCash:n(row.expected_cash),actualCash:n(row.actual_cash),closingCash:n(row.actual_cash),difference:n(row.difference),openedAt:opened.time,openedAtISO:row.opened_at,closedAt:closed?.time||"",closedAtISO:row.closed_at,date:opened.date,dateISO:opened.dateISO,status:row.status,cashMovements:moves,cashIn,cashOut,...stats,...(row.metadata||{})}};
+  // Gross capture belongs to the original shift. Cash refunds are recorded once
+  // as out movements in the refund shift, never subtracted from captured sales.
+  // Aggregate in PostgreSQL so the bootstrap detail limit cannot truncate cash.
+  const saleStatsByShift=await shiftSalesStats(pool,orgId,branchStoreId);
+  const mapShift=(row)=>{const moves=shiftMovementsById.get(row.id)||[],stats=saleStatsByShift.get(row.id)||{totalSales:0,cashSales:0,cardSales:0,transferSales:0};const opened=dateParts(row.opened_at,timeZone),closed=row.closed_at?dateParts(row.closed_at,timeZone):null;const cashIn=moves.filter(m=>m.type==="in").reduce((s,m)=>s+m.amount,0),cashOut=moves.filter(m=>m.type==="out").reduce((s,m)=>s+m.amount,0);return {...(row.metadata||{}),id:row.id,storeId:row.store_id,storeName:row.store_name||storeName.get(row.store_id)||"",cashierId:row.cashier_id,cashierAccountId:row.cashier_id,cashierName:row.cashier_name||"",registerKey:row.register_key,openingCash:n(row.opening_cash),expectedCash:n(row.expected_cash),actualCash:n(row.actual_cash),closingCash:n(row.actual_cash),difference:n(row.difference),openedAt:opened.time,openedAtISO:row.opened_at,closedAt:closed?.time||"",closedAtISO:row.closed_at,date:opened.date,dateISO:opened.dateISO,status:row.status,cashMovements:moves,cashIn,cashOut,...stats}};
   const shifts=shiftsResult.rows.map(mapShift);
   const activeShifts=selectActiveBranchShifts(shifts,{allowedStoreId:branchStoreId});
   const shiftHistory=shifts.filter((row)=>row.status!=="open");
