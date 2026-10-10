@@ -34,6 +34,7 @@ jobs:
       - run: npm run test:db
         env:
           TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+          DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
       - run: npm run test:http
         env:
           TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
