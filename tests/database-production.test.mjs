@@ -158,6 +158,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     "023_validate_extra_store_constraints.sql",
     "024_promo_reservations.sql",
     "025_saas_controls.sql",
+    "026_pos_draft_integrity.sql",
   ]);
 
   for (const table of [

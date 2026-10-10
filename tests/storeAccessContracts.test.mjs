@@ -37,7 +37,7 @@ for(const [path,method,body] of [['/','post',{name:'New branch'}],['/:id','patch
 
 for(const [router,path,method,body] of [
   [sales,'/','post',{storeId:STORE,shiftId:ID,items:[{productId:ID,quantity:1,unitPrice:10}],payments:[{method:'cash',amount:10}]}],
-  [sales,'/holds','post',{storeId:STORE,name:'Held cart',cart:[{id:ID}],total:0}],
+  [sales,'/holds','post',{storeId:STORE,name:'Held cart',cart:[{id:ID,cartQty:1}],total:0}],
   [sales,'/holds/:id','delete',{}],
   [sales,'/business-days/close','post',{storeId:STORE,businessDate:'2026-10-09'}],
   [sales,'/:id/returns','post',{productId:ID,quantity:1,reason:'Return'}],
