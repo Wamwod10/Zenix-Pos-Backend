@@ -28,6 +28,16 @@ const url=process.env.TEST_DATABASE_URL;
    assert.equal((await pool.query('SELECT count(*) FROM organizations WHERE phone=$1',[p])).rows[0].count,'1');
    assert.equal((await request(body(p))).status,409);
   });
+  await t.test('distinct new phones receive trials and failed registration leaves no claim',async()=>{
+   const first=body(phone()),created=await request(first);assert.equal(created.status,201);
+   const nextPhone=phone(),next=body(nextPhone);
+   const failed=await request({...next,username:first.username});assert.equal(failed.status,409);
+   assert.equal((await pool.query('SELECT count(*) FROM organization_trial_claims WHERE phone_hash=$1',[sha256('phone:'+nextPhone.replace(/\D/g,''))])).rows[0].count,'0');
+   assert.equal((await pool.query('SELECT count(*) FROM organizations WHERE phone=$1',[nextPhone])).rows[0].count,'0');
+   const retried=await request(next);assert.equal(retried.status,201);
+   assert.notEqual(created.data.user.organizationId,retried.data.user.organizationId);
+   assert.equal((await request(body(first.phone))).error.code,'TRIAL_ALREADY_USED');
+  });
   await t.test('phone limit across IPs and IP limit serialize, including failed attempts',async()=>{
    const p=phone(),hash=sha256('phone:'+p.replace(/\D/g,''));await pool.query('INSERT INTO auth_registration_attempts(ip_address,phone_hash) SELECT $1,$2 FROM generate_series(1,4)',['fixture-'+randomUUID(),hash]);
    const rs=await Promise.all([1,2].map(()=>request(body(p))));assert.deepEqual(rs.map(r=>r.status).sort(),[201,429]);
