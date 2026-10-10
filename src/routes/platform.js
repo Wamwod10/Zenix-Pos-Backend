@@ -12,6 +12,7 @@ import { requireAuth, requirePermission } from "../middleware/auth.js";
 import { reviewBillingPayment } from "../services/billingReview.js";
 import { activeExtraStoreCount, storeLimitReconciliation } from "../services/extraStoreEntitlements.js";
 import { recoverySnapshot } from "../services/tenantRecovery.js";
+import { backupHistory } from "../services/backupProvider.js";
 import { controlStoreTradingHold } from "../services/storeTradingHolds.js";
 import { controlOrganization, organizationControlSchema } from "../services/platformOrganization.js";
 import { organizationPageSchema, paymentPageSchema, organizationPageSql, paymentPageSql, fetchDirectoryPage, effectiveLicenseStatusSql, likeTerm } from "../services/platformDirectory.js";
@@ -38,7 +39,8 @@ router.get("/organizations/:id/recovery-preview",asyncRoute(async(req,res)=>{
     throw error;
   }
   await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'recovery_diagnostics',entityType:'organization',entityId:id,title:'Recovery diagnostikasi ochildi'});
-  ok(res,{snapshot,restoreAvailable:false,backupsAvailable:false,reason:'Backup provider ulanmagan; bu faqat joriy database diagnostikasi'});
+  const backups=await backupHistory(id);
+  ok(res,{snapshot,backups,restoreAvailable:false,backupsAvailable:backups.available,reason:backups.reason});
   // No restore is offered without a tested backup provider and rollback plan.
 }));
 router.get("/organizations/:id/store-reconciliation",asyncRoute(async(req,res)=>{
@@ -227,9 +229,9 @@ router.post("/organizations/:id/control",asyncRoute(async(req,res)=>{
 
 router.get("/audit-logs",asyncRoute(async(req,res)=>{
   const input=z.object({organizationId:z.string().uuid().optional(),q:z.string().trim().max(100).default(''),limit:z.coerce.number().int().min(1).max(200).default(50),offset:z.coerce.number().int().min(0).default(0)}).parse(req.query);
-  const params=[input.organizationId||null,input.limit,input.offset,likeTerm(input.q)];
+  const params=[input.organizationId||null,input.limit+1,input.offset,likeTerm(input.q)];
   const {rows}=await pool.query(`SELECT a.id,a.action,a.entity_type,a.entity_id,a.title,a.description,a.created_at,u.name AS user_name,st.name AS store_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN stores st ON st.id=a.store_id WHERE ($1::uuid IS NULL OR a.organization_id=$1) AND (a.title ILIKE $4 ESCAPE '\\' OR a.action ILIKE $4 ESCAPE '\\' OR a.description ILIKE $4 ESCAPE '\\') ORDER BY a.created_at DESC,a.id DESC LIMIT $2 OFFSET $3`,params);
-  ok(res,{hasMore:rows.length===input.limit,logs:rows.map(row=>({id:row.id,action:row.action,entityType:row.entity_type,entityId:row.entity_id,title:row.title,description:row.description,createdAt:row.created_at,userName:row.user_name||"",storeName:row.store_name||""}))});
+  ok(res,{hasMore:rows.length>input.limit,logs:rows.slice(0,input.limit).map(row=>({id:row.id,action:row.action,entityType:row.entity_type,entityId:row.entity_id,title:row.title,description:row.description,createdAt:row.created_at,userName:row.user_name||"",storeName:row.store_name||""}))});
 }));
 router.get('/organizations/:id/support',asyncRoute(async(req,res)=>{
  const id=z.string().uuid().parse(req.params.id);
@@ -237,12 +239,12 @@ router.get('/organizations/:id/support',asyncRoute(async(req,res)=>{
  if(!org)throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
  const input=z.object({limit:z.coerce.number().int().min(1).max(100).default(20),offset:z.coerce.number().int().min(0).default(0)}).parse(req.query);
  const [billing,delivery,errors]=await Promise.all([
-   pool.query("SELECT id,order_id,status,reject_reason,submitted_at FROM billing_payments WHERE organization_id=$1 AND status IN ('REVIEW','REJECTED') ORDER BY submitted_at DESC LIMIT $2 OFFSET $3",[id,input.limit,input.offset]),
-   pool.query("SELECT id,status,attempts,created_at FROM notification_outbox WHERE organization_id=$1 AND (status='failed' OR attempts>0) ORDER BY created_at DESC LIMIT $2 OFFSET $3",[id,input.limit,input.offset]),
-   pool.query("SELECT id,title,metadata,created_at FROM audit_logs WHERE organization_id=$1 AND action IN ('api_error','api_slow') ORDER BY created_at DESC LIMIT $2 OFFSET $3",[id,input.limit,input.offset]),
+   pool.query("SELECT id,order_id,status,reject_reason,submitted_at FROM billing_payments WHERE organization_id=$1 AND status IN ('REVIEW','REJECTED') ORDER BY submitted_at DESC,id DESC LIMIT $2 OFFSET $3",[id,input.limit+1,input.offset]),
+   pool.query("SELECT id,status,attempts,created_at FROM notification_outbox WHERE organization_id=$1 AND (status='failed' OR attempts>0) ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3",[id,input.limit+1,input.offset]),
+   pool.query("SELECT id,title,metadata,created_at FROM audit_logs WHERE organization_id=$1 AND action IN ('api_error','api_slow') ORDER BY created_at DESC,id DESC LIMIT $2 OFFSET $3",[id,input.limit+1,input.offset]),
  ]);
  await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'support_diagnostics',entityType:'organization',entityId:id,title:'Support diagnostikasi ochildi'});
- ok(res,{support:{licenseStatus:org.license_status,billingHold:Boolean(org.settings?.billingHold),billingIssues:billing.rows,deliveryIssues:delivery.rows,apiIssues:errors.rows,apiDiagnosticsAvailable:true,apiDiagnosticsReason:'Authenticated API xatolari va sekin so‘rovlar tarixi; maxfiy payload saqlanmaydi'}});
+ ok(res,{support:{licenseStatus:org.license_status,billingHold:Boolean(org.settings?.billingHold),limit:input.limit,offset:input.offset,hasMore:{billing:billing.rows.length>input.limit,delivery:delivery.rows.length>input.limit,api:errors.rows.length>input.limit},billingIssues:billing.rows.slice(0,input.limit),deliveryIssues:delivery.rows.slice(0,input.limit),apiIssues:errors.rows.slice(0,input.limit),apiDiagnosticsAvailable:true,apiDiagnosticsReason:'Authenticated API xatolari va sekin so‘rovlar tarixi; maxfiy payload saqlanmaydi'}});
 }));
 
 router.get("/receipts/:id",asyncRoute(async(req,res)=>{
