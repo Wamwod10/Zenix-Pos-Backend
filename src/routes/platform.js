@@ -12,7 +12,7 @@ import { requireAuth, requirePermission } from "../middleware/auth.js";
 import { reviewBillingPayment } from "../services/billingReview.js";
 import { activeExtraStoreCount, storeLimitReconciliation } from "../services/extraStoreEntitlements.js";
 import { recoverySnapshot } from "../services/tenantRecovery.js";
-import { backupHistory } from "../services/backupProvider.js";
+import { backupHistory, backupPage, backupPageSchema, recoveryPreview } from "../services/backupProvider.js";
 import { controlStoreTradingHold } from "../services/storeTradingHolds.js";
 import { controlOrganization, organizationControlSchema } from "../services/platformOrganization.js";
 import { organizationPageSchema, paymentPageSchema, organizationPageSql, paymentPageSql, fetchDirectoryPage, effectiveLicenseStatusSql, likeTerm } from "../services/platformDirectory.js";
@@ -33,6 +33,7 @@ const organizationView=(row)=>({id:row.id,name:row.name,owner:row.owner_name||""
 // Read-only recovery/expiry diagnostics. These endpoints never mutate tenant data.
 router.get("/organizations/:id/recovery-preview",asyncRoute(async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id);
+  const input=backupPageSchema.parse(req.query);
   let snapshot;
   try{snapshot=await recoverySnapshot(pool,id)}catch(error){
     if(error?.message==='Organization not found in snapshot')throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
@@ -40,8 +41,18 @@ router.get("/organizations/:id/recovery-preview",asyncRoute(async(req,res)=>{
   }
   await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'recovery_diagnostics',entityType:'organization',entityId:id,title:'Recovery diagnostikasi ochildi'});
   const backups=await backupHistory(id);
-  ok(res,{snapshot,backups,restoreAvailable:false,backupsAvailable:backups.available,reason:backups.reason});
+  let preview=null;
+  if(input.snapshotId){try{preview=recoveryPreview(id,backups,input.snapshotId)}catch(error){throw new HttpError(409,'Snapshot tekshirilmagan yoki biznesga mos emas',error.code)}}
+  await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'recovery_preview',entityType:'organization',entityId:id,title:'Read-only recovery preview',metadata:{snapshotId:input.snapshotId||null,scope:preview?.scope||backups.scope||'UNKNOWN',restoreAvailable:false,diffComputed:false}});
+  ok(res,{snapshot,backups:backupPage(backups,input),preview,restoreAvailable:false,backupsAvailable:backups.available,reason:backups.reason});
   // No restore is offered without a tested backup provider and rollback plan.
+}));
+router.get('/organizations/:id/backups',asyncRoute(async(req,res)=>{
+  const id=z.string().uuid().parse(req.params.id),input=backupPageSchema.parse(req.query);
+  if(!(await pool.query('SELECT id FROM organizations WHERE id=$1',[id])).rows.length)throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
+  const history=await backupHistory(id);
+  await writeAudit(pool,{organizationId:id,userId:req.user.id,action:'backup_history',entityType:'organization',entityId:id,title:'Read-only backup history',metadata:{available:history.available,scope:history.scope||'UNKNOWN',offset:input.offset}});
+  ok(res,{backups:backupPage(history,input)});
 }));
 router.get("/organizations/:id/store-reconciliation",asyncRoute(async(req,res)=>{
   const id=z.string().uuid().parse(req.params.id);
