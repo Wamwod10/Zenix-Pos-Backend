@@ -85,9 +85,33 @@ const url=process.env.TEST_DATABASE_URL;
    const weighted=expectStatus(await request('/api/sales',{method:'POST',token:cashier,body:saleBody('weighted-'+suffix,0.3,[{method:'card',amount:30}])}),201).sale;
    for(const quantity of [0.1,0.2])expectStatus(await request(`/api/sales/${weighted.id}/returns`,{method:'POST',token:cashier,body:{productId:product,quantity,reason:'Weighted return',refundMethod:'original',clientReference:`weighted-${quantity}-${suffix}`}}),201);
   });
+  await t.test('audit is scoped and immutable; CRM bulk export is owner-only',async()=>{
+   const audit=expectStatus(await request('/api/audit?type=return&limit=2',{token:owner}),200);assert.equal(audit.items.length,2);assert.equal(audit.items[0].type,'return');assert.ok(audit.items[0].metadata.quantity>0);assert.equal(audit.hasMore,true);
+   expectStatus(await request('/api/audit',{token:cashier}),403);
+   expectStatus(await request('/api/audit',{method:'POST',token:owner,body:{title:'Tamper'}}),404);
+   expectStatus(await request('/api/customers/export',{token:cashier}),403);assert.equal(expectStatus(await request('/api/customers/export',{token:owner}),200).items.length,1);
+  });
+  await t.test('fractional quick receipt replays once with unit and exact cost',async()=>{
+   const body={storeId,clientReference:'receive-'+suffix,lines:[{name:'Quick kg '+suffix,sku:'QUICK-'+suffix,unit:'kg',quantity:15.5,costPrice:8000,sellPrice:12000}]};
+   const replies=await Promise.all([1,2].map(()=>request('/api/inventory/receive',{method:'POST',token:owner,body})));
+   const first=expectStatus(replies[0],201);assert.equal(expectStatus(replies[1],201).receiptId,first.receiptId);assert.equal(first.total,124000);assert.equal(first.updated[0].unit,'kg');
+   const saved=(await pool.query('SELECT unit FROM products WHERE id=$1',[first.updated[0].id])).rows[0];assert.equal(saved.unit,'kg');
+   assert.equal(Number((await pool.query('SELECT count(*) FROM stock_movements WHERE reference_id=$1',[first.receiptId])).rows[0].count),1);
+  });
+  await t.test('CRM debt payment replay and concurrency never double-allocate',async()=>{
+   const creditSale=expectStatus(await request('/api/sales',{method:'POST',token:cashier,body:{...saleBody('crm-'+suffix,1,[]),customerId:customer,creditAmount:100,creditDueDate:'2099-01-01'}}),201).sale;
+   const body={storeId,amount:25,paymentMethod:'card',clientReference:'crm-payment-'+suffix};
+   const responses=await Promise.all([1,2].map(()=>request(`/api/customers/${customer}/payments`,{method:'POST',token:owner,body})));
+   const first=expectStatus(responses[0],200).payment;assert.equal(expectStatus(responses[1],200).payment.id,first.id);
+   expectStatus(await request(`/api/customers/${customer}/payments`,{method:'POST',token:owner,body:{...body,amount:30}}),409);
+   assert.equal(Number((await pool.query('SELECT sum(amount) balance FROM customer_ledger WHERE customer_id=$1',[customer])).rows[0].balance),75);
+   const detail=expectStatus(await request(`/api/customers/${customer}`,{token:owner}),200);assert.equal(detail.customer.balance,75);
+   expectStatus(await request(`/api/sales/${creditSale.id}/returns`,{method:'POST',token:cashier,body:{productId:product,quantity:0.25,reason:'CRM partial refund',refundMethod:'original',clientReference:'crm-refund-'+suffix}}),201);
+   const after=expectStatus(await request(`/api/customers/${customer}`,{token:owner}),200);assert.equal(after.customer.balance,50);assert.equal(after.customer.totalPurchases,75);assert.ok(after.returns.some(row=>row.saleId===creditSale.id&&row.amount===25));
+  });
   await t.test('paged today records have products, units and real financial amounts without N+1 requests',async()=>{
    const page=expectStatus(await request(`/api/sales/page?storeId=${storeId}&limit=1`,{token:cashier}),200);
-   assert.equal(page.items.length,1);assert.equal(page.items[0].items[0].unit,'kg');assert.equal(page.items[0].originalTotal,30);assert.equal(page.items[0].returnedTotal,30);assert.equal(page.items[0].netTotal,0);assert.equal(page.hasMore,true);
+   assert.equal(page.items.length,1);assert.equal(page.items[0].items[0].unit,'kg');assert.equal(page.items[0].originalTotal,100);assert.equal(page.items[0].returnedTotal,25);assert.equal(page.items[0].netTotal,75);assert.equal(page.hasMore,true);
    const bootstrap=expectStatus(await request('/api/bootstrap',{token:owner}),200);
    const old=bootstrap.dailySales.find(row=>row.id===sale.id)||bootstrap.salesHistory.flatMap(day=>day.sales).find(row=>row.id===sale.id);
    assert.equal(old.returnedTotal,200);assert.equal(old.items[0].returnedQty,2);

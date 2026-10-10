@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs/promises";
 import pg from "pg";
 import vm from "node:vm";
+import {writeAudit} from "../src/services/audit.js";
 import { HttpError } from "../src/lib/http.js";
 
 import { assertSafeTestDatabaseUrl } from "../scripts/assertTestDatabase.js";
@@ -374,7 +375,7 @@ integration('inventory count batch reconciliation reaches the requested total wi
   const source=await fs.readFile(new URL('../src/routes/inventory.js',import.meta.url),'utf8');
   const {reconcileCountBatches,applyCount}=vm.runInNewContext(`${source.slice(source.indexOf('async function lockBalance'),source.indexOf('async function allocateTransferTracking'))}
     ${source.slice(source.indexOf('async function applyCount'),source.indexOf('router.post("/counts"'))}
-    ({reconcileCountBatches,applyCount})`,{HttpError});
+    ({reconcileCountBatches,applyCount})`.replace('export async function','async function'),{HttpError,writeAudit});
   const db=testPool(2);
   let client,contender,transaction=false,contenderTx=false;
   try{

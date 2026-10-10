@@ -411,7 +411,7 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     const restoredBatches=await restoreInventoryBatches(client,{organizationId:orgId,storeId:sale.store_id,productId:input.productId,tracking,returnStart,returnEnd});
     if(returnedSerials.length||restoredBatches.length)await client.query(`UPDATE sale_returns SET metadata=metadata||$2::jsonb WHERE id=$1`,[ret.id,JSON.stringify({tracking:{serials:returnedSerials,batches:restoredBatches}})]);
     const store=await assertOrganizationStore(client,orgId,sale.store_id);
-    await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:sale.store_id,action:"return",entityType:"sale",entityId:ret.id,title:"Qaytarish qilindi",description:`${sale.sale_number} · ${amount}`});
+    await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:sale.store_id,action:"return",entityType:"sale",entityId:ret.id,title:"Qaytarish qilindi",description:`${sale.sale_number} · ${item.product_name||input.productId} · ${input.quantity} · ${amount}`,metadata:{saleId:sale.id,saleNumber:sale.sale_number,productId:input.productId,productName:item.product_name||"",quantity:input.quantity,amount,refundBreakdown:breakdown,reason:input.reason}});
     await enqueueNotification(client,{organizationId:orgId,storeId:sale.store_id,eventType:"sale.returned",eventId:ret.id,payload:{returnId:ret.id,saleId:sale.id,saleNumber:sale.sale_number,amount,quantity:input.quantity,storeName:store.name,userName:req.user.name,reason:input.reason}});
     return {...ret,amount,refundBreakdown:breakdown};
   });

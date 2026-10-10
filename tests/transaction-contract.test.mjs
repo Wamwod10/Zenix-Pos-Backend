@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { HttpError } from '../src/lib/http.js';
 import { z } from 'zod';
+import {writeAudit} from '../src/services/audit.js';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const read=(relative)=>fs.readFileSync(path.join(here,'..',relative),'utf8');
@@ -21,7 +22,7 @@ test('customer page SQL binds user text, tenant, page bounds and uses determinis
     assert.deepEqual(query.values,[organizationId,"%O'Reilly\\_\\%\\\\%",20,60]);
     assert.doesNotMatch(query.text,/O'Reilly/);
     assert.match(query.text,/c.organization_id=\$1 AND c.archived=false/);
-    assert.ok(query.text.includes(`ORDER BY ${expressions[sort]} ${direction.toUpperCase()},c.id ASC`));
+    assert.ok(query.text.includes(`ORDER BY ${expressions[sort]} ${direction.toUpperCase()} NULLS LAST,c.id ASC`));
     assert.match(query.text,/LIMIT \$3 OFFSET \$4/);
     assert.ok(query.text.includes("ESCAPE E'\\\\'"),'PostgreSQL must receive a single-character LIKE escape');
     assert.match(query.text,/count\(\*\).*total/);
@@ -34,7 +35,7 @@ const inventorySource=read('src/routes/inventory.js');
 const countHelpers=vm.runInNewContext(`${inventorySource.slice(inventorySource.indexOf('async function lockBalance'),inventorySource.indexOf('async function allocateTransferTracking'))}
 ${inventorySource.slice(inventorySource.indexOf('const countQuantitySchema'),inventorySource.indexOf('const countChangesSchema'))}
 ${inventorySource.slice(inventorySource.indexOf('async function applyCount'),inventorySource.indexOf('router.post("/counts"'))}
-({reconcileCountBatches,applyCount,countChange})`,{HttpError,z});
+({reconcileCountBatches,applyCount,countChange})`,{HttpError,z,writeAudit});
 
 function countClient({batches=[],balance=5,serials=0}={}){
   const state={batches:structuredClone(batches),balance,writes:[],locks:[],batchValues:[],balanceValues:[],movementValues:[]};
@@ -54,7 +55,7 @@ function countClient({batches=[],balance=5,serials=0}={}){
       const quantity=Number(args.at(-1));
       state.writes.push({insert:quantity});
       state.batches.push({id:'count-batch',organization_id:args[0],store_id:args[1],product_id:args[2],remaining_quantity:quantity,received_quantity:quantity,
-        batch_no:'INVENTORY-COUNT / EXPIRY-UNKNOWN',expiry_date:null,created_at:'2026-10-09'});return {rows:[]};
+        batch_no:'INVENTORY-COUNT / EXPIRY-UNKNOWN',expiry_date:null,created_at:'2026-10-09'});return {rows:[{id:'count-batch'}]};
     }
     if(sql.includes('FROM product_serials'))return {rows:[{total:serials,in_stock:serials}]};
     if(sql.includes('FROM inventory_batches'))return {rows:[{total:state.batches.length,remaining:0}]};
@@ -62,7 +63,8 @@ function countClient({batches=[],balance=5,serials=0}={}){
     if(sql.includes('INSERT INTO inventory_balances'))return {rows:[]};
     if(sql.includes('SELECT * FROM inventory_balances'))return {rows:[{quantity:state.balance}]};
     if(sql.includes('UPDATE inventory_balances')){state.balanceValues.push(args[3]);state.balance=Number(args[3]);return {rows:[]};}
-    if(sql.includes('INSERT INTO stock_movements')){state.movementValues.push(Array.from(args.slice(3,6)));return {rows:[{quantity:args[3]}]};}
+    if(sql.includes('INSERT INTO stock_movements')){state.movementValues.push(Array.from(args.slice(3,6)));return {rows:[{id:'movement',quantity:args[3]}]};}
+    if(sql.startsWith('UPDATE stock_movements')||sql.includes('INSERT INTO audit_logs'))return {rows:[]};
     throw new Error(`Unexpected inventory count query: ${sql}`);
   }};
 }
@@ -108,7 +110,7 @@ test('inventory count repairs batch drift even when aggregate balance is unchang
   const result=await countHelpers.applyCount(client,countOptions(5));
   assert.deepEqual(client.state.batches.map(row=>row.remaining_quantity),[2,3]);
   assert.equal(client.state.balance,5);
-  assert.equal(result.movements.length,0);
+  assert.equal(result.movements.length,1,'batch-only repair still needs a durable movement');
 });
 
 test('inventory count excludes serial-tracked aggregate changes before batch mutations',async()=>{
