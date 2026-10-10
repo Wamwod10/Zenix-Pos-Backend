@@ -4,6 +4,7 @@ import {roundMoney,lineAmount,sumMoney} from '../lib/posMoney.js';
 import { Router } from "express";
 import { z } from "zod";
 import { withTransaction } from "../db/tx.js";
+import {pool} from '../db/pool.js';
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission, requireActiveLicense } from "../middleware/auth.js";
 import { writeAudit } from "../services/audit.js";
@@ -12,7 +13,8 @@ import { hasPermission } from "../lib/permissions.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 
 const router=Router();
-router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
+router.use(requireAuth,requireOrganization);
+router.use((req,res,next)=>req.method==='GET'&&req.path==='/receipt-reconciliation'?next():requireActiveLicense(req,res,next));
 const qty=z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin');
 const uniqueProductArray=(schema,message="Bir mahsulot faqat bitta qatorda bo‘lishi mumkin")=>z.array(schema).min(1).superRefine((items,ctx)=>{
   const seen=new Set();
@@ -218,6 +220,13 @@ async function dispatchTransfer(client,{orgId,transfer,userId}){
   return {...updated,items};
 }
 
+router.get('/receipt-reconciliation',requirePermission('inventoryAdjust'),asyncRoute(async(req,res)=>{
+  const input=z.object({storeId:z.string().uuid(),clientReference:z.string().trim().min(1).max(160)}).strict().parse(req.query);
+  assertStoreScope(req.user,input.storeId);
+  await assertOrganizationStore(pool,req.user.organizationId,input.storeId);
+  const row=(await pool.query("SELECT metadata FROM audit_logs WHERE organization_id=$1 AND store_id=$2 AND user_id=$3 AND action='receive' AND entity_type='inventory' AND metadata->>'clientReference'=$4",[req.user.organizationId,input.storeId,req.user.id,input.clientReference])).rows[0];
+  ok(res,row?.metadata?.response?{state:'confirmed',receipt:row.metadata.response}:{state:'unknown'});
+}));
 router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req,res)=>{
   const lineSchema=z.object({
     productId:z.string().uuid().optional().nullable(),name:z.string().trim().max(240).default(""),sku:z.string().trim().max(120).default(""),barcode:z.string().trim().max(120).default(""),

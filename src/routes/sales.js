@@ -18,7 +18,8 @@ import {requestFingerprint,assertSaleReplay,assertRefundReplay} from '../service
 import {salesPage} from '../services/salesDirectory.js';
 
 const router=Router();
-router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
+router.use(requireAuth,requireOrganization);
+router.use((req,res,next)=>req.method==='GET'&&req.path==='/reconciliation'?next():requireActiveLicense(req,res,next));
 
 const DEFAULT_POS_RULES=Object.freeze({
   discountLimit:20,
@@ -118,6 +119,14 @@ async function lockBusinessDay(client,{organizationId,storeId,businessDate,allow
   return closed||null;
 }
 
+router.get('/reconciliation',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
+  const input=z.object({storeId:z.string().uuid(),clientReference:z.string().trim().min(1).max(160)}).strict().parse(req.query);
+  assertStoreScope(req.user,input.storeId);
+  await assertOrganizationStore(pool,req.user.organizationId,input.storeId);
+  const sale=(await pool.query('SELECT * FROM sales WHERE organization_id=$1 AND store_id=$2 AND seller_id=$3 AND client_reference=$4',[req.user.organizationId,input.storeId,req.user.id,input.clientReference])).rows[0];
+  // Absence may race an in-flight commit: unknown never authorizes a new reference.
+  ok(res,sale?{state:'confirmed',sale}:{state:'unknown'});
+}));
 router.get('/page',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
   const query=z.object({storeId:z.string().uuid(),limit:z.coerce.number().int().min(1).max(100).default(30),offset:z.coerce.number().int().min(0).max(1000000).default(0)}).parse(req.query);
   assertStoreScope(req.user,query.storeId);

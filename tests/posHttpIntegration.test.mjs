@@ -51,6 +51,14 @@ const url=process.env.TEST_DATABASE_URL;
    assert.equal(Number((await pool.query('SELECT count(*) count FROM sales WHERE organization_id=$1 AND client_reference=$2',[org,hold.clientReference])).rows[0].count),1);
    expectStatus(await request('/api/sales',{method:'POST',token:cashier,body:{...body,payments:[{method:'card',amount:200}]}}),409);
   });
+  await t.test('checkout reconciliation discloses only actor and branch scoped committed sales',async()=>{
+   const path=`/api/sales/reconciliation?storeId=${storeId}&clientReference=${encodeURIComponent(hold.clientReference)}`;
+   const found=expectStatus(await request(path,{token:cashier}),200);
+   assert.equal(found.state,'confirmed');assert.equal(found.sale.id,sale.id);
+   assert.equal(expectStatus(await request(path,{token:owner}),200).state,'unknown');
+   expectStatus(await request(`/api/sales/reconciliation?storeId=${stores[1]}&clientReference=${hold.clientReference}`,{token:cashier}),403);
+   assert.equal(expectStatus(await request(`/api/sales/reconciliation?storeId=${storeId}&clientReference=uncommitted-${suffix}`,{token:cashier}),200).state,'unknown');
+  });
   await t.test('yesterday refund posts today, replays once and cannot exceed sold quantity',async()=>{
    await pool.query("UPDATE sales SET business_date=CURRENT_DATE-1,created_at=now()-interval '1 day' WHERE id=$1",[sale.id]);
    const body={productId:product,quantity:1,reason:'Broken item',refundMethod:'original',refundShiftId:shift,clientReference:'refund-'+suffix};
@@ -96,6 +104,9 @@ const url=process.env.TEST_DATABASE_URL;
    const replies=await Promise.all([1,2].map(()=>request('/api/inventory/receive',{method:'POST',token:owner,body})));
    const first=expectStatus(replies[0],201);assert.equal(expectStatus(replies[1],201).receiptId,first.receiptId);assert.equal(first.total,124000);assert.equal(first.updated[0].unit,'kg');
    const saved=(await pool.query('SELECT unit FROM products WHERE id=$1',[first.updated[0].id])).rows[0];assert.equal(saved.unit,'kg');
+   const path=`/api/inventory/receipt-reconciliation?storeId=${storeId}&clientReference=${body.clientReference}`;
+   const found=expectStatus(await request(path,{token:owner}),200);assert.equal(found.state,'confirmed');assert.equal(found.receipt.receiptId,first.receiptId);
+   assert.equal(expectStatus(await request(path,{token:users.MANAGER.token}),200).state,'unknown');
    assert.equal(Number((await pool.query('SELECT count(*) FROM stock_movements WHERE reference_id=$1',[first.receiptId])).rows[0].count),1);
   });
   await t.test('CRM debt payment replay and concurrency never double-allocate',async()=>{
