@@ -164,6 +164,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     "029_trial_phone_verification.sql",
     "030_registration_phone_throttle.sql",
     "031_branch_warehouses.sql",
+    "032_warehouse_balance_presence.sql",
   ]);
 
   for (const table of [
@@ -251,7 +252,7 @@ test("warehouse verification rejects absent safety objects", () => {
     tenantConstraints: schemaModule.REQUIRED_TENANT_CONSTRAINTS, columns: [], checks: [], triggers: [], deferredTriggers: [], uniqueIndexes: [],
   };
   const issues = schemaModule.findSchemaIssues(snapshot).join("\n");
-  for (const name of ["manufactured_date", "inventory_batch_date_order", "stores_default_warehouse", "inventory_warehouse_balance_sync", "inventory_warehouse_partition_guard", "warehouse_partition_guard", "warehouses_default_unique"]) assert.ok(issues.includes(name));
+  for (const name of ["manufactured_date", "warehouse_partition_versions.epoch", "inventory_batch_date_order", "stores_default_warehouse", "inventory_warehouse_balance_sync", "inventory_warehouse_partition_guard", "warehouse_partition_guard", "warehouses_default_unique"]) assert.ok(issues.includes(name));
 });
 
 test("warehouse metadata queries exclude unvalidated constraints and disabled triggers", async () => {
@@ -261,4 +262,5 @@ test("warehouse metadata queries exclude unvalidated constraints and disabled tr
   assert.ok(queries.some(sql => /contype='c' AND convalidated/.test(sql)));
   assert.ok(queries.some(sql => /tgenabled IN \('O','A'\)/.test(sql)));
   assert.ok(queries.some(sql => /indisunique/.test(sql)));
+  assert.ok(queries.some(sql => /warehouse_partition_versions.*epoch.*boolean/.test(sql)));
 });

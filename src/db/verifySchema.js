@@ -34,9 +34,11 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "029_trial_phone_verification.sql",
   "030_registration_phone_throttle.sql",
   "031_branch_warehouses.sql",
+  "032_warehouse_balance_presence.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
+  "warehouse_partition_versions_balance_tenant_fk",
   "warehouses_store_tenant_fk",
   "warehouse_balances_warehouse_tenant_fk",
   "warehouse_balances_product_tenant_fk",
@@ -112,6 +114,7 @@ export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
 ]);
 
 export const REQUIRED_TABLES = Object.freeze([
+  "warehouse_partition_versions",
   "schema_migrations",
   "organizations",
   "stores",
@@ -168,6 +171,7 @@ export const REQUIRED_TABLES = Object.freeze([
 ]);
 
 export const REQUIRED_FOREIGN_KEY_TABLES = Object.freeze([
+  "warehouse_partition_versions",
   "warehouses",
   "warehouse_balances",
   "stores",
@@ -232,6 +236,8 @@ export const REQUIRED_UNIQUE_CONSTRAINT_TABLES = Object.freeze([
 ]);
 
 export const REQUIRED_INDEXES = Object.freeze([
+  "inventory_balances_scope_unique",
+  "warehouse_partition_versions_pkey",
   "warehouses_name_unique",
   "warehouses_default_unique",
   "warehouse_balances_product_idx",
@@ -298,11 +304,11 @@ export const REQUIRED_INDEXES = Object.freeze([
   "customer_loyalty_org_customer_idx",
 ]);
 
-export const REQUIRED_COLUMNS = Object.freeze(["inventory_batches.manufactured_date"]);
+export const REQUIRED_COLUMNS = Object.freeze(["inventory_batches.manufactured_date", "warehouse_partition_versions.epoch"]);
 export const REQUIRED_CHECKS = Object.freeze(["inventory_batch_date_order", "warehouses_name_check", "warehouses_default_active_check", "inventory_balances_quantity_finite", "warehouse_balances_quantity_finite"]);
 export const REQUIRED_TRIGGERS = Object.freeze(["inventory_balances.inventory_balance_identity_guard", "inventory_balances.inventory_warehouse_no_truncate", "warehouse_balances.warehouse_balances_no_truncate", "warehouses.warehouses_no_truncate", "stores.stores_default_warehouse", "inventory_balances.inventory_warehouse_balance_sync", "inventory_balances.inventory_warehouse_partition_guard", "warehouse_balances.warehouse_partition_guard", "warehouses.warehouse_default_guard", "stores.stores_warehouse_default_guard"]);
 export const REQUIRED_DEFERRED_TRIGGERS = Object.freeze(["inventory_balances.inventory_warehouse_partition_guard", "warehouse_balances.warehouse_partition_guard", "warehouses.warehouse_default_guard", "stores.stores_warehouse_default_guard"]);
-export const REQUIRED_UNIQUE_INDEXES = Object.freeze(["warehouses_name_unique", "warehouses_default_unique"]);
+export const REQUIRED_UNIQUE_INDEXES = Object.freeze(["inventory_balances_scope_unique", "warehouse_partition_versions_pkey", "warehouses_name_unique", "warehouses_default_unique"]);
 
 const missing = (required, actual) => {
   const actualSet = new Set(actual);
@@ -342,21 +348,33 @@ export const readDatabaseSchema = async (db) => {
       SELECT index_class.relname AS indexname
       FROM pg_class index_class
       JOIN pg_index index_row ON index_row.indexrelid=index_class.oid
+      JOIN pg_class table_class ON table_class.oid=index_row.indrelid
       JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
       WHERE namespace.nspname='public' AND index_row.indisvalid AND index_row.indisready
+      AND (index_class.relname NOT IN ('inventory_balances_scope_unique','warehouse_partition_versions_pkey','warehouses_name_unique','warehouses_default_unique','warehouse_balances_product_idx')
+      OR (index_class.relname='inventory_balances_scope_unique' AND table_class.relname='inventory_balances')
+      OR (index_class.relname='warehouse_partition_versions_pkey' AND table_class.relname='warehouse_partition_versions')
+      OR (index_class.relname IN ('warehouses_name_unique','warehouses_default_unique') AND table_class.relname='warehouses')
+      OR (index_class.relname='warehouse_balances_product_idx' AND table_class.relname='warehouse_balances'))
     `),
     db.query(`SELECT conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid WHERE connamespace='public'::regnamespace AND contype='f'
-      AND (conname NOT IN ('warehouses_store_tenant_fk','warehouse_balances_warehouse_tenant_fk','warehouse_balances_product_tenant_fk')
+      AND (conname NOT IN ('warehouses_store_tenant_fk','warehouse_balances_warehouse_tenant_fk','warehouse_balances_product_tenant_fk','warehouse_partition_versions_balance_tenant_fk')
+      OR (conname='warehouse_partition_versions_balance_tenant_fk' AND t.relname='warehouse_partition_versions' AND convalidated)
       OR (conname='warehouses_store_tenant_fk' AND t.relname='warehouses' AND convalidated)
       OR (conname IN ('warehouse_balances_warehouse_tenant_fk','warehouse_balances_product_tenant_fk') AND t.relname='warehouse_balances' AND convalidated))`),
-    db.query("SELECT table_name || '.' || column_name AS name FROM information_schema.columns WHERE table_schema='public' AND data_type='date'"),
+    db.query(`SELECT table_name || '.' || column_name AS name FROM information_schema.columns WHERE table_schema='public'
+      AND ((table_name='inventory_batches' AND column_name='manufactured_date' AND data_type='date')
+      OR (table_name='warehouse_partition_versions' AND column_name='epoch' AND data_type='boolean' AND is_nullable='NO'))`),
     db.query(`SELECT conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid WHERE connamespace='public'::regnamespace AND contype='c' AND convalidated
       AND ((conname='inventory_batch_date_order' AND t.relname='inventory_batches')
       OR (conname IN ('warehouses_name_check','warehouses_default_active_check') AND t.relname='warehouses')
       OR (conname='inventory_balances_quantity_finite' AND t.relname='inventory_balances')
       OR (conname='warehouse_balances_quantity_finite' AND t.relname='warehouse_balances'))`),
     db.query(`SELECT c.relname || '.' || t.tgname AS name, t.tgdeferrable, t.tginitdeferred FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND t.tgenabled IN ('O','A')`),
-    db.query(`SELECT c.relname AS indexname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND i.indisvalid AND i.indisready AND i.indisunique`),
+    db.query(`SELECT c.relname AS indexname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_class t ON t.oid=i.indrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND i.indisvalid AND i.indisready AND i.indisunique
+      AND ((c.relname='inventory_balances_scope_unique' AND t.relname='inventory_balances')
+      OR (c.relname='warehouse_partition_versions_pkey' AND t.relname='warehouse_partition_versions')
+      OR (c.relname IN ('warehouses_name_unique','warehouses_default_unique') AND t.relname='warehouses'))`),
   ]);
 
   return {

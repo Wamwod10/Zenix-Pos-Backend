@@ -7,18 +7,20 @@ import {verifyDatabaseSchema} from '../src/db/verifySchema.js';
 const migrationDirectory=fileURLToPath(new URL('../migrations/',import.meta.url));
 export async function auditWarehouseMigration(client,{phase}={}){
  if(!['before','after'].includes(phase))throw new Error('Usage: node scripts/warehouseAudit.mjs before|after');
- const filename=phase==='before'?'031_warehouse_preflight.sql':'031_warehouse_integrity.sql';
- const source=await readFile(new URL(`./sql/${filename}`,import.meta.url),'utf8');
- // These repository-owned files are also usable directly in psql. Execute
- // their body in the same read-only snapshot as the checksum verification.
- const sql=source.replace(/^BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\s*$/m,'').replace(/^COMMIT;\s*$/m,'');
  await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
  try{
   await client.query("SET LOCAL statement_timeout='60s'");
   await client.query("SET LOCAL lock_timeout='5s'");
   const status=await checkMigrationStatus({db:client,directory:migrationDirectory});
-  const expected=phase==='before'?['031_branch_warehouses.sql']:[];
-  if(status.tableMissing||status.drifted.length||status.unverified.length||status.unknown.length||JSON.stringify(status.missing)!==JSON.stringify(expected))throw new Error('Migration catalog failed: require matching checksums for 001–030 and only 031 pending before, no pending migrations after');
+  const fresh=['031_branch_warehouses.sql','032_warehouse_balance_presence.sql'];
+  const upgrade=['032_warehouse_balance_presence.sql'];
+  const pending=JSON.stringify(status.missing);
+  const allowed=phase==='after'?pending==='[]':pending===JSON.stringify(fresh)||pending===JSON.stringify(upgrade);
+  if(status.tableMissing||status.drifted.length||status.unverified.length||status.unknown.length||!allowed)throw new Error('Migration catalog failed: require matching checksums and only 031+032 or 032 pending before, no pending migrations after');
+  const filename=phase==='after'?'032_warehouse_integrity.sql':pending===JSON.stringify(fresh)?'031_warehouse_preflight.sql':'032_warehouse_preflight.sql';
+  const source=await readFile(new URL(`./sql/${filename}`,import.meta.url),'utf8');
+  // Keep checks and catalog on the same read-only snapshot.
+  const sql=source.replace(/^BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;\s*$/m,'').replace(/^COMMIT;\s*$/m,'');
   const result=await client.query(sql);
   const checks=(Array.isArray(result)?result:[result]).flatMap(item=>item.rows||[]);
   if(!checks.length||checks.some(row=>typeof row.check_name!=='string'||!/^[0-9]+$/.test(String(row.violations))||BigInt(row.violations)!==0n))throw new Error(`Warehouse ${phase} integrity failed: ${checks.filter(row=>String(row.violations)!=='0').map(row=>row.check_name).join(', ')||'invalid audit result'}`);

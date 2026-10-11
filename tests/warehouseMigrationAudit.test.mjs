@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { assertSafeTestDatabaseUrl } from '../scripts/assertTestDatabase.js';
+import { assertWarehouseAuditDatabaseUrl } from '../scripts/neonWarehouseAudit.mjs';
 import { loadMigrationCatalog } from '../src/db/migrationCatalog.js';
 import { executeMigration } from '../src/db/migrationExecution.js';
 import { verifyDatabaseSchema } from '../src/db/verifySchema.js';
@@ -15,7 +15,7 @@ const businessTables = ['organizations', 'stores', 'products', 'inventory_balanc
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
 async function fixture(run) {
-  const url = assertSafeTestDatabaseUrl(process.env.TEST_DATABASE_URL, { nodeEnv: process.env.NODE_ENV || 'test' });
+  const url = assertWarehouseAuditDatabaseUrl(process.env.TEST_DATABASE_URL, { nodeEnv: process.env.NODE_ENV || 'test' });
   const name = `warehouse_audit_test_${randomBytes(12).toString('hex')}`;
   const admin = new pg.Client({ connectionString: url.toString(), connectionTimeoutMillis: 5000 });
   let pool, created = false;
@@ -23,7 +23,7 @@ async function fixture(run) {
   try {
     await admin.query(`CREATE DATABASE "${name}"`); created = true;
     const isolated = new URL(url); isolated.pathname = `/${name}`;
-    assertSafeTestDatabaseUrl(isolated.toString(), { nodeEnv: 'test' });
+    assertWarehouseAuditDatabaseUrl(isolated.toString(), { nodeEnv: 'test' });
     pool = new pg.Pool({ connectionString: isolated.toString(), max: 6, options: '-c statement_timeout=20s', connectionTimeoutMillis: 5000 });
     assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name, name);
     const catalog = await loadMigrationCatalog(directory);
@@ -52,7 +52,7 @@ async function fixture(run) {
     };
     const auditor=await pool.connect();
     try{assert.equal((await auditWarehouseMigration(auditor,{phase:'before'})).ok,true);}finally{auditor.release();}
-    await run({ pool, migration, org, store, products, snapshot });
+    await run({ pool, migration, presenceMigration:catalog.find(m=>m.prefix==='032'), org, store, products, snapshot });
   } finally {
     if (pool) await pool.end();
     if (created) {
@@ -157,8 +157,9 @@ integration('031 serializes live writes across backfill and preserves existing b
   } finally { resume.resolve(); if(pending)await pending.catch(()=>{}); writers.forEach(c=>c.release());migrator.release(); }
 }));
 
-integration('031 enforces warehouse partition, immutable balance scope, finite quantity and batch dates', {timeout:120000}, async()=>fixture(async({pool,migration,org,store,products})=>{
-  const client=await pool.connect(); try{await executeMigration(client,migration);}finally{client.release();}
+integration('032 preserves 031 safeguards, immutable balance scope, finite quantity and batch dates', {timeout:120000}, async()=>fixture(async({pool,migration,presenceMigration,org,store,products})=>{
+  assert.ok(presenceMigration,'032 warehouse presence migration required');
+  const client=await pool.connect(); try{await executeMigration(client,migration);await executeMigration(client,presenceMigration);}finally{client.release();}
   await verifyDatabaseSchema(pool);
   const auditor=await pool.connect();try{assert.equal((await auditWarehouseMigration(auditor,{phase:'after'})).ok,true);}finally{auditor.release();}
   await partition(pool);
@@ -217,4 +218,97 @@ integration('031 enforces warehouse partition, immutable balance scope, finite q
     await partition(pool);
     assert.equal((await pool.query('SELECT active,is_default FROM warehouses WHERE id=$1',[main])).rows[0].is_default,true);
   }finally{await stock.query('ROLLBACK');await deleting.query('ROLLBACK');stock.release();deleting.release();}
+}));
+
+integration('032 repairs zero-row presence and serializes parallel inventory workflows', {timeout:120000},async()=>fixture(async({pool,migration,presenceMigration,org,store,products,snapshot})=>{
+  assert.ok(presenceMigration,'032 warehouse presence migration required');
+  const client=await pool.connect();
+  try{await executeMigration(client,migration);}finally{client.release();}
+  const prior=(await pool.query('SELECT name,checksum FROM schema_migrations ORDER BY name')).rows;
+  // This was legal under the already-applied 031 sum-only guard.
+  await pool.query('DELETE FROM warehouse_balances WHERE product_id=$1',[products[2]]);
+  const before=(await pool.query('SELECT * FROM inventory_balances ORDER BY product_id')).rows;
+  const businessBefore=await snapshot();
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM warehouse_balances WHERE product_id=$1',[products[2]])).rows[0].n,0,'031 permits missing zero partition rows');
+  const functionsBefore=(await pool.query("SELECT proname,prosrc FROM pg_proc WHERE proname IN ('sync_warehouse_balance','assert_warehouse_partition') ORDER BY proname")).rows;
+  const upgrade=await pool.connect(),busy=await pool.connect();
+  try{
+    await busy.query('BEGIN');
+    await busy.query('UPDATE inventory_balances SET quantity=quantity WHERE product_id=$1',[products[0]]);
+    await assert.rejects(()=>executeMigration(upgrade,presenceMigration),e=>e.code==='55P03');
+    await busy.query('ROLLBACK');
+    await assert.rejects(()=>executeMigration({query:(sql,values)=>{
+      if(sql.startsWith('INSERT INTO schema_migrations'))throw new Error('injected 032 post-DDL failure');
+      return upgrade.query(sql,values);
+    }},presenceMigration),/injected 032 post-DDL failure/);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM warehouse_balances WHERE product_id=$1',[products[2]])).rows[0].n,0);
+    assert.deepEqual((await pool.query("SELECT proname,prosrc FROM pg_proc WHERE proname IN ('sync_warehouse_balance','assert_warehouse_partition') ORDER BY proname")).rows,functionsBefore);
+    assert.deepEqual((await pool.query('SELECT name,checksum FROM schema_migrations ORDER BY name')).rows,prior);
+    assert.equal((await pool.query("SELECT to_regclass('warehouse_partition_versions') AS name")).rows[0].name,null);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM pg_constraint WHERE conname='inventory_balances_scope_unique'")).rows[0].n,0);
+    assert.deepEqual((await pool.query('SELECT * FROM inventory_balances ORDER BY product_id')).rows,before);
+    assert.deepEqual(await snapshot(),businessBefore);
+    await executeMigration(upgrade,presenceMigration);
+  }finally{await busy.query('ROLLBACK');busy.release();upgrade.release();}
+  assert.deepEqual((await pool.query('SELECT name,checksum FROM schema_migrations WHERE name<>$1 ORDER BY name',[presenceMigration.name])).rows,prior);
+  assert.deepEqual((await pool.query('SELECT * FROM inventory_balances ORDER BY product_id')).rows,before);
+  const businessAfter=await snapshot();
+  businessAfter.schema_migrations=businessAfter.schema_migrations.filter(r=>r.row.name!==presenceMigration.name);
+  assert.deepEqual(businessAfter,businessBefore);
+  assert.equal((await pool.query('SELECT quantity FROM warehouse_balances WHERE product_id=$1',[products[2]])).rows[0].quantity,'0.000');
+  await commitViolation(pool,'DELETE FROM warehouse_balances WHERE product_id=$1',[products[2]]);
+  const zero=(await pool.query("INSERT INTO products(organization_id,name) VALUES($1,'New zero product') RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,0)',[org,store,zero]);
+  assert.equal((await pool.query('SELECT quantity FROM warehouse_balances WHERE product_id=$1',[zero])).rows[0].quantity,'0.000');
+  await commitViolation(pool,'DELETE FROM warehouse_balances WHERE product_id=$1',[zero]);
+  const target=(await pool.query("INSERT INTO stores(organization_id,name) VALUES($1,'Transfer target') RETURNING id",[org])).rows[0].id;
+  const increment=(c,delta)=>c.query('UPDATE inventory_balances SET quantity=quantity+$1 WHERE store_id=$2 AND product_id=$3',[delta,store,products[0]]);
+  await Promise.all([
+    transaction(pool,async c=>{
+      await increment(c,-1);
+      const sale=(await c.query("INSERT INTO sales(organization_id,store_id,sale_number,total) VALUES($1,$2,'parallel-sale',25) RETURNING id",[org,store])).rows[0].id;
+      await c.query("INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,line_total) VALUES($1,$2,'Audit product',1,25,25)",[sale,products[0]]);
+    }),
+    transaction(pool,async c=>{await increment(c,3);await c.query('INSERT INTO inventory_batches(organization_id,store_id,product_id,received_quantity,remaining_quantity) VALUES($1,$2,$3,3,3)',[org,store,products[0]]);}),
+    transaction(pool,async c=>{await increment(c,1);await c.query("INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,business_date) SELECT $1,id,$2,$3,1,25,business_date FROM sales WHERE sale_number='audit-sale'",[org,store,products[0]]);}),
+    transaction(pool,async c=>{
+      await increment(c,-2);
+      await c.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,2)',[org,target,products[0]]);
+      const transfer=(await c.query("INSERT INTO stock_transfers(organization_id,from_store_id,to_store_id,status) VALUES($1,$2,$3,'received') RETURNING id",[org,store,target])).rows[0].id;
+      await c.query('INSERT INTO stock_transfer_items(transfer_id,product_id,sent_quantity,received_quantity) VALUES($1,$2,2,2)',[transfer,products[0]]);
+    }),
+    transaction(pool,async c=>{await increment(c,'0.125');await c.query("INSERT INTO inventory_counts(organization_id,store_id,status,result) VALUES($1,$2,'completed',$3)",[org,store,JSON.stringify([{productId:products[0],adjustment:'0.125'}])]);}),
+    transaction(pool,async c=>{
+      const branch=(await c.query("INSERT INTO stores(organization_id,name) VALUES($1,'Parallel new branch') RETURNING id",[org])).rows[0].id;
+      const product=(await c.query("INSERT INTO products(organization_id,name) VALUES($1,'Parallel new product') RETURNING id",[org])).rows[0].id;
+      await c.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,0)',[org,branch,product]);
+    }),
+  ]);
+  assert.equal((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[store,products[0]])).rows[0].quantity,'11.125');
+  assert.equal((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[target,products[0]])).rows[0].quantity,'2.000');
+  await partition(pool);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM inventory_balances b WHERE NOT EXISTS(SELECT 1 FROM warehouse_balances w WHERE w.organization_id=b.organization_id AND w.store_id=b.store_id AND w.product_id=b.product_id)')).rows[0].n,0);
+  const auditor=await pool.connect();try{assert.equal((await auditWarehouseMigration(auditor,{phase:'after'})).ok,true);}finally{auditor.release();}
+}));
+
+integration('032 serializes repeatable-read deletion of separate zero warehouse rows', {timeout:120000},async()=>fixture(async({pool,migration,presenceMigration,org,store,products})=>{
+  assert.ok(presenceMigration);
+  const setup=await pool.connect();try{await executeMigration(setup,migration);await executeMigration(setup,presenceMigration);}finally{setup.release();}
+  const main=(await pool.query('SELECT id FROM warehouses WHERE store_id=$1 AND is_default',[store])).rows[0].id;
+  const named=(await pool.query("INSERT INTO warehouses(organization_id,store_id,name) VALUES($1,$2,'Repeatable read warehouse') RETURNING id",[org,store])).rows[0].id;
+  await pool.query('INSERT INTO warehouse_balances(organization_id,store_id,warehouse_id,product_id,quantity) VALUES($1,$2,$3,$4,0)',[org,store,named,products[2]]);
+  const a=await pool.connect(),b=await pool.connect();
+  try{
+    for(const c of [a,b]){
+      await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+      assert.equal((await c.query('SELECT count(*)::int AS n FROM warehouse_balances WHERE product_id=$1',[products[2]])).rows[0].n,2);
+    }
+    await a.query('DELETE FROM warehouse_balances WHERE warehouse_id=$1 AND product_id=$2',[main,products[2]]);
+    await b.query('DELETE FROM warehouse_balances WHERE warehouse_id=$1 AND product_id=$2',[named,products[2]]);
+    await a.query('COMMIT');
+    await assert.rejects(()=>b.query('COMMIT'),e=>e.code==='40001');
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM warehouse_balances WHERE product_id=$1',[products[2]])).rows[0].n,1);
+    assert.equal((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[products[2]])).rows[0].quantity,'0.000');
+    await partition(pool);
+  }finally{await a.query('ROLLBACK');await b.query('ROLLBACK');a.release();b.release();}
 }));
