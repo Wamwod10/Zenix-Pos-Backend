@@ -44,8 +44,12 @@ const normalizedLinePricing=({product,line,posRules,user})=>{
   const requestedBase=Number(line.unitPrice||0);
   const requestedDiscount=Number(line.discountPercent||0);
   const requestedFinal=requestedBase*(1-requestedDiscount/100);
-  const catalogPrice=Number(product.sell_price||0);
-  const authorityBase=catalogPrice>0?catalogPrice:requestedBase;
+  const packUnit=line.metadata?.packUnit;
+  const pack=packUnit?(Array.isArray(product.metadata?.packaging)?product.metadata.packaging:[]).find(item=>item.unit===packUnit):null;
+  if(packUnit&&(!pack||!Number.isFinite(Number(pack.factor))||Number(pack.factor)<=0||!Number.isFinite(Number(pack.salePrice))||Number(pack.salePrice)<0))throw new HttpError(409,'Qadoq topilmadi','PACKAGING_UNAVAILABLE');
+  const catalogPrice=pack?Number(pack.salePrice)/Number(pack.factor):Number(product.sell_price||0);
+  const authorityBase=pack?catalogPrice:catalogPrice>0?catalogPrice:requestedBase;
+  if(pack&&requestedFinal>authorityBase+Math.max(0.0000001,Math.abs(authorityBase)*1e-12))throw new HttpError(409,'Qadoq narxi yangilandi','PACKAGING_PRICE_CHANGED');
   const finalUnitPrice=requestedFinal;
   const effectiveDiscount=authorityBase>0&&finalUnitPrice<authorityBase
     ? Math.max(0,Math.min(100,(1-finalUnitPrice/authorityBase)*100))
@@ -61,9 +65,9 @@ const normalizedLinePricing=({product,line,posRules,user})=>{
   const storedDiscount=storedUnitPrice>0&&finalUnitPrice<storedUnitPrice
     ? Math.max(0,Math.min(100,(1-finalUnitPrice/storedUnitPrice)*100))
     : 0;
-  const gross=lineAmount(quantity,storedUnitPrice);
-  const lineTotal=lineAmount(quantity,finalUnitPrice);
-  return {unitPrice:storedUnitPrice,discountPercent:storedDiscount,gross,lineTotal,effectiveDiscount,finalUnitPrice};
+  const gross=pack?lineAmount(quantity/Number(pack.factor),Number(pack.salePrice)):lineAmount(quantity,storedUnitPrice);
+  const lineTotal=pack?lineAmount(quantity/Number(pack.factor),Number(pack.salePrice),effectiveDiscount):lineAmount(quantity,finalUnitPrice);
+  return {unitPrice:storedUnitPrice,discountPercent:storedDiscount,gross,lineTotal,effectiveDiscount,finalUnitPrice,packaging:pack?{unit:pack.unit,factor:Number(pack.factor),salePrice:Number(pack.salePrice)}:null};
 };
 
 const moneyValue=z.coerce.number().min(0).max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
@@ -252,7 +256,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       const tracking=await planSaleTracking(client,{organizationId:orgId,storeId:input.storeId,productId:line.productId,quantity,stock:before,metadata:line.metadata});
       const pricing=normalizedLinePricing({product,line,posRules,user:req.user});
       subtotal=sumMoney([subtotal,pricing.gross]);total=sumMoney([total,pricing.lineTotal]);
-      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:line.metadata||{},tracking,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
+      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:{...(line.metadata||{}),...(pricing.packaging?{packaging:pricing.packaging,baseUnitPrice:pricing.unitPrice}: {})},tracking,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
     }
     const paymentTotal=sumMoney(input.payments.map(p=>p.amount));
     const creditAmount=Number(input.creditAmount||0);

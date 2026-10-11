@@ -34,6 +34,8 @@ export function buildCustomerPageQuery(input){
   const {organizationId,...rawQuery}=input;
   z.string().uuid().parse(organizationId);
   const query=parseCustomerDirectoryQuery(rawQuery);
+  const phoneDigits=/^[+\d\s().-]+$/.test(query.q)?query.q.replace(/\D/g,''):'';
+  const phoneMatch=phoneDigits?" OR regexp_replace(COALESCE(phone,''),'[^0-9]','','g') LIKE $6":"";
   const order=`${sorts[query.sort]} ${query.direction==='desc'?'DESC':'ASC'} NULLS LAST,c.id ASC`;
   return {
     // Materialize each tenant aggregate once. A FULL JOIN fence prevents quadratic
@@ -48,10 +50,10 @@ export function buildCustomerPageQuery(input){
     ), finance AS MATERIALIZED (SELECT customer_id,sum(balance) balance,sum(overdue) overdue,sum(total_purchases) total_purchases,sum(sale_count) sale_count,max(last_purchase_at) last_purchase_at,sum(loyalty_points) loyalty_points FROM events GROUP BY customer_id),
     directory AS MATERIALIZED (
       SELECT c.*,COALESCE(f.balance,0) balance,COALESCE(f.overdue,0) overdue,COALESCE(f.total_purchases,0) total_purchases,COALESCE(f.sale_count,0) sale_count,f.last_purchase_at,COALESCE(f.loyalty_points,0) loyalty_points
-      FROM (SELECT * FROM customers c WHERE c.organization_id=$1 AND c.archived=${query.filter==='inactive'?'true':'false'} AND ($2='%%' OR name ILIKE $2 ESCAPE E'\\\\' OR phone ILIKE $2 ESCAPE E'\\\\' OR email ILIKE $2 ESCAPE E'\\\\')) c FULL JOIN finance f ON f.customer_id=c.id
+      FROM (SELECT * FROM customers c WHERE c.organization_id=$1 AND c.archived=${query.filter==='inactive'?'true':'false'} AND ($2='%%' OR name ILIKE $2 ESCAPE E'\\\\' OR phone ILIKE $2 ESCAPE E'\\\\' ${phoneMatch} OR email ILIKE $2 ESCAPE E'\\\\')) c FULL JOIN finance f ON f.customer_id=c.id
     ), filtered AS MATERIALIZED (SELECT * FROM directory c WHERE c.id IS NOT NULL AND ${filters[query.filter]} AND c.tags @> $5::text[])
     SELECT c.*,totals.total FROM (SELECT count(*)::int AS total FROM filtered) totals LEFT JOIN (SELECT * FROM filtered c ORDER BY ${order} LIMIT $3 OFFSET $4) c ON true ORDER BY ${order}`,
-    values:[organizationId,likeTerm(query.q),query.limit,query.offset,query.tags],
+    values:[organizationId,likeTerm(query.q),query.limit,query.offset,query.tags,...(phoneDigits?[`%${phoneDigits}%`]:[])],
   };
 }
 

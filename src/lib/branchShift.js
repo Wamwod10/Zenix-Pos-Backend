@@ -2,6 +2,15 @@ import { HttpError } from "./http.js";
 
 export const branchRegisterKey = (storeId) => `store:${storeId}`;
 
+export const assertEmployeeShiftAvailableWithLock = async (client, organizationId, employeeId, storeId) => {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`employee-shift:${organizationId}:${employeeId}`]);
+  const existing = (await client.query(
+    "SELECT id, store_id FROM shifts WHERE organization_id=$1 AND cashier_id=$2 AND store_id<>$3 AND status='open' LIMIT 1",
+    [organizationId, employeeId, storeId],
+  )).rows[0];
+  if (existing) throw new HttpError(409, "Boshqa filialdagi smenangiz ochiq. Avval uni yoping.", "EMPLOYEE_SHIFT_ALREADY_OPEN");
+};
+
 export const selectActiveBranchShifts = (shifts, { allowedStoreId = null } = {}) => {
   const active = {};
   for (const shift of shifts || []) {

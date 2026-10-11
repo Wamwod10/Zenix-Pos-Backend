@@ -3,6 +3,21 @@ import assert from "node:assert/strict";
 
 const branchShift=await import("../src/lib/branchShift.js").catch(()=>({}));
 
+test("shift opening locks the employee and refuses their shift in another branch",async()=>{
+  assert.equal(typeof branchShift.assertEmployeeShiftAvailableWithLock,"function");
+  const calls=[];
+  const client={query:async(sql,args)=>{calls.push({sql,args});return {rows:sql.includes("FROM shifts")?[{id:"other-shift",store_id:"store-2"}]:[]}}};
+  await assert.rejects(()=>branchShift.assertEmployeeShiftAvailableWithLock(client,"org-1","cashier-1","store-1"),error=>error.code==="EMPLOYEE_SHIFT_ALREADY_OPEN"&&error.status===409);
+  assert.match(calls[0].sql,/pg_advisory_xact_lock/);
+  assert.deepEqual(calls[0].args,["employee-shift:org-1:cashier-1"]);
+  assert.deepEqual(calls[1].args,["org-1","cashier-1","store-1"]);
+});
+
+test("employee may open a shift when none exists in another branch",async()=>{
+  const client={query:async()=>({rows:[]})};
+  await branchShift.assertEmployeeShiftAvailableWithLock(client,"org-1","cashier-1","store-1");
+});
+
 test("branch register key is stable for every account in the store",()=>{
   assert.equal(typeof branchShift.branchRegisterKey,"function","branch register helper must be available");
   assert.equal(branchShift.branchRegisterKey("store-1"),"store:store-1");

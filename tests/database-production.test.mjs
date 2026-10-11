@@ -163,6 +163,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     "028_inventory_receipt_replay.sql",
     "029_trial_phone_verification.sql",
     "030_registration_phone_throttle.sql",
+    "031_branch_warehouses.sql",
   ]);
 
   for (const table of [
