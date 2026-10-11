@@ -1,0 +1,24 @@
+-- Every violations count must be zero. Check catalog checksums separately with Node.
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '60s';
+SET LOCAL idle_in_transaction_session_timeout = '60s';
+WITH partitioned AS (
+ SELECT organization_id,store_id,product_id,sum(quantity) AS quantity FROM warehouse_balances GROUP BY organization_id,store_id,product_id
+), compared AS (
+ SELECT b.product_id AS aggregate_id,b.quantity AS aggregate_quantity,w.quantity AS partition_quantity
+ FROM inventory_balances b FULL OUTER JOIN partitioned w USING(organization_id,store_id,product_id)
+)
+SELECT 'partition_mismatch_or_orphan' AS check_name,count(*) AS violations FROM compared WHERE aggregate_id IS NULL OR aggregate_quantity IS DISTINCT FROM coalesce(partition_quantity,0)
+UNION ALL SELECT 'default_count_or_inactive',count(*) FROM stores s LEFT JOIN LATERAL (SELECT count(*) AS defaults,count(*) FILTER(WHERE active) AS active_defaults FROM warehouses w WHERE w.organization_id=s.organization_id AND w.store_id=s.id AND is_default) w ON true WHERE w.defaults<>1 OR w.active_defaults<>1
+UNION ALL SELECT 'warehouse_store_scope',count(*) FROM warehouses w LEFT JOIN stores s ON (s.organization_id,s.id)=(w.organization_id,w.store_id) WHERE s.id IS NULL
+UNION ALL SELECT 'warehouse_balance_scope',count(*) FROM warehouse_balances b LEFT JOIN warehouses w ON (w.organization_id,w.store_id,w.id)=(b.organization_id,b.store_id,b.warehouse_id) LEFT JOIN products p ON (p.organization_id,p.id)=(b.organization_id,b.product_id) WHERE w.id IS NULL OR p.id IS NULL
+UNION ALL SELECT 'invalid_name',count(*) FROM warehouses WHERE name IS NULL OR length(btrim(name)) NOT BETWEEN 2 AND 120
+UNION ALL SELECT 'invalid_quantity',count(*) FROM warehouse_balances WHERE quantity IS NULL OR quantity::text IN ('NaN','Infinity','-Infinity')
+UNION ALL SELECT 'invalid_aggregate_quantity',count(*) FROM inventory_balances WHERE quantity IS NULL OR quantity::text IN ('NaN','Infinity','-Infinity')
+UNION ALL SELECT 'invalid_batch_date',count(*) FROM inventory_batches WHERE manufactured_date>expiry_date;
+SELECT 'missing_validated_constraints' AS check_name,count(*) AS violations FROM (VALUES ('warehouses_store_tenant_fk','f'),('warehouse_balances_warehouse_tenant_fk','f'),('warehouse_balances_product_tenant_fk','f'),('inventory_batch_date_order','c'),('warehouses_name_check','c'),('warehouses_default_active_check','c'),('inventory_balances_quantity_finite','c'),('warehouse_balances_quantity_finite','c')) AS required(name,kind) WHERE NOT EXISTS(SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid WHERE connamespace='public'::regnamespace AND conname=required.name AND contype::text=required.kind AND convalidated AND t.relname=CASE WHEN required.name='inventory_batch_date_order' THEN 'inventory_batches' WHEN required.name='inventory_balances_quantity_finite' THEN 'inventory_balances' WHEN required.name LIKE 'warehouse_balances_%' THEN 'warehouse_balances' ELSE 'warehouses' END);
+SELECT 'missing_valid_unique_indexes' AS check_name,count(*) AS violations FROM (VALUES ('warehouses_name_unique'),('warehouses_default_unique')) AS required(name) WHERE NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid=c.oid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=required.name AND i.indisunique AND i.indisready AND i.indisvalid);
+SELECT 'missing_enabled_triggers' AS check_name,count(*) AS violations FROM (VALUES ('stores','stores_default_warehouse',false),('inventory_balances','inventory_warehouse_balance_sync',false),('inventory_balances','inventory_warehouse_partition_guard',true),('warehouse_balances','warehouse_partition_guard',true),('warehouses','warehouse_default_guard',true),('stores','stores_warehouse_default_guard',true),('inventory_balances','inventory_balance_identity_guard',false),('inventory_balances','inventory_warehouse_no_truncate',false),('warehouse_balances','warehouse_balances_no_truncate',false),('warehouses','warehouses_no_truncate',false)) AS required(table_name,trigger_name,deferred) WHERE NOT EXISTS(SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=required.table_name AND t.tgname=required.trigger_name AND NOT t.tgisinternal AND t.tgenabled IN ('O','A') AND (NOT required.deferred OR (t.tgdeferrable AND t.tginitdeferred)));
+SELECT 'missing_partition_lookup_index' AS check_name,count(*) AS violations FROM (VALUES ('warehouse_balances_product_idx')) AS required(name) WHERE NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid=c.oid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=required.name AND i.indisready AND i.indisvalid);
+COMMIT;

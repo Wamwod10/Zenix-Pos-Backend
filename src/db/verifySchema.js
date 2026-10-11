@@ -37,6 +37,9 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
+  "warehouses_store_tenant_fk",
+  "warehouse_balances_warehouse_tenant_fk",
+  "warehouse_balances_product_tenant_fk",
   "platform_promo_reservations_payment_tenant_fk",
   "users_store_tenant_fk",
   "inventory_balances_store_tenant_fk",
@@ -165,6 +168,8 @@ export const REQUIRED_TABLES = Object.freeze([
 ]);
 
 export const REQUIRED_FOREIGN_KEY_TABLES = Object.freeze([
+  "warehouses",
+  "warehouse_balances",
   "stores",
   "users",
   "auth_sessions",
@@ -227,6 +232,9 @@ export const REQUIRED_UNIQUE_CONSTRAINT_TABLES = Object.freeze([
 ]);
 
 export const REQUIRED_INDEXES = Object.freeze([
+  "warehouses_name_unique",
+  "warehouses_default_unique",
+  "warehouse_balances_product_idx",
   "users_org_phone_unique",
   "users_username_global_unique",
   "auth_sessions_user_idx",
@@ -290,6 +298,12 @@ export const REQUIRED_INDEXES = Object.freeze([
   "customer_loyalty_org_customer_idx",
 ]);
 
+export const REQUIRED_COLUMNS = Object.freeze(["inventory_batches.manufactured_date"]);
+export const REQUIRED_CHECKS = Object.freeze(["inventory_batch_date_order", "warehouses_name_check", "warehouses_default_active_check", "inventory_balances_quantity_finite", "warehouse_balances_quantity_finite"]);
+export const REQUIRED_TRIGGERS = Object.freeze(["inventory_balances.inventory_balance_identity_guard", "inventory_balances.inventory_warehouse_no_truncate", "warehouse_balances.warehouse_balances_no_truncate", "warehouses.warehouses_no_truncate", "stores.stores_default_warehouse", "inventory_balances.inventory_warehouse_balance_sync", "inventory_balances.inventory_warehouse_partition_guard", "warehouse_balances.warehouse_partition_guard", "warehouses.warehouse_default_guard", "stores.stores_warehouse_default_guard"]);
+export const REQUIRED_DEFERRED_TRIGGERS = Object.freeze(["inventory_balances.inventory_warehouse_partition_guard", "warehouse_balances.warehouse_partition_guard", "warehouses.warehouse_default_guard", "stores.stores_warehouse_default_guard"]);
+export const REQUIRED_UNIQUE_INDEXES = Object.freeze(["warehouses_name_unique", "warehouses_default_unique"]);
+
 const missing = (required, actual) => {
   const actualSet = new Set(actual);
   return required.filter((name) => !actualSet.has(name));
@@ -304,6 +318,11 @@ export const findSchemaIssues = (snapshot) => {
     ["missing unique constraints on tables", REQUIRED_UNIQUE_CONSTRAINT_TABLES, snapshot.uniqueConstraintTables],
     ["missing indexes", REQUIRED_INDEXES, snapshot.indexes],
     ["missing tenant integrity constraints", REQUIRED_TENANT_CONSTRAINTS, snapshot.tenantConstraints],
+    ["missing columns", REQUIRED_COLUMNS, snapshot.columns],
+    ["missing validated checks", REQUIRED_CHECKS, snapshot.checks],
+    ["missing enabled triggers", REQUIRED_TRIGGERS, snapshot.triggers],
+    ["missing deferred integrity triggers", REQUIRED_DEFERRED_TRIGGERS, snapshot.deferredTriggers],
+    ["missing unique indexes", REQUIRED_UNIQUE_INDEXES, snapshot.uniqueIndexes],
   ];
 
   return checks.flatMap(([label, required, actual = []]) => {
@@ -313,7 +332,7 @@ export const findSchemaIssues = (snapshot) => {
 };
 
 export const readDatabaseSchema = async (db) => {
-  const [tables, migrations, primaryKeys, foreignKeys, uniqueConstraints, indexes, tenantConstraints] = await Promise.all([
+  const [tables, migrations, primaryKeys, foreignKeys, uniqueConstraints, indexes, tenantConstraints, columns, checks, triggers, uniqueIndexes] = await Promise.all([
     db.query("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"),
     db.query("SELECT name FROM schema_migrations ORDER BY name"),
     db.query("SELECT table_name FROM information_schema.table_constraints WHERE table_schema='public' AND constraint_type='PRIMARY KEY'"),
@@ -326,7 +345,18 @@ export const readDatabaseSchema = async (db) => {
       JOIN pg_namespace namespace ON namespace.oid=index_class.relnamespace
       WHERE namespace.nspname='public' AND index_row.indisvalid AND index_row.indisready
     `),
-    db.query("SELECT conname FROM pg_constraint WHERE connamespace='public'::regnamespace"),
+    db.query(`SELECT conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid WHERE connamespace='public'::regnamespace AND contype='f'
+      AND (conname NOT IN ('warehouses_store_tenant_fk','warehouse_balances_warehouse_tenant_fk','warehouse_balances_product_tenant_fk')
+      OR (conname='warehouses_store_tenant_fk' AND t.relname='warehouses' AND convalidated)
+      OR (conname IN ('warehouse_balances_warehouse_tenant_fk','warehouse_balances_product_tenant_fk') AND t.relname='warehouse_balances' AND convalidated))`),
+    db.query("SELECT table_name || '.' || column_name AS name FROM information_schema.columns WHERE table_schema='public' AND data_type='date'"),
+    db.query(`SELECT conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid WHERE connamespace='public'::regnamespace AND contype='c' AND convalidated
+      AND ((conname='inventory_batch_date_order' AND t.relname='inventory_batches')
+      OR (conname IN ('warehouses_name_check','warehouses_default_active_check') AND t.relname='warehouses')
+      OR (conname='inventory_balances_quantity_finite' AND t.relname='inventory_balances')
+      OR (conname='warehouse_balances_quantity_finite' AND t.relname='warehouse_balances'))`),
+    db.query(`SELECT c.relname || '.' || t.tgname AS name, t.tgdeferrable, t.tginitdeferred FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND t.tgenabled IN ('O','A')`),
+    db.query(`SELECT c.relname AS indexname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND i.indisvalid AND i.indisready AND i.indisunique`),
   ]);
 
   return {
@@ -337,6 +367,11 @@ export const readDatabaseSchema = async (db) => {
     uniqueConstraintTables: uniqueConstraints.rows.map((row) => row.table_name),
     indexes: indexes.rows.map((row) => row.indexname),
     tenantConstraints: tenantConstraints.rows.map((row) => row.conname),
+    columns: columns.rows.map((row) => row.name),
+    checks: checks.rows.map((row) => row.conname),
+    triggers: triggers.rows.map((row) => row.name),
+    deferredTriggers: triggers.rows.filter((row) => row.tgdeferrable && row.tginitdeferred).map((row) => row.name),
+    uniqueIndexes: uniqueIndexes.rows.map((row) => row.indexname),
   };
 };
 
