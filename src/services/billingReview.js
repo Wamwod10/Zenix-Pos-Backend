@@ -1,10 +1,11 @@
-import { BILLING_PLANS } from "../config/billing.js";
+import { BILLING_PLANS,daysBetween } from "../config/billing.js";
 import { withTransaction } from "../db/tx.js";
 import { organizationCalendarDateISO } from "../lib/businessDate.js";
 import { HttpError } from "../lib/http.js";
 import { writeAudit } from "./audit.js";
 import { assertNoConflictingBillingReview } from "./pendingBillingReview.js";
 import { consumePromoReservation,releasePromoReservation } from "./promoCodes.js";
+import {approveSubscription,previousDay} from './subscriptions.js';
 
 // A paid renewal must never silently lift a platform administrator suspension.
 export function reviewLicenseStatus({ currentStatus, decision, expiryDate, timezone }) {
@@ -29,7 +30,7 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
     "SELECT id FROM organizations WHERE id=$1 FOR UPDATE", [target.organization_id],
   )).rows[0];
   if (!organization) throw new HttpError(404, "Tashkilot topilmadi", "ORG_NOT_FOUND");
-  const row = (await client.query(`SELECT bp.*,o.name AS organization_name,o.license_status,o.expiry_date,o.store_limit,o.timezone
+  const row = (await client.query(`SELECT bp.*,o.name AS organization_name,o.license_status,o.expiry_date,o.store_limit,o.timezone,o.plan_code AS organization_plan_code
     FROM billing_payments bp JOIN organizations o ON o.id=bp.organization_id
     WHERE bp.id=$1 AND bp.organization_id=$2 FOR UPDATE OF bp`, [paymentId, target.organization_id])).rows[0];
   if (!row) throw new HttpError(404, "To'lov topilmadi", "PAYMENT_NOT_FOUND");
@@ -49,7 +50,13 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
     // The reserved immutable quote survives later promo deactivation/exhaustion.
     await consumePromoReservation(client,row.id);
     const draft=row.draft_id?(await client.query("SELECT metadata,base_amount,total_amount FROM billing_drafts WHERE id=$1 AND organization_id=$2",[row.draft_id,row.organization_id])).rows[0]:null;
-    if (row.type === "EXTRA") {
+    if(draft?.metadata?.subscription){
+      const org=(await client.query('SELECT * FROM organizations WHERE id=$1',[row.organization_id])).rows[0];
+      const term=await approveSubscription(client,org,row,draft);
+      reviewed.service_period_from=term.startsOn;
+      reviewed.service_period_to=previousDay(term.endsOn);
+      reviewed.extension_days=daysBetween(term.startsOn,term.endsOn);
+    }else if (row.type === "EXTRA") {
       if(draft?.metadata?.extraDuration){
         // New purchases are time-bound. Keep historical permanent allowances
         // unchanged; the dynamic entitlement is added when limits are read.
@@ -67,7 +74,8 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
     }
   } else {
     await releasePromoReservation(client,row.id,reason||"REJECTED");
-    await client.query("UPDATE organizations SET license_status=$2,updated_at=now() WHERE id=$1", [row.organization_id, reviewLicenseStatus({currentStatus:row.license_status,decision,expiryDate:row.expiry_date,timezone:row.timezone})]);
+    // Rejecting a new tier's payment must not change its existing term access.
+    if(!row.organization_plan_code)await client.query("UPDATE organizations SET license_status=$2,updated_at=now() WHERE id=$1", [row.organization_id, reviewLicenseStatus({currentStatus:row.license_status,decision,expiryDate:row.expiry_date,timezone:row.timezone})]);
   }
 
   const metadata = {

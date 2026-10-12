@@ -1,9 +1,11 @@
+import registerRoutes from './routes/registers.js';
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { env } from "./config/env.js";
 import authRoutes from "./routes/auth.js";
+import aiRoutes from './routes/ai.js';
 import usersRoutes from "./routes/users.js";
 import bootstrapRoutes from "./routes/bootstrap.js";
 import storeRoutes from "./routes/stores.js";
@@ -48,6 +50,7 @@ app.get("/ready",async(_req,res)=>{
   catch(error){res.status(503).json({ok:false,service:"zenix-pos-api",database:"unavailable",time:new Date().toISOString()});}
 });
 app.use("/api/auth",authRoutes);
+app.use('/api/ai',aiRoutes);
 app.use("/api/users",usersRoutes);
 app.use("/api/bootstrap",bootstrapRoutes);
 app.use("/api/stores",storeRoutes);
@@ -59,6 +62,7 @@ app.use("/api/customers",customerRoutes);
 app.use("/api/audit",auditRoutes);
 app.use("/api/finance",financeRoutes);
 app.use("/api/shifts",shiftRoutes);
+app.use("/api/registers",registerRoutes);
 app.use("/api/suppliers",supplierRoutes);
 app.use("/api/expenses",expenseRoutes);
 app.use("/api/billing",billingRoutes);

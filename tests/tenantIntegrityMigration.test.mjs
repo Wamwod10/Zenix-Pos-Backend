@@ -91,6 +91,9 @@ test("every tenant foreign key in migration 016 is covered by the integrity audi
     "../migrations/024_promo_reservations.sql",
     "../migrations/031_branch_warehouses.sql",
     "../migrations/032_warehouse_balance_presence.sql",
+    "../migrations/033_subscription_billing.sql",
+    "../migrations/034_resource_entitlements.sql",
+    "../migrations/035_zenix_ai.sql",
   ].map(name=>fs.readFile(new URL(name,import.meta.url),"utf8")));
   const sql=sources.join("\n");
   const migrationConstraints=[...sql.matchAll(/CONSTRAINT\s+(\w+_tenant_fk)\s+FOREIGN KEY/gi)].map((match)=>match[1]);

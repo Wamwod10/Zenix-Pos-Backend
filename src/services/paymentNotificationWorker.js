@@ -26,11 +26,12 @@ async function claimEvents(db) {
 }
 
 async function paymentContext(db, event) {
-  return (await db.query(`SELECT bp.*,o.name AS organization_name,o.store_limit,
+  return (await db.query(`SELECT bp.*,o.name AS organization_name,o.store_limit,bd.metadata AS draft_metadata,
       owner.name AS owner_name,owner.phone AS owner_phone,
       br.file_name AS receipt_name,br.mime_type AS receipt_type,br.content AS receipt_content
     FROM billing_payments bp
     JOIN organizations o ON o.id=bp.organization_id
+    LEFT JOIN billing_drafts bd ON bd.id=bp.draft_id AND bd.organization_id=bp.organization_id
     LEFT JOIN LATERAL (SELECT u.name,u.phone FROM users u WHERE u.organization_id=o.id AND u.app_role='OWNER' ORDER BY u.created_at LIMIT 1) owner ON true
     LEFT JOIN billing_receipts br ON br.id=bp.receipt_id AND br.organization_id=bp.organization_id
     WHERE bp.id=$1 AND bp.organization_id=$2`, [event.payload?.paymentId || event.event_id, event.organization_id])).rows[0] || null;

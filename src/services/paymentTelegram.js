@@ -1,9 +1,10 @@
 import { createHash, createHmac } from "node:crypto";
 import { env } from "../config/env.js";
 import { BILLING_PLANS } from "../config/billing.js";
+import {subscriptionPlan} from '../config/subscriptions.js';
 
 const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-const money = (value) => Math.round(Number(value || 0)).toLocaleString("ru-RU").replaceAll("\u00a0", " ");
+const money = (value) => Number(value || 0).toLocaleString("ru-RU",{maximumFractionDigits:2}).replaceAll("\u00a0", " ");
 const submittedTime = (value) => new Intl.DateTimeFormat("uz-UZ", {
   timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
 }).format(new Date(value));
@@ -14,16 +15,18 @@ export const hashPaymentReviewToken = (token) => createHash("sha256").update(Str
 export function formatPaymentReviewMessage(payment) {
   const plan = BILLING_PLANS[payment.plan] || BILLING_PLANS.ANNUAL;
   const isExtra = payment.type === "EXTRA";
+  const quote=payment.draft_metadata?.subscription;
+  const tier=quote?subscriptionPlan(quote.planCode,quote.pricingVersion):null;
   const branchLimit = isExtra
     ? Number(payment.store_limit || 0) + Math.max(1, Number(payment.extra_store_count || 1))
-    : plan.includedStores + Math.max(0, Number(payment.extra_store_count || 0));
+    : tier?tier.limits.stores+Number(quote.legacyStoreBonus||0):plan.includedStores + Math.max(0, Number(payment.extra_store_count || 0));
   const lines = [
     "<b>💳 Zenix POS - Yangi to'lov</b>", "",
     `<b>Tashkilot:</b> ${escapeHtml(payment.organization_name)}`,
     `<b>Egasi:</b> ${escapeHtml(payment.owner_name || "Ko'rsatilmagan")}`,
   ];
   if (payment.owner_phone) lines.push(`<b>Telefon:</b> ${escapeHtml(payment.owner_phone)}`);
-  lines.push("", `<b>Tarif:</b> ${isExtra ? "Qo'shimcha filial" : escapeHtml(plan.label)}`);
+  lines.push("", `<b>Tarif:</b> ${isExtra ? "Qo'shimcha filial" : escapeHtml(tier?`${tier.label} / ${plan.label}`:plan.label)}`);
   lines.push(`<b>Davr:</b> ${isExtra ? `${Number(payment.extension_days || 0)} kun` : `${plan.months} oy`}`);
   lines.push(`<b>Filial limiti:</b> ${branchLimit} ta`, "");
   lines.push(`<b>Summa:</b> ${money(payment.amount)} so'm`, `<b>Buyurtma:</b> ${escapeHtml(payment.order_id)}`, "");

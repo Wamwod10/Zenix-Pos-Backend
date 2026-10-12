@@ -20,8 +20,9 @@ export const organizationControlSchema=z.discriminatedUnion('action',[
 // Never write to a tenant without explicitly locking its organization row. All
 // administrative overrides are in the same transaction as their audit log.
 export async function applyOrganizationControl(client,{organizationId,actorId,input}){
-    const org=(await client.query('SELECT id,name,plan,license_status,expiry_date,store_limit,timezone,settings FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
+    const org=(await client.query('SELECT id,name,plan,license_status,expiry_date,store_limit,timezone,settings,plan_code FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
     if(!org)throw new HttpError(404,'Tashkilot topilmadi','ORG_NOT_FOUND');
+    if(input.action==='SET_LICENSE'&&org.plan_code)throw new HttpError(409,'Yangi tarif obunasini billing to‘lovi orqali o‘zgartiring','TIER_LICENSE_OVERRIDE_UNSUPPORTED');
     const previous={plan:org.plan,licenseStatus:org.license_status,expiryDate:databaseDateISO(org.expiry_date),storeLimit:Number(org.store_limit)};
     const today=organizationCalendarDateISO(org);
     if(['PAYWALL','RELEASE_PAYWALL','SEND_NOTICE'].includes(input.action)){
@@ -40,7 +41,8 @@ export async function applyOrganizationControl(client,{organizationId,actorId,in
       target={...previous,licenseStatus:'SUSPENDED'};
     }else if(input.action==='RESTORE'){
       if(org.license_status!=='SUSPENDED')throw new HttpError(409,'Tashkilot bloklanmagan','NOT_SUSPENDED');
-      target={...previous,licenseStatus:previous.expiryDate&&previous.expiryDate>=today?'ACTIVE':'EXPIRED'};
+      const valid=org.plan_code?(await client.query('SELECT subscription_period_valid($1) AS valid',[organizationId])).rows[0]?.valid:previous.expiryDate&&previous.expiryDate>=today;
+      target={...previous,licenseStatus:valid?'ACTIVE':'EXPIRED'};
     }else{
       if(input.expiryDate<today)throw new HttpError(400,'Tarif muddati o‘tgan sana bo‘lishi mumkin emas','INVALID_LICENSE_EXPIRY');
       const count=Number((await client.query('SELECT count(*)::int AS count FROM stores WHERE organization_id=$1 AND active=true',[organizationId])).rows[0]?.count||0);

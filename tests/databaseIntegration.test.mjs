@@ -245,7 +245,7 @@ integration('promo reservation concurrent final slot, atomic rollback, retry, de
  const {applyBillingReview}=await import('../src/services/billingReview.js');
  const db=testPool(4);
  try{
-  const orgs=(await db.query("INSERT INTO organizations(name) VALUES('Promo A'),('Promo B') RETURNING id")).rows.map(x=>x.id);
+  const orgs=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Promo A','ACTIVE',CURRENT_DATE+30),('Promo B','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows.map(x=>x.id);
   const users=[];
   for(const org of orgs)users.push((await db.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Promo owner',$2,'hash','OWNER') RETURNING id",[org,`promo-${org}`])).rows[0].id);
   const promo=(await db.query("INSERT INTO platform_promos(code,plan,discount_percent,max_uses,max_uses_per_org) VALUES($1,'MONTHLY',50,1,1) RETURNING *",[`PROMO-${Date.now()}`])).rows[0];
@@ -328,7 +328,7 @@ integration('promo reservation concurrent final slot, atomic rollback, retry, de
    const connect=pool.connect;
    pool.connect=db.connect.bind(db); // Real transactions use only this bounded disposable pool.
    try{
-    const org=(await db.query("INSERT INTO organizations(name) VALUES('Route promo owner') RETURNING id")).rows[0].id;
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Route promo owner','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const user=(await db.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Owner',$2,'hash','OWNER') RETURNING id",[org,`route-${org}`])).rows[0].id;
     const input={type:'LICENSE',intent:'ACTIVATE',plan:'MONTHLY',promoCode:promo.code,extraStoreCount:0,metadata:{}};
     const quote=await runTransaction(db,client=>calculateDraft(client,{organizationId:org},input));
@@ -381,8 +381,8 @@ integration('inventory count batch reconciliation reaches the requested total wi
   try{
     client=await db.connect();contender=await db.connect();
     await client.query('BEGIN');transaction=true;
-    const org=(await client.query("INSERT INTO organizations(name) VALUES('Count batch reconciliation') RETURNING id")).rows[0].id;
-    const otherOrg=(await client.query("INSERT INTO organizations(name) VALUES('Other count tenant') RETURNING id")).rows[0].id;
+    const org=(await client.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Count batch reconciliation','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
+    const otherOrg=(await client.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Other count tenant','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const store=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Count store') RETURNING id",[org])).rows[0].id;
     const otherStore=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Other store') RETURNING id",[org])).rows[0].id;
     const tenantStore=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Other tenant store') RETURNING id",[otherOrg])).rows[0].id;
@@ -615,8 +615,8 @@ integration("transactions roll back and tenant constraints reject cross-organiza
     }), /force rollback/);
     assert.equal((await pool.query("SELECT count(*)::int AS count FROM organizations WHERE name=$1", [rolledBackName])).rows[0].count, 0);
 
-    const organizationA = (await pool.query("INSERT INTO organizations(name) VALUES('Tenant A') RETURNING id")).rows[0].id;
-    const organizationB = (await pool.query("INSERT INTO organizations(name) VALUES('Tenant B') RETURNING id")).rows[0].id;
+    const organizationA = (await pool.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Tenant A','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
+    const organizationB = (await pool.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Tenant B','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const storeA = (await pool.query("INSERT INTO stores(organization_id,name) VALUES($1,'A store') RETURNING id", [organizationA])).rows[0].id;
     await assert.rejects(
       pool.query(`INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role)
@@ -664,7 +664,7 @@ integration('concurrent sale cannot accept a shift closed by another transaction
   try{
     closing=await db.connect();
     selling=await db.connect();
-    const org=(await db.query("INSERT INTO organizations(name) VALUES('Shift lock rehearsal') RETURNING id")).rows[0].id;
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Shift lock rehearsal','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Shift test') RETURNING id",[org])).rows[0].id;
     const cashier=(await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Cashier',$3,'test-hash','CASHIER') RETURNING id",[org,store,`phase4_shift_${Date.now()}`])).rows[0].id;
     const shift=(await db.query('INSERT INTO shifts(organization_id,store_id,cashier_id,register_key) VALUES($1,$2,$3,$4) RETURNING id',[org,store,cashier,`store:${store}`])).rows[0].id;
@@ -695,7 +695,7 @@ integration('two concurrent stock consumers cannot both read the original invent
   let firstTx=false,secondTx=false;
   try{
     first=await db.connect();second=await db.connect();
-    const org=(await db.query("INSERT INTO organizations(name) VALUES('Inventory lock rehearsal') RETURNING id")).rows[0].id;
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Inventory lock rehearsal','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Inventory test') RETURNING id",[org])).rows[0].id;
     const product=(await db.query("INSERT INTO products(organization_id,name) VALUES($1,'Concurrent item') RETURNING id",[org])).rows[0].id;
     await db.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,5)',[org,store,product]);
@@ -727,7 +727,7 @@ integration('concurrent customer debt payment and refund decisions serialize on 
   let refundTx=false,paymentTx=false;
   try{
     refund=await db.connect();payment=await db.connect();
-    const org=(await db.query("INSERT INTO organizations(name) VALUES('Credit lock rehearsal') RETURNING id")).rows[0].id;
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Credit lock rehearsal','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const customer=(await db.query("INSERT INTO customers(organization_id,name,credit_limit) VALUES($1,'Locked customer',1000) RETURNING id",[org])).rows[0].id;
     const lock='SELECT * FROM customers WHERE id=$1 AND organization_id=$2 FOR UPDATE';
     const args=[customer,org];
@@ -757,7 +757,7 @@ integration('receipt reuse is serialized on locked receipt and rejected after pr
   let firstTx=false,secondTx=false;
   try{
     first=await db.connect();second=await db.connect();
-    const org=(await db.query("INSERT INTO organizations(name) VALUES('Receipt reuse test') RETURNING id")).rows[0].id;
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Receipt reuse test','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const receipt=(await db.query(`INSERT INTO billing_receipts(organization_id,file_name,mime_type,file_size,content)
       VALUES($1,'test.pdf','application/pdf',4,$2) RETURNING id`,[org,Buffer.from('test')])).rows[0].id;
     // Create identical evidence before either connection locks its parent org.
@@ -858,18 +858,20 @@ integration('entitlements have half-open boundaries on the locked local date',as
   const {lockStoreTradingAuthorization}=await import('../src/services/storeTradingHolds.js');
   const db=testPool(2);
   try{
-    const org=(await db.query("INSERT INTO organizations(name,store_limit,timezone,license_status,expiry_date) VALUES('Task 5 boundary',1,'Asia/Tashkent','ACTIVE','2026-10-09') RETURNING id")).rows[0].id;
+    const day=(await db.query("SELECT (now() AT TIME ZONE 'Asia/Tashkent')::date::text AS day")).rows[0].day;
+    const shift=n=>{const date=new Date(`${day}T12:00:00Z`);date.setUTCDate(date.getUTCDate()+n);return date.toISOString().slice(0,10)};
+    const org=(await db.query("INSERT INTO organizations(name,store_limit,timezone,license_status,expiry_date) VALUES('Task 5 boundary',1,'Asia/Tashkent','ACTIVE',$1) RETURNING id",[day])).rows[0].id;
     await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Primary')",[org]);
     const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Extra') RETURNING id",[org])).rows[0].id;
     const payment=(await db.query("INSERT INTO billing_payments(organization_id,order_id,type,plan,amount,status) VALUES($1,$2,'EXTRA','MONTHLY',120000,'APPROVED') RETURNING id",[org,`task5-boundary-${org}`])).rows[0].id;
-    await db.query("INSERT INTO extra_store_entitlements(organization_id,payment_id,quantity,duration,starts_on,expires_on) VALUES($1,$2,1,'MONTHLY','2026-09-09','2026-10-09')",[org,payment]);
-    const input={organizationId:org,storeId:store,now:new Date('2026-10-08T20:00:00Z')};
+    await db.query("INSERT INTO extra_store_entitlements(organization_id,payment_id,quantity,duration,starts_on,expires_on) VALUES($1,$2,1,'MONTHLY',$3,$4)",[org,payment,shift(-30),day]);
+    const input={organizationId:org,storeId:store,now:new Date(`${day}T01:00:00+05:00`)};
     await assert.rejects(lockStoreTradingAuthorization(db,input),{code:'STORE_ENTITLEMENT_EXPIRED'});
-    await db.query("UPDATE extra_store_entitlements SET starts_on='2026-10-10',expires_on='2026-11-10' WHERE organization_id=$1",[org]);
+    await db.query("UPDATE extra_store_entitlements SET starts_on=$2,expires_on=$3 WHERE organization_id=$1",[org,shift(1),shift(32)]);
     await assert.rejects(lockStoreTradingAuthorization(db,input),{code:'STORE_ENTITLEMENT_EXPIRED'});
-    await db.query("UPDATE extra_store_entitlements SET starts_on='2026-10-09' WHERE organization_id=$1",[org]);
+    await db.query("UPDATE extra_store_entitlements SET starts_on=$2 WHERE organization_id=$1",[org,day]);
     const result=await lockStoreTradingAuthorization(db,input);
-    assert.equal(result.businessDate,'2026-10-09');assert.equal(result.effectiveStoreLimit,2);
-    await assert.rejects(lockStoreTradingAuthorization(db,{...input,now:new Date('2026-10-09T20:00:00Z')}),{code:'LICENSE_EXPIRED'});
+    assert.equal(result.businessDate,day);assert.equal(result.effectiveStoreLimit,2);
+    await assert.rejects(lockStoreTradingAuthorization(db,{...input,now:new Date(`${shift(1)}T01:00:00+05:00`)}),{code:'LICENSE_EXPIRED'});
   }finally{await db.end();}
 });

@@ -2,7 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { withTransaction } from "../db/tx.js";
+import { withTransaction,lockBusinessScope } from "../db/tx.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission } from "../middleware/auth.js";
 import { ROLES, isOrganizationPermissionKey } from "../lib/permissions.js";
@@ -92,6 +92,7 @@ router.post("/",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query("BEGIN");
+    await lockBusinessScope(client);
     await assertStore(client,req.user.organizationId,input.storeId||null);
     const passwordHash=await bcrypt.hash(input.password,12);
     const {rows}=await client.query(`
@@ -113,6 +114,7 @@ router.patch("/:id",requirePermission("settingsWrite"),asyncRoute(async(req,res)
   const client=await pool.connect();
   try{
     await client.query("BEGIN");
+    await lockBusinessScope(client);
     const existing=(await client.query(`SELECT * FROM users WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.params.id,req.user.organizationId])).rows[0];
     if(!existing)throw new HttpError(404,"Xodim topilmadi","USER_NOT_FOUND");
     assertRoleAdministration(req.user,input,existing);

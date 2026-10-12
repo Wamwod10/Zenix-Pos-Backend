@@ -5,6 +5,12 @@ import { EventEmitter } from "node:events";
 const revisionModule=await import("../src/lib/workspaceRevision.js").catch(()=>({}));
 const middlewareModule=await import("../src/middleware/workspaceRevision.js").catch(()=>({}));
 
+test('read-only AI accounting does not invalidate the POS workspace',async()=>{
+ const response=new EventEmitter();response.statusCode=200;let calls=0;
+ middlewareModule.createWorkspaceRevisionMiddleware({bump:async()=>{calls++}})({method:'POST',originalUrl:'/api/ai/chat',user:{organizationId:'org-1'}},response,()=>{});
+ response.emit('finish');await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,0);
+});
+
 test("only successful organization mutations bump the workspace revision",()=>{
   assert.equal(typeof revisionModule.shouldBumpWorkspaceRevision,"function","revision policy must be available");
   for(const method of ["POST","PATCH","PUT","DELETE"]){

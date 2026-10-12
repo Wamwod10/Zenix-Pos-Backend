@@ -5,6 +5,7 @@ import { assertDatabaseConnection } from "./db/startup.js";
 import { createShutdownController } from "./shutdown.js";
 import { startNotificationWorker } from "./services/notificationWorker.js";
 import { startPaymentNotificationWorker } from "./services/paymentNotificationWorker.js";
+import {startAiMaintenance} from './services/aiMaintenance.js';
 import { configureTelegramWebhook, configurePaymentTelegramWebhook } from "./services/telegramWebhook.js";
 
 assertServerEnvironment();
@@ -21,6 +22,7 @@ try {
 const workerHandles = [];
 const server = app.listen(env.port, () => {
   console.log(`Zenix POS API listening on :${env.port}`);
+  workerHandles.push(startAiMaintenance());
   if (process.env.RUN_NOTIFICATION_WORKERS !== "false") {
     workerHandles.push(startNotificationWorker(), startPaymentNotificationWorker());
   }

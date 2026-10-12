@@ -192,7 +192,8 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
 
     await db.query("UPDATE organizations SET license_status='ACTIVE',expiry_date=CURRENT_DATE - interval '1 day' WHERE id=$1", [a.orgId]);
     const expired = await request('/api/products', { cookie: a.cookie });
-    assert.equal(expired.status, 402, 'expired license must block an existing session');
+    assert.equal(expired.status, 200, 'expired license retains authorized read-only data');
+    assert.equal((await request('/api/products',{cookie:a.cookie,method:'POST',body:{name:'Expired write'}})).status,402,'expired license blocks business writes');
     const renewal = await request('/api/billing/draft', { cookie: a.cookie });
     assert.equal(renewal.status, 200, 'expired tenants must still be able to renew subscriptions');
     const unaffected = await request('/api/products', { cookie: b.cookie });

@@ -7,6 +7,13 @@ const STORE='33333333-3333-4333-8333-333333333333';
 const ACTOR='44444444-4444-4444-8444-444444444444';
 const reason='Qo‘shimcha filial to‘lovi tugagan';
 
+test('read-only transaction keeps payment-required/review reasons distinct from expiration',async()=>{
+ for(const [status,code] of [['PAYMENT_REQUIRED','PAYMENT_REQUIRED'],['REVIEW','LICENSE_REVIEW'],['ACTIVE','LICENSE_EXPIRED']]){
+  const db={query:async()=>({rows:[{id:ORG,settings:{},timezone:'Asia/Tashkent',license_status:status,expiry_date:'2099-01-01',subscription_writable:false}]})};
+  await assert.rejects(()=>lockStoreTradingAuthorization(db,ORG,STORE),e=>e.code===code&&e.status===402);
+ }
+});
+
 function fakeDb(settings={}) {
   const calls=[];
   const client={query:async(sql,params)=>{

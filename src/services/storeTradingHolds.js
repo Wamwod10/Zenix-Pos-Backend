@@ -36,7 +36,7 @@ export async function lockStoreTradingAuthorization(client, input, legacyStoreId
   // Preserve the existing internal call signature while adopting the input contract.
   const {organizationId,storeId,now}=typeof input==='object'?input:{organizationId:input,storeId:legacyStoreId};
   // Billing review, branch lifecycle and admin holds all lock this org row.
-  const org = (await client.query('SELECT id,settings,store_limit,timezone,license_status,expiry_date FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
+  const org = (await client.query('SELECT id,settings,store_limit,timezone,license_status,expiry_date,plan_code,pricing_version,legacy_store_bonus,subscription_can_write(id) AS subscription_writable FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
   if (!org) throw new HttpError(404,'Tashkilot topilmadi','ORGANIZATION_NOT_FOUND');
   // Capture the date AFTER the lock wait and from the newly locked timezone.
   // License dates retain their inclusive local-calendar contract; extra passes
@@ -45,13 +45,14 @@ export async function lockStoreTradingAuthorization(client, input, legacyStoreId
   const status=String(org.license_status||'PAYMENT_REQUIRED').toUpperCase();
   if(status==='SUSPENDED')throw new HttpError(403,'Akkaunt administrator tomonidan bloklangan. Administrator bilan bog‘laning.','ACCOUNT_SUSPENDED');
   if(org.settings?.billingHold)throw new HttpError(402,'Billing cheklovini olib tashlash uchun administrator bilan bog‘laning.','BILLING_HOLD');
-  if(status==='EXPIRED'||(org.expiry_date&&databaseDateISO(org.expiry_date)<businessDate))throw new HttpError(402,'Tarif muddati tugagan. Billing orqali obunani uzaytiring.','LICENSE_EXPIRED');
+  if(status==='EXPIRED'||(!org.plan_code&&org.expiry_date&&databaseDateISO(org.expiry_date)<businessDate))throw new HttpError(402,'Tarif muddati tugagan. Billing orqali obunani uzaytiring.','LICENSE_EXPIRED');
   if(!['ACTIVE','APPROVED'].includes(status))throw new HttpError(402,
     status==='REVIEW'?'To‘lov tekshirilmoqda. Administrator tasdig‘ini kuting.':'Zenix POS tarifini Billing orqali faollashtiring.',
     status==='REVIEW'?'LICENSE_REVIEW':'PAYMENT_REQUIRED');
+  if(org.subscription_writable===false||org.settings?.trialEndsAt&&!(Date.parse(org.settings.trialEndsAt)>Date.now()))throw new HttpError(402,'Obuna muddati tugagan','LICENSE_EXPIRED');
   if(storeId)assertStoreCanTrade(org,storeId);
   const allowed=await effectiveStoreLimit(client,org,businessDate);
-  if(storeId)await assertStoreWithinPaidCapacity(client,org,storeId,allowed);
+  if(storeId&&!org.plan_code)await assertStoreWithinPaidCapacity(client,org,storeId,allowed);
   return {...org,businessDate,effectiveStoreLimit:allowed};
 }
 

@@ -48,6 +48,28 @@ jobs:
       - run: npm run db:audit-subscriptions
         env:
           DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+      - name: Three-tier billing, resource limits and AI (serialized disposable PG)
+        run: node --test --test-concurrency=1 tests/subscriptionDatabase.test.mjs tests/subscriptionHttp.test.mjs tests/resourceLimitsDatabase.test.mjs tests/resourceLimitsHttp.test.mjs tests/aiDatabase.test.mjs tests/releaseIntegration.test.mjs
+        env:
+          DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+          SUBSCRIPTION_TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+          RESOURCE_TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+          AI_TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+          RELEASE_TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+      - name: Legacy history survives 033-035 (separate empty PG database)
+        shell: bash
+        run: |
+          set -euo pipefail
+          service_container='${{ job.services.postgres.id }}'
+          docker exec "$service_container" createdb -U zenix_ci zenix_ci_subscription_migration_test
+          node --test tests/subscriptionMigration.test.mjs
+          RELEASE_RECOVERY_TEST_DATABASE_URL='postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_subscription_migration_test' node --test tests/releaseRecoveryDatabase.test.mjs
+          docker exec "$service_container" pg_dump -U zenix_ci -d zenix_ci_subscription_migration_test -Fc -f /tmp/zenix-subscription-backup.dump
+          docker exec "$service_container" createdb -U zenix_ci zenix_ci_subscription_restore_test
+          docker exec "$service_container" pg_restore --exit-on-error -U zenix_ci -d zenix_ci_subscription_restore_test /tmp/zenix-subscription-backup.dump
+          RECOVERY_SOURCE_DATABASE_URL='postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_subscription_migration_test' RECOVERY_TARGET_DATABASE_URL='postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_subscription_restore_test' node scripts/verifyRestoreDrill.mjs
+        env:
+          SUBSCRIPTION_MIGRATION_TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_subscription_migration_test
       - name: Backup and restore (disposable PostgreSQL service only)
         shell: bash
         run: |

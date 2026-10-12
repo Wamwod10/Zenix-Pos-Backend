@@ -259,7 +259,8 @@ test('one branch shift is shared while dangerous controls remain permission guar
   const bootstrap=read('src/routes/bootstrap.js');
   const sales=read('src/routes/sales.js');
   assert.match(shifts,/findOpenBranchShiftWithLock/);
-  assert.match(shifts,/branchRegisterKey/);
+  assert.match(shifts,/resolveShiftRegister/);
+  assert.match(read('src/services/posRegisters.js'),/branchRegisterKey/);
   assert.match(shifts,/assertShiftControl/);
   assert.match(bootstrap,/selectActiveBranchShifts/);
   assert.match(sales,/assertSharedOpenShift/);
