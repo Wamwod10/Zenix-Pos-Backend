@@ -163,6 +163,8 @@ test("schema verification covers all migrations and core backend domains", () =>
     "028_inventory_receipt_replay.sql",
     "029_trial_phone_verification.sql",
     "030_registration_phone_throttle.sql",
+    "031_branch_warehouses.sql",
+    "032_warehouse_balance_presence.sql",
   ]);
 
   for (const table of [
@@ -175,6 +177,11 @@ test("schema verification covers all migrations and core backend domains", () =>
   }
 
   const complete = {
+    columns: schemaModule.REQUIRED_COLUMNS,
+    checks: schemaModule.REQUIRED_CHECKS,
+    triggers: schemaModule.REQUIRED_TRIGGERS,
+    deferredTriggers: schemaModule.REQUIRED_DEFERRED_TRIGGERS,
+    uniqueIndexes: schemaModule.REQUIRED_UNIQUE_INDEXES,
     tables: [...schemaModule.REQUIRED_TABLES],
     migrations: [...schemaModule.REQUIRED_MIGRATIONS],
     primaryKeyTables: [...schemaModule.REQUIRED_TABLES],
@@ -203,6 +210,11 @@ test("schema verification covers all migrations and core backend domains", () =>
 
 test("schema verification does not invent natural unique constraints for customer ledgers", () => {
   const snapshot = {
+    columns: schemaModule.REQUIRED_COLUMNS,
+    checks: schemaModule.REQUIRED_CHECKS,
+    triggers: schemaModule.REQUIRED_TRIGGERS,
+    deferredTriggers: schemaModule.REQUIRED_DEFERRED_TRIGGERS,
+    uniqueIndexes: schemaModule.REQUIRED_UNIQUE_INDEXES,
     tables: [...schemaModule.REQUIRED_TABLES],
     migrations: [...schemaModule.REQUIRED_MIGRATIONS],
     primaryKeyTables: [...schemaModule.REQUIRED_TABLES],
@@ -227,6 +239,28 @@ test("schema verification ignores invalid concurrent indexes", async () => {
 
   await schemaModule.readDatabaseSchema(db);
 
-  assert.match(queries.at(-2),/indisvalid/);
+  assert.ok(queries.some(sql => /indisvalid/.test(sql)));
   assert.doesNotMatch(queries.at(-1),/pg_indexes/);
+});
+
+
+test("warehouse verification rejects absent safety objects", () => {
+  const snapshot = {
+    tables: schemaModule.REQUIRED_TABLES, migrations: schemaModule.REQUIRED_MIGRATIONS,
+    primaryKeyTables: schemaModule.REQUIRED_TABLES, foreignKeyTables: schemaModule.REQUIRED_FOREIGN_KEY_TABLES,
+    uniqueConstraintTables: schemaModule.REQUIRED_UNIQUE_CONSTRAINT_TABLES, indexes: schemaModule.REQUIRED_INDEXES,
+    tenantConstraints: schemaModule.REQUIRED_TENANT_CONSTRAINTS, columns: [], checks: [], triggers: [], deferredTriggers: [], uniqueIndexes: [],
+  };
+  const issues = schemaModule.findSchemaIssues(snapshot).join("\n");
+  for (const name of ["manufactured_date", "warehouse_partition_versions.epoch", "inventory_batch_date_order", "stores_default_warehouse", "inventory_warehouse_balance_sync", "inventory_warehouse_partition_guard", "warehouse_partition_guard", "warehouses_default_unique"]) assert.ok(issues.includes(name));
+});
+
+test("warehouse metadata queries exclude unvalidated constraints and disabled triggers", async () => {
+  const queries=[];
+  await schemaModule.readDatabaseSchema({query:async(sql)=>{queries.push(sql);return {rows:[]};}});
+  assert.ok(queries.some(sql => /warehouses_store_tenant_fk' AND t.relname='warehouses' AND convalidated/.test(sql)));
+  assert.ok(queries.some(sql => /contype='c' AND convalidated/.test(sql)));
+  assert.ok(queries.some(sql => /tgenabled IN \('O','A'\)/.test(sql)));
+  assert.ok(queries.some(sql => /indisunique/.test(sql)));
+  assert.ok(queries.some(sql => /warehouse_partition_versions.*epoch.*boolean/.test(sql)));
 });

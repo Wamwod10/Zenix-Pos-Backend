@@ -106,7 +106,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const stores=storesResult.rows.map((row)=>({id:row.id,name:row.name,active:row.active,archivedAt:row.archived_at}));
   const storeName=new Map(stores.map((row)=>[row.id,row.name]));
   const serialsByProduct=new Map();for(const row of serialsResult.rows){const arr=serialsByProduct.get(row.product_id)||[];arr.push({id:row.id,serial:row.serial,storeId:row.store_id,status:row.status,receivedAt:row.created_at,saleId:row.sale_id,transferId:row.transfer_id||null});serialsByProduct.set(row.product_id,arr)}
-  const batchesByProduct=new Map();for(const row of batchesResult.rows){const arr=batchesByProduct.get(row.product_id)||[];arr.push({id:row.id,storeId:row.store_id,receivedAt:row.created_at,invoiceNo:row.reference_id,batchNo:row.batch_no,expiryDate:row.expiry_date,quantity:n(row.received_quantity),remaining:n(row.remaining_quantity),costPrice:n(row.unit_cost)});batchesByProduct.set(row.product_id,arr)}
+  const batchesByProduct=new Map();for(const row of batchesResult.rows){const arr=batchesByProduct.get(row.product_id)||[];arr.push({id:row.id,storeId:row.store_id,receivedAt:row.created_at,invoiceNo:row.reference_id,batchNo:row.batch_no,manufacturedDate:row.manufactured_date,expiryDate:row.expiry_date,quantity:n(row.received_quantity),remaining:n(row.remaining_quantity),costPrice:n(row.unit_cost)});batchesByProduct.set(row.product_id,arr)}
   const inventory=productsResult.rows.map((row)=>({...mapProduct(row),serializedUnits:serialsByProduct.get(row.id)||[],stockBatches:batchesByProduct.get(row.id)||[]}));
 
   const saleMap=(row)=>{

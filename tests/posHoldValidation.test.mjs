@@ -12,3 +12,5 @@ test('hold rejects malformed lines, duplicate products and fractional stock prec
  assert.ok(holds.holdSchema);
  for(const cart of [[{id:'local',cartQty:1}],[{id,cartQty:0}],[{id,cartQty:0.0001}],Array(2).fill(payload.cart[0])])assert.equal(holds.holdSchema.safeParse({...payload,cart}).success,false);
 });
+
+test('holds retain packaging intent alongside base stock quantities',()=>{const input=holds.holdSchema.parse({...payload,cart:[{...payload.cart[0],packUnit:'quti',cartQty:6}]});assert.equal(holds.holdIntent(input).cart[0].packUnit,'quti');assert.equal(holds.holdIntent(input).cart[0].cartQty,6);});

@@ -9,7 +9,7 @@ const linked=(table,parent,foreignKey,key='t.id')=>Object.freeze({
 export const RECOVERY_ROW_SOURCES=Object.freeze([
   Object.freeze({table:'organizations',key:'t.id',where:'t.id=$1'}),
   ...[
-    'products','stores','users','customers','sales','sale_returns',
+    'products','stores','warehouses','users','customers','sales','sale_returns',
     'customer_ledger','customer_payment_allocations','customer_loyalty_ledger',
     'inventory_batches','product_serials','stock_movements','shifts','shift_movements',
     'suppliers','supplier_invoices','supplier_payments','expenses','stock_transfers',
@@ -18,6 +18,7 @@ export const RECOVERY_ROW_SOURCES=Object.freeze([
     'file_assets','audit_logs','platform_promo_uses','platform_promo_reservations','extra_store_entitlements',
   ].map(scoped),
   Object.freeze({table:'inventory_balances',key:"(t.store_id::text || ':' || t.product_id::text)",where:'t.organization_id=$1'}),
+  Object.freeze({table:'warehouse_balances',key:"(t.store_id::text || ':' || t.warehouse_id::text || ':' || t.product_id::text)",where:'t.organization_id=$1'}),
   Object.freeze({table:'workspace_revisions',key:'t.organization_id',where:'t.organization_id=$1'}),
   Object.freeze({table:'organization_trial_claims',key:'t.organization_id',where:'t.organization_id=$1'}),
   linked('sale_items','sales','sale_id'),

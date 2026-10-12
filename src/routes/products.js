@@ -9,6 +9,7 @@ import { isBranchLocked } from "../lib/storeScope.js";
 import { catalogPageQuerySchema, decodeCatalogCursor, encodeCatalogCursor } from "../lib/catalogCursor.js";
 import { addCatalogSearchFilter } from "../lib/catalogSearch.js";
 import { assertNoLiveProductInventory } from "../services/productDeletionGuard.js";
+import {validateProductMetadata} from '../lib/productOptions.js';
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -25,7 +26,7 @@ const productSchema = z.object({
   sellPrice: z.coerce.number().min(0).default(0),
   wholesalePrice: z.coerce.number().min(0).default(0),
   minStock: z.coerce.number().min(0).default(0),
-  metadata: z.record(z.string(), z.any()).default({}),
+  metadata: z.record(z.string(), z.any()).default({}).transform(validateProductMetadata),
 });
 
 const productAuditSnapshot = (row) => ({

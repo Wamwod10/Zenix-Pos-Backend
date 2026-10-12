@@ -9,7 +9,7 @@ import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js"
 import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js";
 import { hasPermission } from "../lib/permissions.js";
 import { assertShiftCashAvailable, shiftExpectedCash } from "../lib/shiftCash.js";
-import { branchRegisterKey, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
+import { assertEmployeeShiftAvailableWithLock, branchRegisterKey, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -34,6 +34,7 @@ router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, r
   const shift = await withTransaction(async (client) => {
     const store = await assertOrganizationStore(client, req.user.organizationId, input.storeId);
     await lockStoreTradingAuthorization(client, {organizationId:req.user.organizationId,storeId:input.storeId});
+    await assertEmployeeShiftAvailableWithLock(client, req.user.organizationId, req.user.id, input.storeId);
     const existing = await findOpenBranchShiftWithLock(client, req.user.organizationId, input.storeId);
     if (existing) throw new HttpError(409, "Bu filialda smena allaqachon ochiq", "SHIFT_ALREADY_OPEN");
     const registerKey = branchRegisterKey(input.storeId);

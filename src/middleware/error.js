@@ -37,7 +37,8 @@ export function errorHandler(error, req, res, _next) {
   }
   if (error?.code === "23505") {
     const message = constraintMessages[error.constraint] || "Bu qiymat allaqachon mavjud";
-    return res.status(409).json({ ok:false, error:{ code:"DUPLICATE", message } });
+    const code = ["users_org_username_unique", "users_username_global_unique"].includes(error.constraint) ? "USERNAME_EXISTS" : "DUPLICATE";
+    return res.status(409).json({ ok:false, error:{ code, message } });
   }
   if (error?.code === "23503") return res.status(409).json({ ok:false, error:{ code:"DEPENDENCY", message:"Bog‘liq ma’lumot mavjudligi sabab amalni bajarib bo‘lmadi" } });
   if (error?.code === "23514" || error?.code === "23502") {
