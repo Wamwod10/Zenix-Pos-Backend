@@ -8,8 +8,8 @@ const quoteLiteral=(value)=>`'${String(value).replaceAll("'","''")}'`;
 const constraintCatalogSql=`SELECT constraint_row.conname AS constraint_name,
   child_table.relname AS child_table,
   parent_table.relname AS parent_table,
-  array_agg(child_column.attname ORDER BY key_row.position) AS child_columns,
-  array_agg(parent_column.attname ORDER BY key_row.position) AS parent_columns
+  array_agg(child_column.attname::text ORDER BY key_row.position) AS child_columns,
+  array_agg(parent_column.attname::text ORDER BY key_row.position) AS parent_columns
 FROM pg_constraint constraint_row
 JOIN pg_class child_table ON child_table.oid=constraint_row.conrelid
 JOIN pg_class parent_table ON parent_table.oid=constraint_row.confrelid

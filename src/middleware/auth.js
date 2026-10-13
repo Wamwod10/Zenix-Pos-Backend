@@ -3,6 +3,8 @@ import { env } from "../config/env.js";
 import { sha256 } from "../lib/crypto.js";
 import { HttpError } from "../lib/http.js";
 import { hasPermission } from "../lib/permissions.js";
+import { isBusinessMutation } from '../services/subscriptions.js';
+import {requestScope} from '../lib/requestScope.js';
 
 export async function requireAuth(req, _res, next) {
   try {
@@ -13,7 +15,8 @@ export async function requireAuth(req, _res, next) {
       SELECT s.id AS session_id, s.expires_at, s.last_seen_at, u.id, u.organization_id, u.store_id, u.name, u.username, u.phone,
              u.app_role, u.permission_overrides, u.active, u.must_change_password, o.name AS organization_name, o.license_status, o.expiry_date, o.timezone AS organization_timezone,
              CASE WHEN o.expiry_date IS NULL THEN true ELSE o.expiry_date >= (now() AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent'))::date END AS license_date_valid,
-             o.settings AS organization_settings
+             o.settings AS organization_settings, subscription_can_write(o.id) AS subscription_writable,
+             subscription_effective_plan(o.id) AS plan_code
       FROM auth_sessions s
       JOIN users u ON u.id=s.user_id
       LEFT JOIN organizations o ON o.id=u.organization_id
@@ -27,16 +30,20 @@ export async function requireAuth(req, _res, next) {
       phone:row.phone, appRole:row.app_role, permissionOverrides:row.permission_overrides || {}, organizationName:row.organization_name,
       sessionId:row.session_id, licenseStatus:row.license_status, expiryDate:row.expiry_date, organizationTimezone:row.organization_timezone,
       licenseDateValid:row.license_date_valid!==false,
+      subscriptionWritable:row.subscription_writable,planCode:row.plan_code,
       rolePermissions:row.organization_settings?.rolePermissions || {}, organizationSettings:row.organization_settings||{},
       forcePasswordChange:Boolean(row.must_change_password),
     };
     const passwordSafePaths=new Set(['/api/auth/me','/api/auth/logout','/api/users/me/password']);
     if(req.user.forcePasswordChange&&!passwordSafePaths.has(String(req.originalUrl||'').split('?')[0]))throw new HttpError(403,'Avval yangi parol o‘rnating','PASSWORD_CHANGE_REQUIRED');
+    if(req.user.organizationId&&isBusinessMutation(req.method,req.originalUrl)){
+      let denied;requireActiveLicense(req,_res,error=>{denied=error});if(denied)throw denied;
+    }
     const lastSeenAt=row.last_seen_at?new Date(row.last_seen_at).getTime():0;
     if(!lastSeenAt||Date.now()-lastSeenAt>60_000){
       pool.query("UPDATE auth_sessions SET last_seen_at=now() WHERE id=$1", [row.session_id]).catch(()=>{});
     }
-    next();
+    requestScope.run({organizationId:req.user.organizationId,businessWrite:isBusinessMutation(req.method,req.originalUrl)},next);
   } catch (error) { next(error); }
 }
 
@@ -53,9 +60,10 @@ export const requireOrganization = (req, _res, next) => {
 export const requireActiveLicense = (req, _res, next) => {
   const status = String(req.user?.licenseStatus || "PAYMENT_REQUIRED").toUpperCase();
   if (status === "SUSPENDED") return next(new HttpError(403, "Akkaunt administrator tomonidan bloklangan", "ACCOUNT_SUSPENDED"));
+  if(['GET','HEAD','OPTIONS'].includes(req.method))return next();
   const trialEnd=req.user?.organizationSettings?.trialEndsAt;
   const dateValid = req.user?.licenseDateValid !== false && (!trialEnd || Date.parse(trialEnd)>Date.now());
-  const active = (status === "ACTIVE" || status === "APPROVED") && dateValid && !req.user?.organizationSettings?.billingHold;
+  const active = req.user?.subscriptionWritable ?? ((status === "ACTIVE" || status === "APPROVED") && dateValid && !req.user?.organizationSettings?.billingHold);
   if (!active) return next(new HttpError(402, "Zenix POS tarifini faollashtiring", req.user?.organizationSettings?.billingHold ? "BILLING_HOLD" : status === "REVIEW" ? "LICENSE_REVIEW" : status === "EXPIRED" || !dateValid ? "LICENSE_EXPIRED" : "PAYMENT_REQUIRED"));
   next();
 };

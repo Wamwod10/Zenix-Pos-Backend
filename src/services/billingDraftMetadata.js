@@ -7,6 +7,7 @@ export function buildBillingDraftMetadata(input, calculated) {
   delete safe.intent;
   delete safe.purpose;
   delete safe.activeStores;
+  delete safe.subscription;
   return {
     ...safe,
     intent: calculated.intent,
@@ -14,6 +15,7 @@ export function buildBillingDraftMetadata(input, calculated) {
       ? `Qo‘shimcha filial limiti · ${calculated.extraStoreCount} ta`
       : `${BILLING_PLANS[calculated.plan]?.label || calculated.plan} tarif`,
     activeStores: calculated.activeStores,
+    ...(calculated.subscription?{subscription:calculated.subscription}:{}),
     extraDuration:calculated.type==='EXTRA'?calculated.extraDuration:null,
     ...(calculated.pricingRule?{pricingRule:calculated.pricingRule}:{}),
     promoId:calculated.promoId||null,promoCode:calculated.promoCode||"",promoDiscount:calculated.promoDiscount||0,promoDiscountPercent:calculated.promoDiscountPercent||0,

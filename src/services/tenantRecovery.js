@@ -16,7 +16,14 @@ export const RECOVERY_ROW_SOURCES=Object.freeze([
     'inventory_counts','sale_holds','business_days','billing_drafts','billing_receipts',
     'billing_payments','telegram_link_tokens','telegram_connections','notification_outbox',
     'file_assets','audit_logs','platform_promo_uses','platform_promo_reservations','extra_store_entitlements',
+    'subscription_terms','subscription_events','pos_registers',
   ].map(scoped),
+  Object.freeze({table:'ai_monthly_usage',key:"(t.organization_id::text || ':' || t.period_start::text)",where:'t.organization_id=$1'}),
+  Object.freeze({table:'ai_requests',key:"(t.user_id::text || ':' || t.request_id::text)",where:'t.organization_id=$1'}),
+  // Shared catalogue/budget state belongs to the restored database, not one tenant.
+  // Only counts/digests leave the offline verifier, never values from other businesses.
+  Object.freeze({table:'subscription_plan_versions',key:"(t.plan_code || ':' || t.version::text)",where:'TRUE'}),
+  Object.freeze({table:'ai_daily_budget',key:'t.day',where:'TRUE'}),
   Object.freeze({table:'inventory_balances',key:"(t.store_id::text || ':' || t.product_id::text)",where:'t.organization_id=$1'}),
   Object.freeze({table:'warehouse_balances',key:"(t.store_id::text || ':' || t.warehouse_id::text || ':' || t.product_id::text)",where:'t.organization_id=$1'}),
   Object.freeze({table:'workspace_revisions',key:'t.organization_id',where:'t.organization_id=$1'}),
@@ -33,7 +40,7 @@ export const RECOVERY_ROW_SOURCES=Object.freeze([
 export const RECOVERY_ROW_TABLES=Object.freeze(RECOVERY_ROW_SOURCES.map(source=>source.table));
 export const RECOVERY_MAX_ROWS_PER_TABLE=5000;
 const SQL=Object.freeze(RECOVERY_ROW_SOURCES.map(({table,key,where})=>Object.freeze([
-  table,`SELECT encode(sha256(convert_to(to_jsonb(t)::text, 'UTF8')), 'hex') AS fingerprint FROM ${table} t WHERE ${where} ORDER BY ${key} LIMIT $2`,
+  table,`SELECT encode(sha256(convert_to(to_jsonb(t)::text, 'UTF8')), 'hex') AS fingerprint FROM ${table} t WHERE ${where} AND $1::uuid IS NOT NULL ORDER BY ${key} LIMIT $2`,
 ])));
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const fail=(message,code)=>Object.assign(new Error(message),{code});

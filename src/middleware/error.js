@@ -1,5 +1,6 @@
 import { ZodError } from "zod";
 import { HttpError } from "../lib/http.js";
+import {resourceLimitFailure} from '../services/resourceLimits.js';
 
 const constraintMessages = {
   products_org_sku_unique: "Bu SKU allaqachon mavjud",
@@ -23,6 +24,11 @@ const validationDetails=(error)=>error.issues?.map((issue)=>({
 }))||[];
 
 export function errorHandler(error, req, res, _next) {
+  if(error?.code==='ZX402')return res.status(402).json({ok:false,error:{code:'LICENSE_EXPIRED',message:'Biznes faqat o‘qish rejimida. Obunani faollashtiring.'}});
+  if(error?.code==='ZX409')return res.status(409).json({ok:false,error:resourceLimitFailure(error)});
+  if(error?.code==='ZX423')return res.status(409).json({ok:false,error:{code:'REGISTER_HAS_OPEN_SHIFT',message:'Kassani faolsizlantirishdan oldin smenani yoping.'}});
+  if(error?.code==='ZX424')return res.status(409).json({ok:false,error:{code:'REGISTER_INACTIVE',message:'Faol va joriy filialga tegishli kassani tanlang.'}});
+  if(error?.code==='ZX403')return res.status(403).json({ok:false,error:{code:'FORBIDDEN',message:'Tashkilot doirasi noto‘g‘ri.'}});
   if (error instanceof ZodError) {
     return res.status(400).json({
       ok:false,

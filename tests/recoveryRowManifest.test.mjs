@@ -67,6 +67,7 @@ test('all linked sources use proven tenant parents and immutable allowlist entri
   for(const source of RECOVERY_ROW_SOURCES){
     assert.ok(Object.isFrozen(source));assert.match(source.table,/^[a-z_]+$/);assert.doesNotMatch(source.where,/;|--|\/\*/);
     if(parents[source.table])assert.match(source.where,new RegExp(`FROM ${parents[source.table]} p WHERE p.id=t.[a-z_]+ AND p.organization_id=\\$1`));
+    else if(['subscription_plan_versions','ai_daily_budget'].includes(source.table))assert.equal(source.where,'TRUE');
     else assert.match(source.where,source.table==='organizations'?/^t.id=\$1$/:/^t.organization_id=\$1$/);
   }
 });

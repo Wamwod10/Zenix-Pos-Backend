@@ -1,5 +1,6 @@
 import { databaseDateISO } from '../lib/businessDate.js';
 import { HttpError } from '../lib/http.js';
+import {isDeepStrictEqual} from 'node:util';
 
 // A billing draft is a price quote, not a perpetual authorization to charge a
 // historical plan/branch count. Recalculate immediately before accepting a
@@ -12,6 +13,7 @@ export function draftRecalculationInput(draft) {
   return {
     type: draft.type,
     plan: draft.plan,
+    ...(draft.metadata?.subscription?{planCode:draft.metadata.subscription.planCode,billingInterval:draft.metadata.subscription.billingInterval}:{}),
     intent: draft.type === 'EXTRA' ? 'EXTRA' : draft.metadata?.intent || 'RENEW',
     selectedEndDate: date(draft.selected_end_date),
     extraStoreCount: Number(draft.extra_store_count ?? 0),
@@ -32,6 +34,7 @@ export function assertBillingDraftCurrent(draft, calculated) {
     money(draft.extra_store_amount) === calculated.extraStoreAmount &&
     (draft.type!=='EXTRA'||(draft.metadata?.extraDuration||'UNTIL_LICENSE')===calculated.extraDuration) &&
     money(draft.total_amount) === calculated.totalAmount &&
+    (!draft.metadata?.subscription||isDeepStrictEqual(draft.metadata.subscription,calculated.subscription)) &&
     // Legacy drafts may not have this hint; validate every new quote that does.
     (draft.metadata?.activeStores == null ||
       money(draft.metadata.activeStores) === calculated.activeStores);

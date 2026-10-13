@@ -35,9 +35,16 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "030_registration_phone_throttle.sql",
   "031_branch_warehouses.sql",
   "032_warehouse_balance_presence.sql",
+  "033_subscription_billing.sql",
+  "034_resource_entitlements.sql",
+  "035_zenix_ai.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
+  'ai_requests_actor_tenant_fk',
+  'pos_registers_store_tenant_fk','shifts_register_tenant_fk',
+  'subscription_terms_payment_tenant_fk',
+  'subscription_events_payment_tenant_fk',
   "warehouse_partition_versions_balance_tenant_fk",
   "warehouses_store_tenant_fk",
   "warehouse_balances_warehouse_tenant_fk",
@@ -114,6 +121,11 @@ export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
 ]);
 
 export const REQUIRED_TABLES = Object.freeze([
+  'ai_requests','ai_monthly_usage','ai_daily_budget',
+  "pos_registers",
+  'subscription_plan_versions',
+  'subscription_terms',
+  'subscription_events',
   "warehouse_partition_versions",
   "schema_migrations",
   "organizations",
@@ -171,6 +183,8 @@ export const REQUIRED_TABLES = Object.freeze([
 ]);
 
 export const REQUIRED_FOREIGN_KEY_TABLES = Object.freeze([
+  'subscription_terms',
+  'subscription_events',
   "warehouse_partition_versions",
   "warehouses",
   "warehouse_balances",
@@ -236,6 +250,8 @@ export const REQUIRED_UNIQUE_CONSTRAINT_TABLES = Object.freeze([
 ]);
 
 export const REQUIRED_INDEXES = Object.freeze([
+  "pos_registers_default_unique","pos_registers_active_idx",
+  'subscription_terms_active_idx',
   "inventory_balances_scope_unique",
   "warehouse_partition_versions_pkey",
   "warehouses_name_unique",
@@ -304,9 +320,10 @@ export const REQUIRED_INDEXES = Object.freeze([
   "customer_loyalty_org_customer_idx",
 ]);
 
-export const REQUIRED_COLUMNS = Object.freeze(["inventory_batches.manufactured_date", "warehouse_partition_versions.epoch"]);
+export const REQUIRED_COLUMNS = Object.freeze(["inventory_batches.manufactured_date", "warehouse_partition_versions.epoch",'organizations.plan_code','organizations.subscription_version','organizations.subscription_credit','shifts.register_id','pos_registers.register_key','pos_registers.active','pos_registers.is_default']);
 export const REQUIRED_CHECKS = Object.freeze(["inventory_batch_date_order", "warehouses_name_check", "warehouses_default_active_check", "inventory_balances_quantity_finite", "warehouse_balances_quantity_finite"]);
-export const REQUIRED_TRIGGERS = Object.freeze(["inventory_balances.inventory_balance_identity_guard", "inventory_balances.inventory_warehouse_no_truncate", "warehouse_balances.warehouse_balances_no_truncate", "warehouses.warehouses_no_truncate", "stores.stores_default_warehouse", "inventory_balances.inventory_warehouse_balance_sync", "inventory_balances.inventory_warehouse_partition_guard", "warehouse_balances.warehouse_partition_guard", "warehouses.warehouse_default_guard", "stores.stores_warehouse_default_guard"]);
+export const REQUIRED_TRIGGERS = Object.freeze(["pos_registers.subscription_business_write_guard","pos_registers.pos_lifecycle_guard","shifts.pos_shift_register_guard", ...["users","stores","warehouses","pos_registers","products","customers"].map(table=>`${table}.resource_capacity_guard`),"inventory_balances.inventory_balance_identity_guard", "inventory_balances.inventory_warehouse_no_truncate", "warehouse_balances.warehouse_balances_no_truncate", "warehouses.warehouses_no_truncate", "stores.stores_default_warehouse", "inventory_balances.inventory_warehouse_balance_sync", "inventory_balances.inventory_warehouse_partition_guard", "warehouse_balances.warehouse_partition_guard", "warehouses.warehouse_default_guard", "stores.stores_warehouse_default_guard",
+  ...['organizations','stores','users','products','inventory_balances','warehouse_balances','warehouses','inventory_batches','product_serials','stock_movements','shifts','shift_movements','sales','sale_items','sale_payments','sale_returns','suppliers','supplier_invoices','supplier_invoice_items','supplier_payments','expenses','stock_transfers','stock_transfer_items','inventory_counts','sale_holds','business_days','customers','customer_ledger','customer_payment_allocations','customer_loyalty_ledger','file_assets','telegram_link_tokens','telegram_connections'].map(table=>`${table}.subscription_business_write_guard`)]);
 export const REQUIRED_DEFERRED_TRIGGERS = Object.freeze(["inventory_balances.inventory_warehouse_partition_guard", "warehouse_balances.warehouse_partition_guard", "warehouses.warehouse_default_guard", "stores.stores_warehouse_default_guard"]);
 export const REQUIRED_UNIQUE_INDEXES = Object.freeze(["inventory_balances_scope_unique", "warehouse_partition_versions_pkey", "warehouses_name_unique", "warehouses_default_unique"]);
 
@@ -364,7 +381,13 @@ export const readDatabaseSchema = async (db) => {
       OR (conname IN ('warehouse_balances_warehouse_tenant_fk','warehouse_balances_product_tenant_fk') AND t.relname='warehouse_balances' AND convalidated))`),
     db.query(`SELECT table_name || '.' || column_name AS name FROM information_schema.columns WHERE table_schema='public'
       AND ((table_name='inventory_batches' AND column_name='manufactured_date' AND data_type='date')
-      OR (table_name='warehouse_partition_versions' AND column_name='epoch' AND data_type='boolean' AND is_nullable='NO'))`),
+      OR (table_name='warehouse_partition_versions' AND column_name='epoch' AND data_type='boolean' AND is_nullable='NO')
+      OR (table_name='organizations' AND column_name='plan_code' AND data_type='text')
+      OR (table_name='organizations' AND column_name='subscription_version' AND data_type='bigint' AND is_nullable='NO')
+      OR (table_name='organizations' AND column_name='subscription_credit' AND data_type='numeric' AND is_nullable='NO')
+      OR (table_name='shifts' AND column_name='register_id' AND data_type='uuid')
+      OR (table_name='pos_registers' AND column_name='register_key' AND data_type='text' AND is_nullable='NO')
+      OR (table_name='pos_registers' AND column_name IN ('active','is_default') AND data_type='boolean' AND is_nullable='NO'))`),
     db.query(`SELECT conname FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid WHERE connamespace='public'::regnamespace AND contype='c' AND convalidated
       AND ((conname='inventory_batch_date_order' AND t.relname='inventory_batches')
       OR (conname IN ('warehouses_name_check','warehouses_default_active_check') AND t.relname='warehouses')

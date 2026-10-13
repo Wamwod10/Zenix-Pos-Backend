@@ -13,6 +13,7 @@ test('pre-route suspension uses ACCOUNT_SUSPENDED while license failures retain 
   const app=express();let reached=0;
   app.use((req,_res,next)=>{req.cookies={[env.sessionCookieName]:'test-session'};next();});
   app.get('/protected',requireAuth,requireActiveLicense,(_req,res)=>{reached++;res.json({ok:true});});
+  app.post('/protected',requireAuth,requireActiveLicense,(_req,res)=>{reached++;res.json({ok:true});});
   app.get('/license',(req,_res,next)=>{req.user={organizationId:'org',licenseStatus:row.license_status,licenseDateValid:row.license_date_valid,organizationSettings:row.organization_settings};next();},requireActiveLicense,(_req,res)=>res.json({ok:true}));
   app.use(errorHandler);
   const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
@@ -27,7 +28,8 @@ test('pre-route suspension uses ACCOUNT_SUSPENDED while license failures retain 
       ['ACTIVE',false,{},'LICENSE_EXPIRED'],['ACTIVE',true,{billingHold:true},'BILLING_HOLD'],
     ]){
       row={...row,license_status:status,license_date_valid:dateValid,organization_settings:settings};
-      const response=await fetch(base+'/protected');assert.equal(response.status,402);assert.equal((await response.json()).error.code,code);
+      const read=await fetch(base+'/protected');assert.equal(read.status,200,'expired users retain read-only access');
+      const response=await fetch(base+'/protected',{method:'POST'});assert.equal(response.status,402);assert.equal((await response.json()).error.code,code);
     }
   }finally{pool.query=original;await new Promise(resolve=>server.close(resolve));}
 });

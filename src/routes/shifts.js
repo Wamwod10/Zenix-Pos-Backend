@@ -1,3 +1,4 @@
+import {resolveShiftRegister} from '../services/posRegisters.js';
 import { Router } from "express";
 import { z } from "zod";
 import { withTransaction } from "../db/tx.js";
@@ -9,7 +10,7 @@ import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js"
 import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js";
 import { hasPermission } from "../lib/permissions.js";
 import { assertShiftCashAvailable, shiftExpectedCash } from "../lib/shiftCash.js";
-import { assertEmployeeShiftAvailableWithLock, branchRegisterKey, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
+import { assertEmployeeShiftAvailableWithLock, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -26,6 +27,7 @@ router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, r
   const input = z.object({
     storeId: z.string().uuid(),
     openingCash: z.coerce.number().min(0).default(0),
+    registerId: z.string().uuid().optional(),
     registerKey: z.string().trim().max(80).optional(),
     metadata: z.record(z.string(), z.any()).default({}),
   }).parse(req.body);
@@ -37,12 +39,13 @@ router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, r
     await assertEmployeeShiftAvailableWithLock(client, req.user.organizationId, req.user.id, input.storeId);
     const existing = await findOpenBranchShiftWithLock(client, req.user.organizationId, input.storeId);
     if (existing) throw new HttpError(409, "Bu filialda smena allaqachon ochiq", "SHIFT_ALREADY_OPEN");
-    const registerKey = branchRegisterKey(input.storeId);
+    const register = await resolveShiftRegister(client,{organizationId:req.user.organizationId,storeId:input.storeId,registerId:input.registerId});
+    const registerKey = register.register_key;
 
     const row = (await client.query(`
-      INSERT INTO shifts(organization_id,store_id,cashier_id,register_key,opening_cash,metadata)
-      VALUES($1,$2,$3,$4,$5,$6) RETURNING *`, [
-      req.user.organizationId, input.storeId, req.user.id, registerKey, input.openingCash, input.metadata,
+      INSERT INTO shifts(organization_id,store_id,cashier_id,register_key,opening_cash,metadata,register_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [
+      req.user.organizationId, input.storeId, req.user.id, registerKey, input.openingCash, input.metadata, register.id,
     ])).rows[0];
 
     await writeAudit(client, {

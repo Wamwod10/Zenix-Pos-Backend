@@ -135,6 +135,7 @@ test("customer payment derives the assigned store when a branch user omits store
   }] });
   const client = {
     async query(sql, params = []) {
+      if(sql.includes('SELECT subscription_can_write'))return {rows:[{writable:true}]};
       if (/SELECT id,name,active FROM stores/.test(sql)) return { rows: [{ id: assignedStoreId, name: "Filial", active: true }] };
       if (/SELECT \* FROM customers/.test(sql)) return { rows: [{ id: "00000000-0000-4000-8000-000000000004", name: "Mijoz" }] };
       if (/SELECT COALESCE\(sum\(amount\),0\) balance/.test(sql)) return { rows: [{ balance: "20000" }] };

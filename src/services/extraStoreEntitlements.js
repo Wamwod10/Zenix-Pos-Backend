@@ -1,5 +1,6 @@
 import { addMonths, daysBetween, priceExtraStoreByMonths, BILLING_PLANS } from '../config/billing.js';
 import { organizationCalendarDateISO } from '../lib/businessDate.js';
+import {subscriptionPlan} from '../config/subscriptions.js';
 
 export const EXTRA_DURATIONS = Object.freeze(['UNTIL_LICENSE','MONTHLY','ANNUAL']);
 
@@ -27,6 +28,10 @@ export async function activeExtraStoreCount(client, organization, today = organi
 }
 
 export async function effectiveStoreLimit(client, organization, businessDate) {
+  if(organization.plan_code){
+    const result=await client.query('SELECT subscription_effective_plan($1) AS code',[organization.id]);
+    return subscriptionPlan(result.rows[0].code,organization.pricing_version||1).limits.stores+Number(organization.legacy_store_bonus||0)+await activeExtraStoreCount(client,organization,businessDate);
+  }
   return Number(organization.store_limit||0) + await activeExtraStoreCount(client, organization, businessDate);
 }
 

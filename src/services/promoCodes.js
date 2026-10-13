@@ -1,7 +1,13 @@
 import { HttpError } from "../lib/http.js";
 import { databaseDateISO } from "../lib/businessDate.js";
+import {moneyUnits,moneyDecimal,roundRatio} from '../config/subscriptions.js';
 export const normalizePromoCode = value => String(value||"").trim().toUpperCase();
 export function discountForAmount(amount,percentage){return Math.round(Number(amount||0)*Number(percentage||0)/100)}
+export function subscriptionDiscountForAmount(amount,percentage){
+ const percent=Number(percentage);
+ if(!Number.isInteger(percent)||percent<0||percent>100)throw new HttpError(400,'Promokod foizi noto‘g‘ri','INVALID_PROMO_PERCENT');
+ return Number(moneyDecimal(roundRatio(moneyUnits(amount||0),percent,100)));
+}
 export async function lockValidPromo(client,{code,plan,organizationId,lock=true}){
  const normalized=normalizePromoCode(code);
  const promo=(await client.query(`SELECT * FROM platform_promos WHERE code=$1${lock?' FOR UPDATE':''}`,[normalized])).rows[0];
@@ -81,10 +87,12 @@ export async function reservePromo(client, { paymentId, organizationId }) {
   if (payment.type !== "LICENSE" || draft.type !== "LICENSE") throw new HttpError(409, "Promokod faqat tarif uchun qo'llanadi", "PROMO_LICENSE_ONLY");
   if (!["open", "submitted"].includes(draft.status) || (draft.status === "open" && new Date(draft.expires_at).getTime() <= Date.now())) throw staleQuote();
   const promo = await lockValidPromo(client, { code: draft.metadata.promoCode, plan: payment.plan, organizationId: payment.organization_id });
-  const discount = discountForAmount(draft.base_amount, promo.discount_percent);
+  const modern=Boolean(draft.metadata.subscription);
+  const discount = (modern?subscriptionDiscountForAmount:discountForAmount)(draft.base_amount, promo.discount_percent);
+  const expectedTotal=modern?Number(moneyDecimal(moneyUnits(draft.base_amount)+moneyUnits(draft.extra_store_amount)-moneyUnits(discount))):Number(draft.base_amount)+Number(draft.extra_store_amount)-discount;
   if (draft.metadata.promoId !== promo.id || Number(draft.metadata.promoDiscountPercent) !== Number(promo.discount_percent) ||
       Number(draft.metadata.promoDiscount) !== discount || draft.plan !== payment.plan ||
-      Number(draft.total_amount) !== Number(draft.base_amount) + Number(draft.extra_store_amount) - discount ||
+      Number(draft.total_amount) !== expectedTotal ||
       Number(payment.amount) !== Number(draft.total_amount)) throw staleQuote();
   const quote = entitlementQuote(payment);
   try {

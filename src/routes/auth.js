@@ -13,6 +13,7 @@ import {consumePasswordReset} from '../services/passwordReset.js';
 import {requestTrialOtp,verifyTrialOtp,consumeTrialVerification,normalizeOtpPhone} from '../services/trialOtp.js';
 import {writeAudit} from '../services/audit.js';
 import {trialVerificationPolicy} from '../services/trialVerificationPolicy.js';
+import {subscriptionPlan,SUBSCRIPTION_CATALOG,SUBSCRIPTION_PRICING_VERSION} from '../config/subscriptions.js';
 
 export function trialPeriod(organization,now=new Date()){
   const expiry=new Date(`${organizationCalendarDateISO(organization,now)}T12:00:00Z`);
@@ -23,7 +24,9 @@ export function trialPeriod(organization,now=new Date()){
 const router=Router();
 const cookieOptions={httpOnly:true,secure:env.isProduction,sameSite:env.isProduction?"none":"lax",path:"/",maxAge:env.sessionTtlDays*86400000};
 const loginSchema=z.object({username:z.string().trim().min(1).max(120),password:z.string().min(1).max(300)});
-export const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().max(40).refine(value=>/^998\d{9}$/.test(value.replace(/\D/g,'')),'Telefon raqamini to‘liq kiriting'),username:z.string().trim().min(3).max(120),password:z.string().min(8).max(300),startOption:z.enum(["TRIAL","MONTHLY","ANNUAL"]).default("TRIAL"),registrationToken:z.string().max(100).optional()});
+export const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().max(40).refine(value=>/^998\d{9}$/.test(value.replace(/\D/g,'')),'Telefon raqamini to‘liq kiriting'),username:z.string().trim().min(3).max(120),password:z.string().min(8).max(300),planCode:z.enum(['START','BUSINESS','PREMIUM']).optional(),startOption:z.enum(["TRIAL","PAID","MONTHLY","ANNUAL"]).default("TRIAL"),registrationToken:z.string().max(100).optional()}).superRefine((input,ctx)=>{
+  if(input.planCode&&!['TRIAL','PAID'].includes(input.startOption))ctx.addIssue({code:'custom',path:['startOption'],message:'To‘lov davrini checkout bosqichida tanlang'});
+});
 
 export async function claimOrganizationTrial(client,organizationId,phone){
   const phoneHash=sha256(`phone:${phone.replace(/\D/g,'')}`);
@@ -74,7 +77,7 @@ async function recordRegistrationAttempt(ipAddress,phone){
 router.get('/registration-config',asyncRoute(async(_req,res)=>{
   const {configuredMode,temporaryExpired,...publicPolicy}=trialVerificationPolicy();
   res.set('Cache-Control','no-store');
-  ok(res,publicPolicy);
+  ok(res,{...publicPolicy,pricingVersion:SUBSCRIPTION_PRICING_VERSION,plans:Object.values(SUBSCRIPTION_CATALOG[SUBSCRIPTION_PRICING_VERSION])});
 }));
 router.post('/otp/request',asyncRoute(async(req,res)=>{
   const input=z.object({phone:z.string().max(40)}).strict().parse(req.body);
@@ -86,6 +89,7 @@ router.post('/otp/verify',asyncRoute(async(req,res)=>{
 }));
 router.post("/register",asyncRoute(async(req,res)=>{
   const input=registerSchema.parse(req.body);
+  const planCode=input.planCode||'BUSINESS';
   await recordRegistrationAttempt(requestIp(req),input.phone);
   const result=await withTransaction(async(client)=>{
     const policy=trialVerificationPolicy();
@@ -101,7 +105,8 @@ router.post("/register",asyncRoute(async(req,res)=>{
       if(verification)trial.settings.phoneVerifiedAt=verification.verified_at;
       else trial.settings.trialPhoneVerificationExceptionUntil=policy.temporaryUntil;
     }
-    await client.query(`UPDATE organizations SET plan=$2,license_status=$3,expiry_date=$4,settings=$5::jsonb WHERE id=$1`,[org.id,input.startOption==='MONTHLY'?'MONTHLY':'ANNUAL',trial?'ACTIVE':'PAYMENT_REQUIRED',trial?.expiryDate||null,JSON.stringify(trial?.settings||{trialUsed:false})]);
+    await client.query(`UPDATE organizations SET plan=$2,license_status=$3,expiry_date=$4,settings=$5::jsonb,plan_code=$6,pricing_version=$7,store_limit=$8 WHERE id=$1`,[org.id,'ANNUAL',trial?'ACTIVE':'PAYMENT_REQUIRED',trial?.expiryDate||null,JSON.stringify(trial?.settings||{trialUsed:false}),planCode,SUBSCRIPTION_PRICING_VERSION,subscriptionPlan(planCode).limits.stores]);
+    await client.query("SELECT set_config('zenix.registration_organization',$1,true)",[org.id]);
     const store=(await client.query(`INSERT INTO stores(organization_id,name) VALUES($1,'Asosiy filial') RETURNING *`,[org.id])).rows[0];
     const user=(await client.query(`INSERT INTO users(organization_id,store_id,name,username,phone,password_hash,app_role) VALUES($1,$2,$3,$4,$5,$6,'OWNER') RETURNING *`,[org.id,store.id,input.ownerName,input.username.toLowerCase(),input.phone,passwordHash])).rows[0];
     if(verification)await writeAudit(client,{organizationId:org.id,userId:user.id,storeId:store.id,action:'trial_phone_verified',entityType:'organization',entityId:org.id,title:'Trial phone verified',metadata:{challengeId:verification.id}});
