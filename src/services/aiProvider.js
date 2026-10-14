@@ -1,5 +1,5 @@
 import {HttpError} from '../lib/http.js';
-import {tokenCostMicros} from '../config/ai.js';
+import {AI_MODEL,tokenCostMicros} from '../config/ai.js';
 import {providerFacts} from './aiPolicy.js';
 
 const RESPONSE_BYTES_LIMIT=65536;
@@ -39,29 +39,8 @@ export function createAiProvider(settings,fetchImpl=fetch){
       ],
       text:{format:FORMAT},
     };
-    const requestBody=JSON.stringify(request),requestBytes=Buffer.byteLength(requestBody);
-    // Conservatively budget one token per UTF-8 byte of the entire request
-    // (including prompt/schema), plus headroom for provider message framing.
-    const inputTokenBound=requestBytes+256;
-    if(requestBytes>16000||inputTokenBound>settings.maxInputTokens)throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
-    if(tokenCostMicros(inputTokenBound,settings.maxOutputTokens)>settings.maxRequestMicros)throw new HttpError(413,'AI xarajat limiti','AI_COST_LIMIT');
     try{
-      signal?.throwIfAborted();
-      await onDispatch(); // Quota switches to DISPATCHED before external request.
-      signal?.throwIfAborted();
-      const response=await fetchImpl('https://api.openai.com/v1/responses',{
-        method:'POST',redirect:'error',signal,
-        headers:{'Content-Type':'application/json','Authorization':`Bearer ${settings.apiKey}`},
-        body:requestBody,
-      });
-      if(!response.ok){await response.body?.cancel().catch(()=>{});throw new HttpError(503,'OpenAI javob bermadi','AI_PROVIDER_FAILURE')}
-      const output=await readSmallJson(response);
-      if(output?.status!=='completed')throw new HttpError(502,'AI javobi yakunlanmagan','AI_INVALID_RESPONSE');
-      const inputTokens=output.usage?.input_tokens,outputTokens=output.usage?.output_tokens;
-      if(!Number.isSafeInteger(inputTokens)||!Number.isSafeInteger(outputTokens)||inputTokens<0||outputTokens<0||inputTokens>settings.maxInputTokens||outputTokens>settings.maxOutputTokens)
-        throw new HttpError(502,'AI token hisoboti tasdiqlanmadi','AI_COST_LIMIT');
-      const cost=tokenCostMicros(inputTokens,outputTokens);
-      if(cost>settings.maxRequestMicros)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
+      const {output,inputTokens,outputTokens,cost}=await requestOpenAiResponse(settings,request,{signal,onDispatch,fetchImpl});
       const messages=Array.isArray(output.output)?output.output.filter(x=>x?.type==='message'&&x?.role==='assistant'):[];
       if(messages.length!==1||messages[0].status!=='completed'||!Array.isArray(messages[0].content)||messages[0].content.some(x=>!x||x.type!=='output_text'))
         throw new HttpError(502,'AI javob formati noto‘g‘ri','AI_INVALID_RESPONSE');
@@ -74,4 +53,47 @@ export function createAiProvider(settings,fetchImpl=fetch){
       throw new HttpError(503,'OpenAI vaqtincha javob bermadi',signal?.aborted?'AI_TIMEOUT':'AI_PROVIDER_FAILURE');
     }
   };
+}
+
+export async function requestOpenAiResponse(settings,request,{signal,onDispatch,fetchImpl=fetch,budget}={}){
+  if(!settings.enabled||settings.model!==AI_MODEL||request.model!==settings.model)
+    throw new HttpError(503,'OpenAI provayderi faollashtirilmagan','AI_UNAVAILABLE');
+  const remaining=(key,limit)=>{
+    const value=budget?.[key]??limit;
+    if(!Number.isSafeInteger(value)||value<0)throw new HttpError(413,'AI limit noto‘g‘ri','AI_TOKEN_LIMIT');
+    return Math.min(value,limit);
+  };
+  const maxInput=remaining('inputTokens',settings.maxInputTokens);
+  const maxCost=remaining('cost',settings.maxRequestMicros);
+  if(!Number.isSafeInteger(request.max_output_tokens)||request.max_output_tokens<1)
+    throw new HttpError(413,'AI token limiti','AI_TOKEN_LIMIT');
+  const maxOutput=Math.min(request.max_output_tokens,remaining('outputTokens',settings.maxOutputTokens));
+  if(maxOutput<1)throw new HttpError(413,'AI token limiti','AI_TOKEN_LIMIT');
+  const requestBody=JSON.stringify({...request,store:false,max_output_tokens:maxOutput});
+  const requestBytes=Buffer.byteLength(requestBody);
+  // Reserve one token per serialized UTF-8 byte plus message framing headroom.
+  const inputTokenBound=requestBytes+256;
+  if(requestBytes>16000||inputTokenBound>maxInput)throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
+  if(tokenCostMicros(inputTokenBound,maxOutput)>maxCost)throw new HttpError(413,'AI xarajat limiti','AI_COST_LIMIT');
+  try{
+    signal?.throwIfAborted();
+    await onDispatch?.();
+    signal?.throwIfAborted();
+    const response=await fetchImpl('https://api.openai.com/v1/responses',{
+      method:'POST',redirect:'error',signal,
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${settings.apiKey}`},body:requestBody,
+    });
+    if(!response.ok){await response.body?.cancel().catch(()=>{});throw new HttpError(503,'OpenAI javob bermadi','AI_PROVIDER_FAILURE')}
+    const output=await readSmallJson(response);
+    if(output?.status!=='completed')throw new HttpError(502,'AI javobi yakunlanmagan','AI_INVALID_RESPONSE');
+    const inputTokens=output.usage?.input_tokens,outputTokens=output.usage?.output_tokens;
+    if(!Number.isSafeInteger(inputTokens)||!Number.isSafeInteger(outputTokens)||inputTokens<0||outputTokens<0||inputTokens>maxInput||outputTokens>maxOutput)
+      throw new HttpError(502,'AI token hisoboti tasdiqlanmadi','AI_COST_LIMIT');
+    const cost=tokenCostMicros(inputTokens,outputTokens);
+    if(cost>maxCost)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
+    return {output,inputTokens,outputTokens,cost};
+  }catch(error){
+    if(error instanceof HttpError)throw error;
+    throw new HttpError(503,'OpenAI vaqtincha javob bermadi',signal?.aborted?'AI_TIMEOUT':'AI_PROVIDER_FAILURE');
+  }
 }

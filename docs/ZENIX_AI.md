@@ -1,5 +1,7 @@
 # ZENIX AI — design and implementation record
 
+For the additive P1 tool-calling agent, immutable stock-receipt confirmations and staging checks, see [AI_AGENT_P1.md](AI_AGENT_P1.md). The report-only design below records the prior release.
+
 ## Authorized scope and design
 
 Build the new assistant against real, existing POS data. Preserve POS functionality and design. No production activation, paid external calls, deployment or merge is authorized. The provider adapter defaults to disabled; tests exercise its transport contract without a paid model call.
