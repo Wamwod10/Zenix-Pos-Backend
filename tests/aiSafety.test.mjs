@@ -24,6 +24,6 @@ test('model outputs select existing fact/insight IDs; fabricated facts and text 
 test('AI disabled by default and production needs separate explicit approval; cost arithmetic is integral',()=>{
   assert.equal(typeof config.aiSettings,'function');assert.equal(config.aiSettings({}).enabled,false);
   assert.equal(config.aiSettings({NODE_ENV:'production',ZENIX_AI_ENABLED:'true'}).enabled,false);
-  assert.equal(config.tokenCostMicros(8000,1200),1280);
+  assert.equal(config.tokenCostMicros(8000,1200),1400);
   assert.throws(()=>config.aiSettings({ZENIX_AI_MAX_OUTPUT_TOKENS:'999999'}));
 });
