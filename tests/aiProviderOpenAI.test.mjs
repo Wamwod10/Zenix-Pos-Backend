@@ -68,3 +68,13 @@ test('abort during quota dispatch prevents upstream call',async()=>{
   await assert.rejects(fn(report,{signal:controller.signal,onDispatch:async()=>controller.abort()}),e=>e.code==='AI_TIMEOUT');
   assert.equal(calls,0);
 });
+
+for(const [name,limits,code] of [
+  ['input budget',{maxInputTokens:256},'AI_TOKEN_LIMIT'],
+  ['request spend',{maxRequestMicros:1},'AI_COST_LIMIT'],
+])test('preflight rejects insufficient '+name+' without dispatch',async()=>{
+  let calls=0,dispatches=0;
+  const fn=createAiProvider({...aiSettings(enabledEnv),...limits},async()=>{calls++;return mockedResponse(successful)});
+  await assert.rejects(fn(report,{onDispatch:async()=>{dispatches++}}),e=>e.code===code);
+  assert.equal(calls,0);assert.equal(dispatches,0);
+});

@@ -39,7 +39,12 @@ export function createAiProvider(settings,fetchImpl=fetch){
       ],
       text:{format:FORMAT},
     };
-    if(Buffer.byteLength(JSON.stringify(request))>16000)throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
+    const requestBody=JSON.stringify(request),requestBytes=Buffer.byteLength(requestBody);
+    // Conservatively budget one token per UTF-8 byte of the entire request
+    // (including prompt/schema), plus headroom for provider message framing.
+    const inputTokenBound=requestBytes+256;
+    if(requestBytes>16000||inputTokenBound>settings.maxInputTokens)throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
+    if(tokenCostMicros(inputTokenBound,settings.maxOutputTokens)>settings.maxRequestMicros)throw new HttpError(413,'AI xarajat limiti','AI_COST_LIMIT');
     try{
       signal?.throwIfAborted();
       await onDispatch(); // Quota switches to DISPATCHED before external request.
@@ -47,7 +52,7 @@ export function createAiProvider(settings,fetchImpl=fetch){
       const response=await fetchImpl('https://api.openai.com/v1/responses',{
         method:'POST',redirect:'error',signal,
         headers:{'Content-Type':'application/json','Authorization':`Bearer ${settings.apiKey}`},
-        body:JSON.stringify(request),
+        body:requestBody,
       });
       if(!response.ok){await response.body?.cancel().catch(()=>{});throw new HttpError(503,'OpenAI javob bermadi','AI_PROVIDER_FAILURE')}
       const output=await readSmallJson(response);
