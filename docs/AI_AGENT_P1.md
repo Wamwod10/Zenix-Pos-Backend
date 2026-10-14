@@ -12,13 +12,17 @@ Implementation plan:
 - [x] Wire quota-preserving agent loop and session-scoped conversations plus additive migration 037.
 - [x] Mount one persistent frontend panel with topbar/floating triggers and explicit action cards.
 - [x] Verify unit, isolated PostgreSQL, HTTP, frontend build and UI/security scenarios; independently review changes.
-- [ ] Push feature branches and open backend/frontend PRs. Do not merge, migrate production or deploy.
+- [x] Push feature branches and open backend/frontend draft PRs. Do not merge, migrate production or deploy.
 
 P2 writes (products, expenses, customers, transfers), expanded time-window analytics and forecasts remain unavailable. Migration files are reviewed artifacts; they are not run on startup. Staging acceptance and a separately approved synthetic OpenAI smoke test are required before activation.
 
 ## Release checks and remaining work
 
 Backend syntax: 130 modules. Backend unit/security: 502 passed, 44 DB-dependent tests skipped. Separately executed local PostgreSQL integration: 66 passed, including actual receipt/warehouse ledger, confirmations, conversations, quotas, billing and existing POS regressions. Dedicated OpenAI/agent provider tests: 44 passed using mocked Responses transport. No production records were read or changed.
+
+After the additional POS workspace-sync assertion, all 18 agent action/conversation/HTTP integration checks passed again; confirmed receipts bump the existing workspace revision exactly once. The new DB checks are also wired into the existing isolated PostgreSQL CI job. Frontend standalone suite: 225 passed; bundle build and the 23-style design baseline passed. Mocked browser checks cover light/dark at 320–1440px, open/closed checkout access, header dropdown stacking and permission-change context reset.
+
+Draft pull requests: [backend #5](https://github.com/Wamwod10/Zenix-Pos-Backend/pull/5), [frontend #9](https://github.com/Wamwod10/Zenix-Pos/pull/9). These include earlier provider work without merging or altering its branch.
 
 Only `gpt-6-luna` is currently allowlisted through `ZENIX_AI_MODEL`, with pinned audited rates; other models disable the optional AI runtime rather than preventing POS startup. New models need reviewed schema/usage/pricing tests. Serial/IMEI receipts require the existing manual receipt UI. Incoming cost, selected warehouse, required batch and new expiry date must be explicitly provided; old batch dates are not reused. Ordinary text confirmation never executes.
 
