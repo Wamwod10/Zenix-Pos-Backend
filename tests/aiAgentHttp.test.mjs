@@ -45,5 +45,6 @@ test('authenticated agent HTTP enforces explicit immutable confirmation and keep
   assert.equal((await pool.query('SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1',[a.org])).rows[0].n,0);
   for(let i=0;i<2;i++){const r=await request(path,{cookie:a.cookie,method:'POST',body:{confirmationToken:action.confirmationToken}});assert.equal(r.status,200,JSON.stringify(r.data));assert.equal(r.data.data.status,'CONFIRMED');assert.equal(r.data.data.result.after,10)}
   assert.equal((await pool.query('SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1',[a.org])).rows[0].n,1);
+  assert.equal((await pool.query('SELECT revision FROM workspace_revisions WHERE organization_id=$1',[a.org])).rows[0]?.revision,'1','confirmed stock change bumps workspace once for other POS clients');
  }finally{await new Promise(r=>server.close(r));await pool.end()}
 });

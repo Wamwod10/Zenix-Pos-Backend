@@ -10,6 +10,7 @@ import {inventoryReceiptSchema,receiveInventory} from './inventoryReceipt.js';
 import {organizationCalendarDateISO} from '../lib/businessDate.js';
 import {lineAmount} from '../lib/posMoney.js';
 import {writeAudit} from './audit.js';
+import {bumpWorkspaceRevision} from '../lib/workspaceRevision.js';
 
 export const productSnapshot=p=>({id:p.id,name:p.name,sku:p.sku,barcode:p.barcode,unit:p.unit,costPrice:String(p.cost_price),sellPrice:String(p.sell_price),metadata:p.metadata||{},updatedAt:new Date(p.updated_at).toISOString()});
 export const warehouseSnapshot=(w,s)=>({id:w.id,storeId:w.store_id,name:w.name,updatedAt:new Date(w.updated_at).toISOString(),storeName:s.name});
@@ -97,6 +98,9 @@ export async function confirmAgentAction(user,id,body,{settings}={}){
   if(!verified||Number(verified.quantity)!==Number(line.quantity.toFixed(3))||Number(verified.warehouse_total)!==Number(line.quantity.toFixed(3))||verified.movements!==1||verified.warehouse_delta_matches!==true)throw new HttpError(409,'Kirim tekshiruvi bajarilmadi','AI_RECEIPT_VERIFY_FAILED');
   const safeResult={receiptId:result.receiptId,productId:line.productId,before:line.before,after:Number(verified.quantity),delta:line.delta,unit:line.unit,warehouseId:payload.warehouseId};
   await writeAudit(db,{organizationId:user.organizationId,userId:user.id,storeId:payload.storeId,action:'confirm',entityType:'ai_agent_action',entityId:row.id,title:'AI kirimi tasdiqlandi',metadata:{requestId:row.request_id,receiptId:result.receiptId,fingerprint:row.fingerprint}});
+  // AI chat/preview routes are excluded from revision middleware. A real
+  // confirmed receipt must still invalidate other POS clients, exactly once.
+  await bumpWorkspaceRevision(db,user.organizationId);
   row=(await db.query("UPDATE ai_agent_actions SET status='CONFIRMED',result=$2,completed_at=now() WHERE id=$1 RETURNING *",[row.id,safeResult])).rows[0];return publicAgentAction(row);
  });
 }
