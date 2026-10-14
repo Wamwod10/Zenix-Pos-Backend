@@ -12,7 +12,7 @@ test('restore manifest includes paid-service provenance, POS workplaces, quota a
 });
 test('CI explicitly gates modern billing/resources/AI and fresh additive migration replay',async()=>{
  const source=await fs.readFile(new URL('../.github/workflows/verify.yml',import.meta.url),'utf8');
- for(const flag of ['SUBSCRIPTION_TEST_DATABASE_URL','RESOURCE_TEST_DATABASE_URL','AI_TEST_DATABASE_URL','RELEASE_TEST_DATABASE_URL','SUBSCRIPTION_MIGRATION_TEST_DATABASE_URL'])assert.ok(source.includes(flag),flag);
- for(const file of ['subscriptionDatabase.test.mjs','resourceLimitsDatabase.test.mjs','aiDatabase.test.mjs','releaseIntegration.test.mjs','subscriptionMigration.test.mjs'])assert.ok(source.includes(file),file);
+ for(const flag of ['SUBSCRIPTION_TEST_DATABASE_URL','RESOURCE_TEST_DATABASE_URL','AI_TEST_DATABASE_URL','AI_AGENT_TEST_DATABASE_URL','RELEASE_TEST_DATABASE_URL','SUBSCRIPTION_MIGRATION_TEST_DATABASE_URL'])assert.ok(source.includes(flag),flag);
+ for(const file of ['subscriptionDatabase.test.mjs','resourceLimitsDatabase.test.mjs','aiDatabase.test.mjs','aiAgentActionsDatabase.test.mjs','aiAgentConversationDatabase.test.mjs','aiAgentHttp.test.mjs','releaseIntegration.test.mjs','subscriptionMigration.test.mjs'])assert.ok(source.includes(file),file);
  assert.match(source,/--test-concurrency=1/);assert.match(source,/createdb[^\n]*zenix_ci_subscription_migration_test/);
 });
