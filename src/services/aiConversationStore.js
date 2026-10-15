@@ -11,6 +11,9 @@ export function boundConversationMessages(messages,maxBytes=12000){
   summary.verifiedResults=Array.isArray(summary.verifiedResults)?summary.verifiedResults:[];
   last.content=JSON.stringify(summary);
   while(summary.verifiedResults.length&&Buffer.byteLength(JSON.stringify(bounded))>maxBytes){summary.verifiedResults.shift();last.content=JSON.stringify(summary)}
+  // UTF-8 and JSON escaping can exceed a character budget. Keep the trusted
+  // identity memory and latest question; shorten only assistant prose further.
+  while(summary.answer.length&&Buffer.byteLength(JSON.stringify(bounded))>maxBytes){summary.answer=Array.from(summary.answer).slice(0,Math.floor(Array.from(summary.answer).length*0.8)).join('');last.content=JSON.stringify(summary)}
  }
  return bounded;
 }

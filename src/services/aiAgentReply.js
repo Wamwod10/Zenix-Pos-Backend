@@ -53,7 +53,7 @@ export function buildAgentEvidence(toolResults){
 }
 const evidenceError=reason=>new HttpError(502,'AI javobi dalil bilan tasdiqlanmadi','AI_EVIDENCE_INVALID',{stage:'evidence',reason});
 export const repairableAgentReply=error=>error instanceof HttpError&&(
- error.code==='AI_EVIDENCE_INVALID'&&['unsupported_numeric_claim','unsupported_business_assertion','unknown_anchor','malformed_anchor'].includes(error.details?.reason)||
+ error.code==='AI_EVIDENCE_INVALID'&&['unsupported_numeric_claim','unsupported_business_assertion','unknown_anchor','malformed_anchor','invalid_blocks'].includes(error.details?.reason)||
  error.code==='AI_INVALID_RESPONSE'&&error.details?.stage==='parse'&&error.details?.reason==='schema_mismatch'
 );
 export function safeAgentFallback(evidence){
@@ -87,4 +87,21 @@ export function renderAgentAnswer(reply,toolResults,{evidence=buildAgentEvidence
   return rendered;
  }
  return deterministicAnswer(reply,toolResults);
+}
+
+export function renderAgentBlocks(reply,evidence=[]){
+ if(reply?.blocks===undefined)return [];
+ if(!Array.isArray(reply.blocks)||reply.blocks.length>6)throw evidenceError('invalid_blocks');
+ const known=new Map(evidence.map(f=>[f.id,f]));let length=typeof reply.reply==='string'?reply.reply.length:0,ids=0,renderedBytes=0;
+ return reply.blocks.map(block=>{
+  if(!block||typeof block!=='object'||Array.isArray(block)||Object.keys(block).length!==3||!['paragraph','facts','recommendation'].includes(block.type)||typeof block.text!=='string'||!Array.isArray(block.factIds)||block.factIds.some(id=>typeof id!=='string')||new Set(block.factIds).size!==block.factIds.length)throw evidenceError('invalid_blocks');
+  length+=block.text.length;ids+=block.factIds.length;
+  if(length>2400||ids>20)throw evidenceError('invalid_blocks');
+  if(block.factIds.some(id=>!known.has(id)))throw evidenceError('unknown_anchor');
+  const text=validateAgentReplyEvidence({reply:block.text},evidence);
+  const facts=block.factIds.map(id=>({id,text:known.get(id).text}));
+  renderedBytes+=Buffer.byteLength(text)+facts.reduce((sum,f)=>sum+Buffer.byteLength(f.text),0);
+  if(renderedBytes>12000)throw evidenceError('invalid_blocks');
+  return {type:block.type,text,facts};
+ });
 }
