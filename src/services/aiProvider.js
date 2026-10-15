@@ -39,8 +39,10 @@ export function createAiProvider(settings,fetchImpl=fetch){
       ],
       text:{format:FORMAT},
     };
+    let billed;
     try{
-      const {output,inputTokens,outputTokens,cost}=await requestOpenAiResponse(settings,request,{signal,onDispatch,fetchImpl});
+      billed=await requestOpenAiResponse(settings,request,{signal,onDispatch,fetchImpl});
+      const {output,inputTokens,outputTokens,cost}=billed;
       const messages=Array.isArray(output.output)?output.output.filter(x=>x?.type==='message'&&x?.role==='assistant'):[];
       if(messages.length!==1||messages[0].status!=='completed'||!Array.isArray(messages[0].content)||messages[0].content.some(x=>!x||x.type!=='output_text'))
         throw new HttpError(502,'AI javob formati noto‘g‘ri','AI_INVALID_RESPONSE');
@@ -49,8 +51,12 @@ export function createAiProvider(settings,fetchImpl=fetch){
       let selection;try{selection=JSON.parse(texts[0])}catch{throw new HttpError(502,'AI javob formati noto‘g‘ri','AI_INVALID_RESPONSE')}
       return {selection,inputTokens,outputTokens,cost};
     }catch(error){
-      if(error instanceof HttpError)throw error;
-      throw new HttpError(503,'OpenAI vaqtincha javob bermadi',signal?.aborted?'AI_TIMEOUT':'AI_PROVIDER_FAILURE');
+      if(error instanceof HttpError){
+        if(billed)error.aiUsage={inputTokens:billed.inputTokens,outputTokens:billed.outputTokens,cost:billed.cost};
+        error.details??={stage:'parse',reason:'schema_mismatch'};
+        throw error;
+      }
+      throw new HttpError(503,'OpenAI vaqtincha javob bermadi',signal?.aborted?'AI_TIMEOUT':'AI_PROVIDER_FAILURE',{stage:'transport',reason:signal?.aborted?'timeout':'network_error'});
     }
   };
 }
@@ -83,17 +89,21 @@ export async function requestOpenAiResponse(settings,request,{signal,onDispatch,
       method:'POST',redirect:'error',signal,
       headers:{'Content-Type':'application/json','Authorization':`Bearer ${settings.apiKey}`},body:requestBody,
     });
-    if(!response.ok){await response.body?.cancel().catch(()=>{});throw new HttpError(503,'OpenAI javob bermadi','AI_PROVIDER_FAILURE')}
+    if(!response.ok){await response.body?.cancel().catch(()=>{});throw new HttpError(503,'OpenAI javob bermadi','AI_PROVIDER_FAILURE',{stage:'transport',reason:'http_error',providerStatus:response.status})}
     const output=await readSmallJson(response);
-    if(output?.status!=='completed')throw new HttpError(502,'AI javobi yakunlanmagan','AI_INVALID_RESPONSE');
     const inputTokens=output.usage?.input_tokens,outputTokens=output.usage?.output_tokens;
-    if(!Number.isSafeInteger(inputTokens)||!Number.isSafeInteger(outputTokens)||inputTokens<0||outputTokens<0||inputTokens>maxInput||outputTokens>maxOutput)
-      throw new HttpError(502,'AI token hisoboti tasdiqlanmadi','AI_COST_LIMIT');
-    const cost=tokenCostMicros(inputTokens,outputTokens);
-    if(cost>maxCost)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
+    const validUsage=Number.isSafeInteger(inputTokens)&&Number.isSafeInteger(outputTokens)&&inputTokens>=0&&outputTokens>=0;
+    const cost=validUsage?tokenCostMicros(inputTokens,outputTokens):null;
+    const fail=(code,stage,reason)=>{
+      const error=new HttpError(502,'AI javobi tasdiqlanmadi',code,{stage,reason});
+      if(validUsage)error.aiUsage={inputTokens,outputTokens,cost};
+      throw error;
+    };
+    if(!validUsage||inputTokens>maxInput||outputTokens>maxOutput||cost>maxCost)fail('AI_COST_LIMIT','usage','invalid_or_excessive_usage');
+    if(output?.status!=='completed')fail('AI_INVALID_RESPONSE','response',output?.incomplete_details?.reason==='max_output_tokens'?'token_exhaustion':'incomplete');
     return {output,inputTokens,outputTokens,cost};
   }catch(error){
     if(error instanceof HttpError)throw error;
-    throw new HttpError(503,'OpenAI vaqtincha javob bermadi',signal?.aborted?'AI_TIMEOUT':'AI_PROVIDER_FAILURE');
+    throw new HttpError(503,'OpenAI vaqtincha javob bermadi',signal?.aborted?'AI_TIMEOUT':'AI_PROVIDER_FAILURE',{stage:'transport',reason:signal?.aborted?'timeout':'network_error'});
   }
 }
