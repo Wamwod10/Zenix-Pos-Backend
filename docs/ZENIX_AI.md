@@ -1,5 +1,7 @@
 # ZENIX AI — design and implementation record
 
+For the additive P1 tool-calling agent, immutable stock-receipt confirmations and staging checks, see [AI_AGENT_P1.md](AI_AGENT_P1.md). The report-only design below records the prior release.
+
 ## Authorized scope and design
 
 Build the new assistant against real, existing POS data. Preserve POS functionality and design. No production activation, paid external calls, deployment or merge is authorized. The provider adapter defaults to disabled; tests exercise its transport contract without a paid model call.
@@ -24,7 +26,7 @@ Application cost accounting uses integer micro-USD, maximum input/output token a
 
 ## Provider decision (disabled candidate)
 
-Candidate: Google Gemini 2.5 Flash-Lite, paid project only. Its official current text pricing is USD 0.10 input / 0.40 output per million tokens. At 8,000 input and 1,200 output tokens the configured upper estimate is USD 0.00128/request, USD 0.128/100 or USD 0.64/500 successful requests. Failed dispatched requests can add cost and consume the independent spend budget. Token counting is verified before generation; thinking and grounding/tools are disabled. Model/rates are pinned in code and must be reviewed before activation or replacement.
+Candidate: OpenAI GPT-6 Luna via Responses API, disabled by default. Standard uncached text pricing is USD 0.10 input / 0.50 output per million tokens (verified 2026-10-15). At 8,000 input and 1,200 output tokens the configured estimate is USD 0.00140/request. Failed dispatched requests retain reserved spend. Requests use store:false, strict JSON schema and reasoning effort none; tools and retries are not enabled. Before dispatch, a conservative bound budgets one token per UTF-8 byte of the complete request plus 256 framing tokens, and checks input and maximum request spend limits. This may reject requests an exact tokenizer would accept. Actual usage is validated again after generation. Model/rates are pinned in code.
 
 Official sources: [Google pricing](https://ai.google.dev/gemini-api/docs/pricing), [structured outputs](https://ai.google.dev/gemini-api/docs/structured-output), [token counting](https://ai.google.dev/gemini-api/docs/tokens), [OpenAI pricing](https://developers.openai.com/api/docs/pricing), [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data), [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing). Published low-latency/cost claims are not a measured Zenix benchmark. Real latency, Uzbek response quality, billing rates, project-paid status and data-processing terms must be checked with the approved account before rollout. Google free-tier product-improvement terms are unsuitable for private business data; approval gates explicitly require the paid-project and data-processing decisions.
 
@@ -52,7 +54,7 @@ Frontend `/ai` uses existing `PageHeader`, `PremiumSelect`, cards, buttons, font
 
 All values below are **backend only**. No key was added to local or production environments, and no paid provider call was made.
 
-Activation requires `ZENIX_AI_ENABLED=true`, `ZENIX_AI_PROVIDER_APPROVED=true`, `ZENIX_AI_DATA_PROCESSING_APPROVED=true`, `ZENIX_AI_PAID_PROJECT_CONFIRMED=true`, and a server-only `ZENIX_AI_API_KEY`. Production additionally requires `ZENIX_AI_PRODUCTION_APPROVED=true`. Leave all flags unset/false until account, spend, privacy and rollout approval. Model is pinned to `gemini-2.5-flash-lite`; requests use a fixed HTTPS host and an API-key header, with redirects/retries/tools/thinking disabled.
+Activation requires `ZENIX_AI_ENABLED=true`, `ZENIX_AI_PROVIDER_APPROVED=true`, `ZENIX_AI_DATA_PROCESSING_APPROVED=true`, `ZENIX_AI_PAID_PROJECT_CONFIRMED=true`, and a server-only `OPENAI_API_KEY`. Production additionally requires `ZENIX_AI_PRODUCTION_APPROVED=true`. Leave all flags unset/false until account, spend, privacy and rollout approval. Model is pinned to `gpt-6-luna`; requests use https://api.openai.com/v1/responses and a Bearer authorization header, with redirects/retries/tools disabled. Response storage is disabled with `store:false`.
 
 | Backend setting | Default | Meaning |
 | --- | --- | --- |
