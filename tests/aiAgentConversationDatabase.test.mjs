@@ -24,6 +24,40 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
  const call=(name,args)=>{const callId=randomUUID();return {...final(),reply:null,calls:[{callId,name,args}],items:[{type:'function_call',status:'completed',name,call_id:callId,arguments:JSON.stringify(args)}]}};
  const providerFor=responses=>async(_history,{onDispatch})=>{await onDispatch();return responses.shift()};
  try{
+  await t.test('typed memory carries verified identities without replaying receipt quantities',async()=>{
+   const f=await fixture(),first=await aiAgentChat(f.user,body('Guruch qoldig‘ini tekshir',{storeId:f.store}),{settings,provider:providerFor([call('search_products',{query:'Guruch'}),call('get_product_stock',{productId:f.product,storeId:f.store,warehouseId:f.warehouse}),final()])});
+   const second=await aiAgentChat(f.user,body('Undan kirim tayyorla',{storeId:f.store,conversationId:first.conversationId}),{settings,provider:async(_h,{onDispatch,memory})=>{await onDispatch();assert.equal(memory.product.id,f.product);assert.equal(memory.warehouse.id,f.warehouse);assert.equal(memory.product.unit,'kg');assert.ok(!JSON.stringify(memory).includes('costPrice'));return call('prepare_stock_receipt',{productId:memory.product.id,warehouseId:memory.warehouse.id,storeId:f.store,quantity:null,unit:memory.product.unit,costPrice:null,batchNo:null,expiryDate:null})}});
+   assert.equal(second.actions.length,0);assert.match(second.answer,/miqdor/);assert.equal((await pool.query('SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1',[f.user.organizationId])).rows[0].n,0);
+   const messages=(await pool.query('SELECT messages FROM ai_conversations WHERE id=$1',[first.conversationId])).rows[0].messages;assert.equal(JSON.parse(messages.at(-1).content).memory.product.id,f.product);
+  });
+  await t.test('structured blocks materialize server facts and preserve the legacy summary',async()=>{
+   const f=await fixture();let step=0;
+   const response=await aiAgentChat(f.user,body('Bugungi savdoni tushuntir'),{settings,provider:async(_h,{onDispatch,evidence})=>{await onDispatch();if(step++===0)return call('get_business_report',{topic:'today_sales',storeId:null});return {...final(),reply:{kind:'results',reply:'Tekshirilgan natijani ko‘rib chiqamiz.',blocks:[{type:'facts',text:'Tasdiqlangan ko‘rsatkich',factIds:[evidence[0].id]},{type:'recommendation',text:'Xarajatlarni toifalab kuzating.',factIds:[]}]}}},toolRunner:async()=>({kind:'report',report:{facts:[{label:'Sof savdo',value:'12345.67',unit:'UZS'}],tables:[],notes:[]}})});
+   assert.equal(response.answer,'Tekshirilgan natijani ko‘rib chiqamiz.');assert.match(response.blocks[0].facts[0].text,/12345.67/);
+   await aiAgentChat(f.user,body('Tavsiyangizni tushuntiring',{conversationId:response.conversationId}),{settings,provider:async(history,{onDispatch})=>{await onDispatch();assert.ok(history.some(message=>message.role==='assistant'&&message.content.includes('Xarajatlarni toifalab kuzating.')));return final()}});
+  });
+  await t.test('repeated read calls reuse current-turn data; a new turn rereads fresh data',async()=>{
+   const f=await fixture();let reads=0,step=0;
+   const runner=async()=>{reads++;return {kind:'report',report:{topic:'today_sales',facts:[{label:'Sof savdo',value:'100',unit:'UZS'}],tables:[],notes:[]}}};
+   const response=await aiAgentChat(f.user,body('Bugungi savdo'),{settings,toolRunner:runner,provider:async(_h,{onDispatch})=>{await onDispatch();return step++<2?call('get_business_report',{topic:'today_sales',storeId:null}):final()}});
+   assert.equal(reads,1);
+   await aiAgentChat(f.user,body('Qayta tekshir',{conversationId:response.conversationId}),{settings,toolRunner:runner,provider:providerFor([call('get_business_report',{topic:'today_sales',storeId:null}),final()])});assert.equal(reads,2);
+  });
+  await t.test('time reserve disables further exploration but preserves grounded followup',async()=>{
+   const f=await fixture();let elapsed=0,step=0;
+   await aiAgentChat(f.user,body('Biznesimni tahlil qil'),{settings,clock:()=>elapsed,provider:async(_h,{onDispatch,tools,evidence})=>{await onDispatch();if(step++===0){elapsed=settings.timeoutMs-5000;return call('get_business_report',{topic:'today_sales',storeId:null})}assert.deepEqual(tools,[]);return {...final(),reply:{kind:'results',reply:`Tekshirilgan natija: {{${evidence[0].id}}}`}}},toolRunner:async()=>({kind:'report',report:{facts:[{label:'Sof savdo',value:'100',unit:'UZS'}],tables:[],notes:[]}})});
+   assert.equal(step,2);
+  });
+  await t.test('very little time returns current facts without another dispatch or success quota',async()=>{
+   const f=await fixture();let elapsed=0,dispatches=0;
+   const response=await aiAgentChat(f.user,body('Biznesimni tahlil qil'),{settings,clock:()=>elapsed,provider:async(_h,{onDispatch})=>{await onDispatch();dispatches++;return call('get_business_report',{topic:'today_sales',storeId:null})},toolRunner:async()=>{elapsed=settings.timeoutMs-1000;return {kind:'report',report:{facts:[{label:'Sof savdo',value:'123',unit:'UZS'}],tables:[],notes:[]}}}});
+   assert.equal(dispatches,1);assert.equal(response.answerSource,'verified_fallback');assert.match(response.answer,/123/);
+   const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];assert.equal(usage.successes,0);assert.equal(Number(usage.input_tokens),100);
+  });
+  await t.test('cached reads cannot bypass live permission revocation',async()=>{
+   const f=await fixture();let reads=0,step=0;
+   await assert.rejects(()=>aiAgentChat(f.user,body('Savdoni tekshir'),{settings,provider:async(_h,{onDispatch})=>{await onDispatch();if(step++===1)await pool.query("UPDATE users SET app_role='SALES' WHERE id=$1",[f.user.id]);return call('get_business_report',{topic:'today_sales',storeId:null})},toolRunner:async()=>{reads++;return {kind:'report',report:{facts:[],tables:[],notes:[]}}}}),e=>e.code==='AI_ACCESS_CHANGED');assert.equal(reads,1);
+  });
   await t.test('numeric output is repaired once with no tools and all calls billed once',async()=>{
    const f=await fixture();let attempts=0;
    const response=await aiAgentChat(f.user,body('Bugungi savdo natijalarini tahlil qil'),{settings,provider:async(_h,{onDispatch,tools,evidence})=>{

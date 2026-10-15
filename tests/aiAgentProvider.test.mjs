@@ -27,7 +27,7 @@ test('agent sends strict Responses tools and returns a single parsed call',async
   assert.equal(body.store,false);assert.equal(body.parallel_tool_calls,false);assert.equal(body.tool_choice,'auto');
   assert.equal(body.reasoning.effort,'none');assert.equal(body.tools[0].strict,true);
   assert.equal(body.input[0].role,'developer');assert.deepEqual(body.input.slice(1),history);
-  assert.equal(body.text.format.strict,true);assert.deepEqual(body.text.format.schema.required,['kind','reply']);
+  assert.equal(body.text.format.strict,true);assert.deepEqual(body.text.format.schema.required,['kind','reply','blocks']);
   return Response.json(payload([call]));
  });
  assert.equal(p.agent,true);
@@ -111,7 +111,7 @@ test('transport refuses malformed and excessive usage, excessive response stream
  await assert.rejects(()=>agentModule.createAiAgentProvider({...settings,enabled:false},async()=>network++)(history,options),e=>e.code==='AI_UNAVAILABLE');
  assert.equal(network,0);
 });
-test('real read and prepare tool registries fit initial request and three-call continuation',async()=>{
+test('real read and prepare registries remain bounded through tool exploration and finalization',async()=>{
  const previousNodeEnv=process.env.NODE_ENV;
  process.env.NODE_ENV='test';
  const {toolsFor}=await import('../src/services/aiAgentRegistry.js').finally(()=>{
@@ -119,21 +119,23 @@ test('real read and prepare tool registries fit initial request and three-call c
  });
  for(const writesEnabled of [false,true]){
   const actualTools=toolsFor({...settings,writesEnabled}),items=[...history],sizes=[];
-  let turns=0,inputTokens=0,outputTokens=0,cost=0;
+  let turns=0,inputTokens=0,outputTokens=0,cost=0,finalReply=null;
   const p=agentModule.createAiAgentProvider(settings,async(url,{body})=>{
    sizes.push(Buffer.byteLength(body)+256);
-   const output=turns++<3?[{...call,call_id:`call_${turns}`,name:'search_products',arguments:'{"query":"Synthetic product"}'}]:[message({kind:'results',reply:'Tekshiruv yakunlandi.'})];
+   const canCall=JSON.parse(body).tools.some(tool=>tool.name==='search_products');
+   const output=turns++<3&&canCall?[{...call,call_id:`call_${turns}`,name:'search_products',arguments:'{"query":"Synthetic product"}'}]:[message({kind:'results',reply:'Tekshiruv yakunlandi.'})];
    return Response.json({...payload(output),usage:{input_tokens:1000,output_tokens:20}});
   });
   for(let step=0;step<4;step++){
    const result=await p(items,{...options,tools:actualTools,budget:{inputTokens:settings.maxInputTokens-inputTokens,outputTokens:settings.maxOutputTokens-outputTokens,cost:settings.maxRequestMicros-cost}});
    inputTokens+=result.inputTokens;outputTokens+=result.outputTokens;cost+=result.cost;
-   if(step<3){
+   if(result.calls.length){
     assert.equal(result.calls[0].name,'search_products');
     items.push(...result.items,{type:'function_call_output',call_id:result.calls[0].callId,output:JSON.stringify({kind:'products',candidates:[{productId:'00000000-0000-4000-8000-000000000001',name:'Synthetic product',sku:'SYNTHETIC',barcode:'SYNTHETIC',unit:'kg'}],hasMore:false})});
-   }else assert.equal(result.reply.kind,'results');
+   }else {finalReply=result.reply;break;}
   }
-  assert.equal(turns,4);assert.equal(sizes.length,4);
+  assert.equal(finalReply.kind,'results');
+  assert.ok(turns>=2&&turns<=4);assert.equal(sizes.length,turns);
   assert.ok(sizes.every((size,index)=>size<=settings.maxInputTokens-index*1000));
  }
 });
@@ -187,4 +189,18 @@ test('completed interim messages plus reasoning and one call are preserved, neve
   [reasoning,interim,{...call,name:'unknown_tool'}],
   [...output,{type:'unexpected'}],
  ])await assert.rejects(()=>provider(bad)(history,options),e=>e.code==='AI_INVALID_RESPONSE'&&e.aiUsage.inputTokens===100);
+});
+
+test('structured replies validate blocks and receive bounded memory as data',async()=>{
+ const memory={storeId:null,product:null,warehouse:null,period:null,confirmationToken:'secret'};
+ const reply={kind:'results',reply:'Ma�lumot tayyor.',blocks:[{type:'facts',text:'Tasdiqlangan ma�lumot:',factIds:['fabc']}]};
+ const p=provider([message(reply)],async(url,{body})=>{
+  const sent=JSON.parse(body);
+
+  assert.equal(sent.input[0].content.includes('confirmationToken'),false);
+  assert.match(sent.input[0].content,/server_memory/);
+  return Response.json(payload([message(reply)]));
+ });
+ assert.deepEqual((await p(history,{...options,memory,evidence:[{id:'fabc',text:'Qoldiq: 12 kg'}]})).reply,reply);
+ await assert.rejects(()=>provider([message({...reply,blocks:[{type:'paragraph',text:'Qoldiq 999 kg',factIds:[]}]})])(history,options),e=>e.code==='AI_EVIDENCE_INVALID');
 });

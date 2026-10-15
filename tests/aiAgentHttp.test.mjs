@@ -36,7 +36,13 @@ test('authenticated agent HTTP enforces explicit immutable confirmation and keep
   assert.equal((await request('/api/products',{cookie:a.cookie})).status,200);
   const args={productId:a.product,storeId:a.store,warehouseId:a.warehouse,quantity:10,unit:'kg',costPrice:1000,batchNo:null,expiryDate:null},callId=randomUUID();
   response={calls:[{callId,name:'prepare_stock_receipt',args}],items:[{type:'function_call',call_id:callId,name:'prepare_stock_receipt',arguments:JSON.stringify(args),status:'completed'}],reply:null,inputTokens:100,outputTokens:20,cost:tokenCostMicros(100,20)};
-  const preview=await request('/api/ai/chat',{cookie:a.cookie,method:'POST',body:{requestId:randomUUID(),question:'Guruch HTTP mahsulotidan 10 kg tayyorla'}});assert.equal(preview.status,200,JSON.stringify(preview.data));
+  const previewId=randomUUID();
+  const preview=await request('/api/ai/chat',{cookie:a.cookie,method:'POST',body:{requestId:previewId,question:'Guruch HTTP mahsulotidan 10 kg tayyorla'}});assert.equal(preview.status,200,JSON.stringify(preview.data));
+  const progressPath=`/api/ai/requests/${previewId}/progress`;
+  assert.equal((await request(progressPath)).status,401);
+  assert.equal((await request(progressPath,{cookie:b.cookie})).status,404);
+  assert.deepEqual((await request(progressPath,{cookie:a.cookie})).data.data,{phase:'complete'});
+  assert.equal((await request('/api/ai/requests/not-a-uuid/progress',{cookie:a.cookie})).status,400);
   const action=preview.data.data.actions[0],path=`/api/ai/actions/${action.id}/confirm`;
   assert.equal((await request(path,{cookie:a.cookie,method:'POST',body:{}})).status,400);
   assert.equal((await request(path,{cookie:a.cookie,method:'POST',body:{confirmationToken:action.confirmationToken,quantity:20}})).status,400);
