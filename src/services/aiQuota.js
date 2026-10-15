@@ -23,12 +23,12 @@ async function lockAccounting(db,row){
  await db.query('SELECT day FROM ai_daily_budget WHERE day=$1 FOR UPDATE',[row.day]);
  await db.query('SELECT organization_id FROM ai_monthly_usage WHERE organization_id=$1 AND period_start=$2 FOR UPDATE',[row.organization_id,row.period_start]);
 }
-async function settle(db,row,{response=null,errorCode=null,inputTokens=0,outputTokens=0,cost=null}={}){
+async function settle(db,row,{response=null,errorCode=null,inputTokens=0,outputTokens=0,cost=null,countSuccess=true}={}){
  if(!['PENDING','DISPATCHED'].includes(row.status))return;
  const spent=cost??(row.status==='DISPATCHED'?Number(row.reserved_cost):0),success=Boolean(response);
  if(!Number.isSafeInteger(spent)||spent<0||spent>Number(row.reserved_cost))throw new Error('Invalid AI settlement');
  await db.query(`UPDATE ai_monthly_usage SET reserved=reserved-1,reserved_micros=reserved_micros-$3,successes=successes+$4,
- spent_micros=spent_micros+$5,input_tokens=input_tokens+$6,output_tokens=output_tokens+$7 WHERE organization_id=$1 AND period_start=$2`,[row.organization_id,row.period_start,row.reserved_cost,success?1:0,spent,inputTokens,outputTokens]);
+ spent_micros=spent_micros+$5,input_tokens=input_tokens+$6,output_tokens=output_tokens+$7 WHERE organization_id=$1 AND period_start=$2`,[row.organization_id,row.period_start,row.reserved_cost,success&&countSuccess?1:0,spent,inputTokens,outputTokens]);
  await db.query('UPDATE ai_daily_budget SET reserved_micros=reserved_micros-$2,spent_micros=spent_micros+$3 WHERE day=$1',[row.day,row.reserved_cost,spent]);
  await db.query(`UPDATE ai_requests SET status=$4,actual_cost=$5,response=$6,error_code=$7,response_expires_at=now()+interval '24 hours' WHERE organization_id=$1 AND user_id=$2 AND request_id=$3`,[row.organization_id,row.user_id,row.request_id,success?'SUCCEEDED':'FAILED',spent,response,errorCode]);
 }

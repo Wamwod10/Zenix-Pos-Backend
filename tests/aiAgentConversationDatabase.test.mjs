@@ -24,6 +24,24 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
  const call=(name,args)=>{const callId=randomUUID();return {...final(),reply:null,calls:[{callId,name,args}],items:[{type:'function_call',status:'completed',name,call_id:callId,arguments:JSON.stringify(args)}]}};
  const providerFor=responses=>async(_history,{onDispatch})=>{await onDispatch();return responses.shift()};
  try{
+  await t.test('numeric output is repaired once with no tools and all calls billed once',async()=>{
+   const f=await fixture();let attempts=0;
+   const response=await aiAgentChat(f.user,body('Bugungi savdo natijalarini tahlil qil'),{settings,provider:async(_h,{onDispatch,tools,evidence})=>{
+    await onDispatch();attempts++;
+    if(attempts===1)return call('get_business_report',{topic:'today_sales',storeId:null});
+    if(attempts===2)throw Object.assign(new (await import('../src/lib/http.js')).HttpError(502,'invalid','AI_EVIDENCE_INVALID',{stage:'evidence',reason:'unsupported_numeric_claim'}),{aiUsage:{inputTokens:100,outputTokens:20,cost:tokenCostMicros(100,20)}});
+    assert.deepEqual(tools,[]);return {...final(),reply:{kind:'results',reply:`Bugungi tekshirilgan natija:\n{{${evidence[0].id}}}`}};
+   },toolRunner:async()=>({kind:'report',report:{facts:[{label:'Sof savdo',value:'125000',unit:'UZS'}],tables:[],notes:[]}})});
+   assert.equal(attempts,3);assert.match(response.answer,/125000/);
+   const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];
+   assert.equal(usage.successes,1);assert.equal(Number(usage.input_tokens),300);assert.equal(Number(usage.spent_micros),tokenCostMicros(300,60));
+  });
+  await t.test('repeated numeric errors return safe clarification without successful quota or duplicate calls',async()=>{
+   const f=await fixture();let attempts=0;
+   const response=await aiAgentChat(f.user,body('Salom'),{settings,provider:async(_h,{onDispatch})=>{await onDispatch();attempts++;throw Object.assign(new (await import('../src/lib/http.js')).HttpError(502,'invalid','AI_EVIDENCE_INVALID',{stage:'evidence',reason:'unsupported_numeric_claim'}),{aiUsage:{inputTokens:100,outputTokens:20,cost:tokenCostMicros(100,20)}})}});
+   assert.equal(attempts,2);assert.equal(response.answerSource,'clarification_fallback');assert.ok(!response.answer.includes('999'));
+   const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];assert.equal(usage.successes,0);assert.equal(Number(usage.input_tokens),200);assert.equal(Number(usage.spent_micros),tokenCostMicros(200,40));
+  });
   await t.test('expired context is distinct from forbidden context and tool timeouts settle known spend',async()=>{
    const f=await fixture(),first=await aiAgentChat(f.user,body('Salom'),{settings,provider:providerFor([final()])});
    await pool.query("UPDATE ai_conversations SET expires_at=now()-interval '1 second' WHERE id=$1",[first.conversationId]);
@@ -31,6 +49,27 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
    await assert.rejects(()=>aiAgentChat(f.user,body('Qoldiq'),{settings:{...settings,timeoutMs:250},provider:providerFor([call('get_business_report',{topic:'low_stock',storeId:null})]),toolRunner:()=>new Promise(resolve=>setTimeout(()=>resolve({kind:'report'}),350))}),e=>e.code==='AI_TOOL_TIMEOUT');
    const row=(await pool.query('SELECT successes,reserved,input_tokens,spent_micros FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];
    assert.equal(row.successes,1);assert.equal(row.reserved,0);assert.equal(Number(row.input_tokens),200);
+  });
+  await t.test('repair budget exhaustion serves only current verified facts and replay never dispatches again',async()=>{
+   const f=await fixture();let attempts=0;const input=body('Bugungi savdo');
+   const provider=async(_h,{onDispatch})=>{await onDispatch();attempts++;if(attempts===1)return call('get_business_report',{topic:'today_sales',storeId:null});throw Object.assign(new (await import('../src/lib/http.js')).HttpError(502,'invalid','AI_EVIDENCE_INVALID',{stage:'evidence',reason:'unsupported_numeric_claim'}),{aiUsage:{inputTokens:100,outputTokens:200,cost:tokenCostMicros(100,200)}})};
+   const result=await aiAgentChat(f.user,input,{settings:{...settings,maxOutputTokens:256},provider,toolRunner:async()=>({kind:'report',report:{facts:[{label:'Sof savdo',value:'125000',unit:'UZS'}],tables:[],notes:[]}})});
+   assert.equal(attempts,2);assert.equal(result.answerSource,'verified_fallback');assert.match(result.answer,/125000/);
+   const replay=await aiAgentChat(f.user,input,{settings,provider:async()=>{throw Error('must not redispatch')}});assert.deepEqual(replay,result);
+   const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];assert.equal(usage.successes,0);assert.equal(Number(usage.spent_micros),tokenCostMicros(200,220));
+  });
+  await t.test('repair does not mask provider, permission, cost or execution-claim failures',async()=>{
+   const {HttpError}=await import('../src/lib/http.js');
+   for(const [code,details] of [['AI_PROVIDER_FAILURE',{stage:'transport'}],['AI_COST_LIMIT',{stage:'usage'}],['AI_FORBIDDEN',{}],['AI_EVIDENCE_INVALID',{stage:'evidence',reason:'execution_claim'}]]){
+    const f=await fixture();let attempts=0;
+    await assert.rejects(()=>aiAgentChat(f.user,body('Salom'),{settings,provider:async(_h,{onDispatch})=>{attempts++;await onDispatch();throw Object.assign(new HttpError(502,'blocked',code,details),{aiUsage:{inputTokens:100,outputTokens:20,cost:tokenCostMicros(100,20)}})}}),e=>e.code===code);
+    assert.equal(attempts,1);assert.equal((await pool.query('SELECT successes FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0].successes,0);
+   }
+  });
+  await t.test('schema mismatch repairs once but a provider failure during repair remains visible with full known spend',async()=>{
+   const {HttpError}=await import('../src/lib/http.js'),f=await fixture();let attempts=0;
+   await assert.rejects(()=>aiAgentChat(f.user,body('Salom'),{settings,provider:async(_h,{onDispatch})=>{await onDispatch();attempts++;throw Object.assign(new HttpError(502,'blocked',attempts===1?'AI_INVALID_RESPONSE':'AI_PROVIDER_FAILURE',{stage:attempts===1?'parse':'transport',reason:'schema_mismatch'}),{aiUsage:{inputTokens:100,outputTokens:20,cost:tokenCostMicros(100,20)}})}}),e=>e.code==='AI_PROVIDER_FAILURE');
+   assert.equal(attempts,2);const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];assert.equal(usage.successes,0);assert.equal(Number(usage.spent_micros),tokenCostMicros(200,40));
   });
   await t.test('long conversation retains newest complete turns without mixing context',async()=>{
    const f=await fixture();let conversationId;

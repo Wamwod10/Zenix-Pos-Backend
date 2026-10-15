@@ -52,6 +52,14 @@ export function buildAgentEvidence(toolResults){
  return output;
 }
 const evidenceError=reason=>new HttpError(502,'AI javobi dalil bilan tasdiqlanmadi','AI_EVIDENCE_INVALID',{stage:'evidence',reason});
+export const repairableAgentReply=error=>error instanceof HttpError&&(
+ error.code==='AI_EVIDENCE_INVALID'&&['unsupported_numeric_claim','unsupported_business_assertion','unknown_anchor','malformed_anchor'].includes(error.details?.reason)||
+ error.code==='AI_INVALID_RESPONSE'&&error.details?.stage==='parse'&&error.details?.reason==='schema_mismatch'
+);
+export function safeAgentFallback(evidence){
+ return evidence.length?{answerSource:'verified_fallback',answer:'AI izohini tekshirish yakunlanmadi. Quyida backend tasdiqlagan ma’lumotlar:\n\n'+evidence.map(f=>f.text).join('\n\n')}:
+  {answerSource:'clarification_fallback',answer:'Javobni ishonchli ma’lumot bilan tasdiqlay olmadim. Savolni aniqlashtiring yoki kerakli hisobot, mahsulot va filialni ko‘rsating.'};
+}
 export function validateAgentReplyEvidence(reply,evidence=[]){
  const text=reply.reply.normalize('NFKC'),known=new Map(evidence.map(f=>[f.id,f.text]));
  const anchors=[...text.matchAll(/\{\{([^{}]+)\}\}/g)];
@@ -67,7 +75,7 @@ export function validateAgentReplyEvidence(reply,evidence=[]){
  // Numbered advice is presentation, not a business statistic. All other
  // quantities (including numbers written in Uzbek words) require an anchor.
  const count='(?:\\d{1,2}|bir|ikki|uch|besh|olti|yetti|sakkiz)';
- const narrative=prose.replace(new RegExp('\\b'+count+'\\s+(?:maslahat|bosqich|tavsiya|qadam)(?:da|ni|dan)?\\b','giu'),'').replace(/(^|\n)\s*\d{1,2}[.)]\s/g,'$1').replace(/\bbir\s+(?:nechta|xil|savol|yo‘l)\b/giu,'');
+ const narrative=prose.replace(new RegExp('\\b'+count+'\\s+(?:maslahat|bosqich|tavsiya|qadam)(?:da|ni|dan)?\\b','giu'),'').replace(/(^|\n)\s*\d{1,2}[.)]\s/g,'$1').replace(/\bbir\s+(?:nechta|xil|savol|yo‘l|vaqtning o‘zida)\b|\bbir-biridan\b|\bikki xil tushuncha\b/giu,'');
  if(/\p{N}|\b(?:nol|bir|bitta|ikki|ikkita|uch|uchta|to[\u2018\u2019\u02bb\u02bc']rt(?:ta)?|besh(?:ta)?|olti(?:ta)?|yetti(?:ta)?|sakkiz(?:ta)?|to[\u2018\u2019\u02bb\u02bc']qqiz(?:ta)?|o[\u2018\u2019\u02bb\u02bc']n|(?:yigirma|o[\u2018\u2019\u02bb\u02bc']ttiz|qirq|ellik|oltmish|yetmish|sakson|to[\u2018\u2019\u02bb\u02bc']qson)(?:ta|lab|dan|ga|lik)?|(?:yuz|ming|million|milliard)(?:ta|lab|dan|ga|lik)?)\b/iu.test(narrative))throw evidenceError('unsupported_numeric_claim');
  return text.replace(/\{\{([^{}]+)\}\}/g,(_,id)=>known.get(id));
 }
