@@ -9,16 +9,10 @@ import { selectActiveBranchShifts } from "../lib/branchShift.js";
 import { shiftSalesStats } from "../services/financeReport.js";
 import {subscriptionState} from '../services/subscriptions.js';
 import {effectiveStoreLimit as resolveStoreLimit} from '../services/extraStoreEntitlements.js';
+import {createBootstrapDateParts} from '../lib/bootstrapDates.js';
 
 const router=Router();
 const n=(value)=>Number(value||0);
-const dateParts=(value,timeZone="Asia/Tashkent")=>{
-  const date=value?new Date(value):new Date();
-  const dateISO=new Intl.DateTimeFormat("en-CA",{timeZone,year:"numeric",month:"2-digit",day:"2-digit"}).format(date);
-  const dateText=new Intl.DateTimeFormat("uz-UZ",{timeZone,day:"2-digit",month:"2-digit",year:"numeric"}).format(date);
-  const time=new Intl.DateTimeFormat("uz-UZ",{timeZone,hour:"2-digit",minute:"2-digit",hour12:false}).format(date);
-  return {dateISO,date:dateText,time};
-};
 const mapProduct=(row)=>({
   ...(row.metadata||{}),
   id:row.id,name:row.name,sku:row.sku,barcode:row.barcode,category:row.category,brand:row.brand,unit:row.unit,
@@ -46,6 +40,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const effectiveStoreLimit=org.plan_code?await resolveStoreLimit(pool,org,businessDate):Number(org.store_limit||0)+activeExtraStores;
   const subscription=await subscriptionState(pool,orgId);
   const timeZone=org.timezone||"Asia/Tashkent";
+  const dateParts=createBootstrapDateParts(timeZone);
   const storeArg=branchStoreId?[orgId,branchStoreId]:[orgId];
   const storeFilter=(alias="")=>branchStoreId?` AND ${alias?`${alias}.`:""}store_id=$2`:"";
 
