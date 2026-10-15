@@ -62,7 +62,7 @@ test('agent preserves an oversized current turn and fails without dispatch',asyn
  assert.equal(dispatched,0);assert.equal(network,0);
 });
 for(const [name,output] of [
- ['mixed calls and messages',[call,message()]],['multiple calls',[call,{...call,call_id:'call_b'}]],
+['multiple calls',[call,{...call,call_id:'call_b'}]],
  ['unknown tool',[{...call,name:'confirm_action'}]],['empty call id',[{...call,call_id:' '}]],
  ['duplicate call id',[call,{...call}]],['unfinished call',[{...call,status:'in_progress'}]],
  ['non-object arguments',[{...call,arguments:'[]'}]],['invalid argument JSON',[{...call,arguments:'{'}]],
@@ -73,10 +73,10 @@ for(const [name,output] of [
  ['invalid final kind',[message({kind:'invented',reply:'Salom'})]],
  ['extra final property',[message({kind:'greeting',reply:'Salom',facts:[]})]],
  ['numeric final reply',[message({kind:'results',reply:'Savdo １２ dona'})]],
- ['oversized final reply',[message({kind:'advice',reply:'a'.repeat(651)})]],
+ ['oversized final reply',[message({kind:'advice',reply:'a'.repeat(2401)})]],
  ['empty final reply',[message({kind:'advice',reply:' '})]],
 ])test(`agent rejects ${name}`,async()=>{
- await assert.rejects(()=>provider(output)(history,options),e=>e.status===502&&e.code==='AI_INVALID_RESPONSE');
+ await assert.rejects(()=>provider(output)(history,options),e=>e.status===502&&e.code===(name==='numeric final reply'?'AI_EVIDENCE_INVALID':'AI_INVALID_RESPONSE'));
 });
 test('transport caps output reservation and rejects exhausted budgets before dispatch',async()=>{
  let dispatched=0,network=0;
@@ -160,4 +160,31 @@ test('live synthetic smoke uses two bounded calls and emits only usage totals',a
   return Response.json(payload([{...call,call_id:'synthetic_call',name:'get_test_quantity'}]));
  }});
  assert.equal(calls,2);assert.deepEqual(writes,[{inputTokens:200,outputTokens:40,costMicros:40}]);assert.equal(source.ZENIX_AI_ENABLED,'false');
+});
+
+test('reasoning and multiple text chunks preserve parsed reply and usage on evidence failure',async()=>{
+ const text=JSON.stringify({kind:'advice',reply:'Umumiy tavsiya: 3 bosqichda tekshiring.'});
+ const reasoning={type:'reasoning',id:'rs_1',summary:[]};
+ const result=await provider([reasoning,{...message(),content:[{type:'output_text',text:text.slice(0,20)},{type:'output_text',text:text.slice(20)}]}])(history,options);
+ assert.deepEqual(result.items[0],reasoning);assert.match(result.reply.reply,/3 bosqich/);
+ await assert.rejects(()=>provider([message({kind:'results',reply:'{{unknown}}'})])(history,options),e=>e.code==='AI_EVIDENCE_INVALID'&&e.aiUsage.inputTokens===100&&e.details.stage==='evidence');
+});
+test('incomplete billed output retains safe stage and usage',async()=>{
+ await assert.rejects(()=>provider([],async()=>Response.json({...payload([]),status:'incomplete',incomplete_details:{reason:'max_output_tokens'}}))(history,options),e=>e.details.reason==='token_exhaustion'&&e.aiUsage.outputTokens===20);
+});
+
+test('completed interim messages plus reasoning and one call are preserved, never rendered',async()=>{
+ const interim={...message(),content:[{type:'output_text',text:'Unverified interim text 999 kg'}]};
+ const reasoning={type:'reasoning',id:'rs_mix',summary:[]};
+ const output=[reasoning,interim,call];
+ const result=await provider(output)(history,options);
+ assert.deepEqual(result.items,output);assert.equal(result.reply,null);
+ assert.deepEqual(result.calls,[{callId:'call_a',name:'get_sales',args:{}}]);
+ for(const bad of [
+  [...output,{...call,call_id:'call_b'}],
+  [reasoning,{...interim,status:'in_progress'},call],
+  [reasoning,{...interim,content:[{type:'refusal',refusal:'No'}]},call],
+  [reasoning,interim,{...call,name:'unknown_tool'}],
+  [...output,{type:'unexpected'}],
+ ])await assert.rejects(()=>provider(bad)(history,options),e=>e.code==='AI_INVALID_RESPONSE'&&e.aiUsage.inputTokens===100);
 });

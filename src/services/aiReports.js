@@ -4,11 +4,11 @@ import {scopedStoreId,assertOrganizationStore} from '../lib/storeScope.js';
 import {allowedTopics,authorizeTopic} from './aiPolicy.js';
 const shift=(day,n)=>{const d=new Date(`${day}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10)};
 const safeLabel=value=>String(value||'').replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g,'').slice(0,120);
-export async function aiReport(user,topic,requestedStore){
+export async function aiReport(user,topic,requestedStore,transactionDb){
  authorizeTopic(user,topic);const store=scopedStoreId(user,requestedStore),seller=['CASHIER','SALES'].includes(user.appRole)?user.id:null;
- const db=await pool.connect();
+ const db=transactionDb||await pool.connect();
  try{
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');await db.query("SET LOCAL statement_timeout='2000ms'");
+  if(!transactionDb)await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');await db.query("SET LOCAL statement_timeout='2000ms'");
   if(store)await assertOrganizationStore(db,user.organizationId,store,{activeOnly:false});
   const org=(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
   const today=organizationBusinessDateISO(org),from=shift(today,-6),old=shift(today,-29);
@@ -62,6 +62,6 @@ export async function aiReport(user,topic,requestedStore){
     const row=(await db.query(sql,[user.organizationId,store])).rows[0];fact(kind,kind==='customer_debt'?'Mijozlarning joriy qarzi':'Ta’minotchilarning joriy qarzi',row.amount);if(store)notes.push('Qarz tanlangan filial hujjatlari kesimida; biznes bo‘yicha jami qarzdan farq qilishi mumkin.');if(Number(row.amount)>0)eligibleInsights.push(kind==='customer_debt'?'REVIEW_CUSTOMER_DEBT':'REVIEW_SUPPLIER_DEBT');
    }
   }
-  await db.query('COMMIT');return {topic,from:topic==='today_sales'?today:from,to:today,storeId:store,sellerScoped:Boolean(seller),facts,tables,notes,eligibleInsights:[...new Set(eligibleInsights)]};
- }catch(error){await db.query('ROLLBACK');throw error}finally{db.release()}
+  if(!transactionDb)await db.query('COMMIT');return {topic,from:topic==='today_sales'?today:from,to:today,storeId:store,sellerScoped:Boolean(seller),facts,tables,notes,eligibleInsights:[...new Set(eligibleInsights)]};
+ }catch(error){if(!transactionDb)await db.query('ROLLBACK');throw error}finally{if(!transactionDb)db.release()}
 }

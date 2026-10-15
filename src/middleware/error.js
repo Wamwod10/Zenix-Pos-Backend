@@ -38,7 +38,7 @@ export function errorHandler(error, req, res, _next) {
   if (error?.type === "entity.parse.failed" || (error instanceof SyntaxError && Number(error?.status) === 400)) {
     return res.status(400).json({ ok:false, error:{ code:"INVALID_JSON", message:"So‘rov JSON formati noto‘g‘ri" } });
   }
-  if (error?.type === "entity.too.large" || Number(error?.status) === 413) {
+  if (error?.type === "entity.too.large" || (!(error instanceof HttpError)&&Number(error?.status) === 413)) {
     return res.status(413).json({ ok:false, error:{ code:"PAYLOAD_TOO_LARGE", message:"Yuborilgan ma’lumot hajmi ruxsat etilgan limitdan katta" } });
   }
   if (error?.code === "23505") {
@@ -56,6 +56,6 @@ export function errorHandler(error, req, res, _next) {
   const status = error instanceof HttpError ? error.status : (Number.isInteger(error?.status)&&error.status>=400&&error.status<600?error.status:500);
   const code = error instanceof HttpError ? error.code : (status<500&&error?.code?String(error.code):"INTERNAL_ERROR");
   const message = error instanceof HttpError ? error.message : (status<500&&error?.message?String(error.message):"Serverda kutilmagan xatolik yuz berdi");
-  if (status >= 500) console.error(JSON.stringify({event:"unhandled_api_error",requestId:req.requestId||null,method:req.method,status,errorCode:String(error?.code||"INTERNAL_ERROR").slice(0,40)}));
+  if (status >= 500) console.error(JSON.stringify({event:"unhandled_api_error",requestId:req.requestId||null,method:req.method,status,errorCode:String(error?.code||"INTERNAL_ERROR").slice(0,40),...(String(error?.code||'').startsWith('AI_')?{aiStage:/^[a-z_]{1,30}$/.test(error.details?.stage||'')?error.details.stage:undefined,aiReason:/^[a-z_]{1,50}$/.test(error.details?.reason||'')?error.details.reason:undefined,providerStatus:Number.isInteger(error.details?.providerStatus)?error.details.providerStatus:undefined}:{})}));
   return res.status(status).json({ ok:false, error:{ code, message, details:error.details } });
 }

@@ -24,6 +24,36 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
  const call=(name,args)=>{const callId=randomUUID();return {...final(),reply:null,calls:[{callId,name,args}],items:[{type:'function_call',status:'completed',name,call_id:callId,arguments:JSON.stringify(args)}]}};
  const providerFor=responses=>async(_history,{onDispatch})=>{await onDispatch();return responses.shift()};
  try{
+  await t.test('expired context is distinct from forbidden context and tool timeouts settle known spend',async()=>{
+   const f=await fixture(),first=await aiAgentChat(f.user,body('Salom'),{settings,provider:providerFor([final()])});
+   await pool.query("UPDATE ai_conversations SET expires_at=now()-interval '1 second' WHERE id=$1",[first.conversationId]);
+   await assert.rejects(()=>aiAgentChat(f.user,body('Davom',{conversationId:first.conversationId}),{settings,provider:providerFor([final()])}),e=>e.code==='AI_CONVERSATION_EXPIRED');
+   await assert.rejects(()=>aiAgentChat(f.user,body('Qoldiq'),{settings:{...settings,timeoutMs:250},provider:providerFor([call('get_business_report',{topic:'low_stock',storeId:null})]),toolRunner:()=>new Promise(resolve=>setTimeout(()=>resolve({kind:'report'}),350))}),e=>e.code==='AI_TOOL_TIMEOUT');
+   const row=(await pool.query('SELECT successes,reserved,input_tokens,spent_micros FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];
+   assert.equal(row.successes,1);assert.equal(row.reserved,0);assert.equal(Number(row.input_tokens),200);
+  });
+  await t.test('long conversation retains newest complete turns without mixing context',async()=>{
+   const f=await fixture();let conversationId;
+   for(let i=0;i<30;i++){
+    const response=await aiAgentChat(f.user,body(`Biznes savoli ${i}`,{conversationId}),{settings:{...settings,userPerMinute:100,businessPerMinute:100},provider:async(h,{onDispatch})=>{await onDispatch();assert.ok(h.length<=25);return {...final(),reply:{kind:'advice',reply:'Hisobotlarni ko‘rib chiqib, keyingi savolni aniqlashtiramiz.'}}}});
+    conversationId=response.conversationId;
+   }
+   const messages=(await pool.query('SELECT messages FROM ai_conversations WHERE id=$1',[conversationId])).rows[0].messages;
+   assert.equal(messages.length,24);assert.equal(messages.at(-2).content,'Biznes savoli 29');
+  });
+  await t.test('failed billed schema response records actual usage without consuming successful quota',async()=>{
+   const f=await fixture();let calls=0;
+   const failure=Object.assign(new Error('private output must not leak'),{code:'AI_INVALID_RESPONSE',aiUsage:{inputTokens:200,outputTokens:20,cost:tokenCostMicros(200,20)}});
+   await assert.rejects(()=>aiAgentChat(f.user,body('Hisobotni davom ettir'),{settings,provider:async(_h,{onDispatch})=>{await onDispatch();if(calls++===0)return call('get_business_report',{topic:'today_sales',storeId:null});throw failure},toolRunner:async()=>({kind:'report',report:{facts:[{id:'sales',label:'Savdo',value:'0',unit:'UZS'}],tables:[],notes:[]}})}));
+   const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];
+   assert.equal(usage.successes,0);assert.equal(usage.reserved,0);assert.equal(Number(usage.input_tokens),300);assert.equal(Number(usage.output_tokens),40);assert.equal(Number(usage.spent_micros),tokenCostMicros(300,40));
+  });
+  await t.test('several tools produce a natural anchored reply and preserve evidence for follow-up',async()=>{
+   const f=await fixture();let stage=0;
+   const result=await aiAgentChat(f.user,body('Omborda ko‘p mahsulot bo‘lsa, nega kamayganlar nol?'),{settings,provider:async(_h,{onDispatch,evidence})=>{await onDispatch();if(stage++===0)return call('get_business_report',{topic:'low_stock',storeId:null});assert.ok(evidence.length);return {...final(),reply:{kind:'results',reply:`Jami mahsulotlar bilan minimal qoldiq boshqa ko‘rsatkichlar. {{${evidence[0].id}}}`}}},toolRunner:async()=>({kind:'report',report:{from:'2026-10-15',to:'2026-10-15',facts:[{id:'low_stock_count',label:'Minimal qoldiqdagi mahsulotlar',value:'0',unit:'count'}],tables:[],notes:[]}})});
+   assert.match(result.answer,/boshqa ko‘rsatkichlar/);assert.match(result.answer,/0 ta/);
+   await aiAgentChat(f.user,body('Nega?',{conversationId:result.conversationId}),{settings,provider:async(history,{onDispatch,evidence})=>{await onDispatch();assert.ok(history.some(m=>m.role==='assistant'));assert.ok(evidence.some(e=>e.text.includes('Minimal qoldiq')));return final()}});
+  });
   await t.test('free conversation stores context, replay charges once, no client history',async()=>{
    const f=await fixture(),input=body('Biznesimni qanday yaxshilasam bo‘ladi?',{storeId:f.store});
    const first=await aiAgentChat(f.user,input,{settings,provider:providerFor([final()])});

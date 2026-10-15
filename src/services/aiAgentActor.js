@@ -2,6 +2,7 @@ import {HttpError} from '../lib/http.js';
 import {hasPermission} from '../lib/permissions.js';
 import {authorizationKey} from './aiPolicy.js';
 import {subscriptionPlan} from '../config/subscriptions.js';
+import {organizationBusinessDateISO} from '../lib/businessDate.js';
 
 export function assertAgentEnabled(settings,{write=false}={}){
  if(settings?.enabled!==true)throw new HttpError(503,'AI hozir mavjud emas','AI_UNAVAILABLE');
@@ -20,7 +21,7 @@ export async function recheckAgentActor(db,user,key=authorizationKey(user)){
  if(!org||!row||!row.active||row.must_change_password||!org.writable||authorizationKey(current)!==key)throw new HttpError(403,'Sessiya yoki ruxsatlar o‘zgargan','AI_ACCESS_CHANGED');
  const plan=org.plan_code?subscriptionPlan(org.code,org.pricing_version||1):null;
  if(!plan?.limits.aiRequests)throw new HttpError(403,'Business yoki Premium tarifi kerak','AI_PLAN_REQUIRED');
- return current;
+ return {...current,businessDate:organizationBusinessDateISO(org)};
 }
 export async function requireAgentReservation(db,user,requestId,key,{completed=false,actionId}={}){
  const row=(await db.query(`SELECT * FROM ai_requests WHERE organization_id=$1 AND user_id=$2 AND request_id=$3 FOR SHARE`,[user.organizationId,user.id,requestId])).rows[0];
