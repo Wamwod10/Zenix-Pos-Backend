@@ -87,8 +87,8 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
   await t.test('repair budget exhaustion serves only current verified facts and replay never dispatches again',async()=>{
    const f=await fixture();let attempts=0;const input=body('Bugungi savdo');
    const provider=async(_h,{onDispatch})=>{await onDispatch();attempts++;if(attempts===1)return call('get_business_report',{topic:'today_sales',storeId:null});throw Object.assign(new (await import('../src/lib/http.js')).HttpError(502,'invalid','AI_EVIDENCE_INVALID',{stage:'evidence',reason:'unsupported_numeric_claim'}),{aiUsage:{inputTokens:100,outputTokens:200,cost:tokenCostMicros(100,200)}})};
-   const result=await aiAgentChat(f.user,input,{settings:{...settings,maxOutputTokens:256},provider,toolRunner:async()=>({kind:'report',report:{facts:[{label:'Sof savdo',value:'125000',unit:'UZS'}],tables:[],notes:[]}})});
-   assert.equal(attempts,2);assert.equal(result.answerSource,'verified_fallback');assert.match(result.answer,/125000/);
+   const result=await aiAgentChat(f.user,input,{settings:{...settings,maxOutputTokens:256},provider,toolRunner:async()=>({kind:'report',report:{topic:'business_overview',from:'2026-10-09',to:'2026-10-15',facts:[{id:'today_sales_today_net',label:'Sof savdo',value:'125000',unit:'UZS',from:'2026-10-15',to:'2026-10-15'}],tables:[],notes:[]}})});
+   assert.equal(attempts,2);assert.equal(result.answerSource,'verified_fallback');assert.match(result.answer,/125 000 so‘m/);assert.ok(!result.answer.includes('Hisobot davri:'));
    const replay=await aiAgentChat(f.user,input,{settings,provider:async()=>{throw Error('must not redispatch')}});assert.deepEqual(replay,result);
    const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];assert.equal(usage.successes,0);assert.equal(Number(usage.spent_micros),tokenCostMicros(200,220));
   });

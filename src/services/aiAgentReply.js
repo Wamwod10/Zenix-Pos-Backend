@@ -35,7 +35,7 @@ export function buildAgentEvidence(toolResults){
   if(!['products','stock','locations','report','action'].includes(r?.kind))continue;
   const report=r.report;
   const scope=report?.storeId?'Tanlangan filial':'Ruxsat etilgan barcha filiallar';
-  const prefix=report?.from&&report?.to?`${report.comparisonFrom?`Joriy davr: ${report.from} - ${report.to}; Taqqoslash davri: ${report.comparisonFrom} - ${report.comparisonTo}`:`Hisobot davri: ${report.from} - ${report.to}`}; ${scope}\n`:report?scope+'\n':'';
+  const prefix=report?.topic==='business_overview'?scope+'\n':report?.from&&report?.to?`${report.comparisonFrom?`Joriy davr: ${report.from} - ${report.to}; Taqqoslash davri: ${report.comparisonFrom} - ${report.comparisonTo}`:`Hisobot davri: ${report.from} - ${report.to}`}; ${scope}\n`:report?scope+'\n':'';
   const fragments=report?[
    ...(report.notes||[]).map(note=>prefix+note),
    ...(report.facts||[]).map(f=>(f.from&&f.to?`Hisobot davri: ${f.from} - ${f.to}; ${scope}\n`:prefix)+deterministicAnswer(null,[{result:{kind:'report',report:{facts:[f]}}}])),
@@ -56,8 +56,31 @@ export const repairableAgentReply=error=>error instanceof HttpError&&(
  error.code==='AI_EVIDENCE_INVALID'&&['unsupported_numeric_claim','unsupported_business_assertion','unknown_anchor','malformed_anchor','invalid_blocks'].includes(error.details?.reason)||
  error.code==='AI_INVALID_RESPONSE'&&error.details?.stage==='parse'&&error.details?.reason==='schema_mismatch'
 );
-export function safeAgentFallback(evidence){
- return evidence.length?{answerSource:'verified_fallback',answer:'AI izohini tekshirish yakunlanmadi. Quyida backend tasdiqlagan ma’lumotlar:\n\n'+evidence.map(f=>f.text).join('\n\n')}:
+function overviewSummary(report){
+ const facts=report.facts||[],pick=id=>facts.find(f=>f.id===id&&typeof f.value==='string'&&/^-?\d+(?:\.\d+)?$/.test(f.value));
+ const number=value=>{const [whole,fraction]=value.split('.');return whole.replace(/\B(?=(\d{3})+(?!\d))/g,' ')+(fraction&&!/^0+$/.test(fraction)?'.'+fraction:'')};
+ const money=f=>number(f.value)+' so‘m',parts=[`${report.storeId?'Tanlangan filial':'Ruxsat etilgan filiallar'} bo‘yicha hisobotlardan tayyorlangan qisqa xulosa:`];
+ if(report.sellerScoped&&facts.some(f=>/^today_sales_|^profit_profit_/.test(f.id)))parts.push('Savdo va mahsulot foydasi faqat o‘z savdolaringiz bo‘yicha; bu butun filial savdosi emas.');
+ const sales=pick('today_sales_today_net'),count=pick('today_sales_sales_count');
+ if(sales)parts.push(`Bugun (${sales.to||report.to}): ro‘yxatga olingan sof savdo ${money(sales)}${count?`, savdolar soni ${number(count.value)} ta`:''}. Bu ko‘rsatkichning o‘zi savdo o‘sgani yoki pasayganini isbotlamaydi.`);
+ const available=pick('inventory_warehouse_available_products'),low=pick('inventory_warehouse_low_stock_count');
+ if(available||low)parts.push(`Qoldiqning joriy holati: ${[available?`${number(available.value)} ta mahsulotda musbat qoldiq bor`:null,low?`minimum yoki undan past qoldiqdagi mahsulotlar ${number(low.value)} ta`:null].filter(Boolean).join('; ')}. Bu mahsulot turlari soni, umumiy dona yoki kilogramm emas.`);
+ const customer=pick('customer_debt_customer_debt'),supplier=pick('supplier_debt_supplier_debt');
+ if(customer||supplier)parts.push(`Joriy qarzlar: ${[customer?`mijozlardan olinadigan ${money(customer)}`:null,supplier?`ta’minotchilarga to‘lanadigan ${money(supplier)}`:null].filter(Boolean).join('; ')}. To‘lov muddatlari bu hisobotda tekshirilmagan.`);
+ const expense=pick('expenses_expenses');
+ if(expense)parts.push(`Xarajat yozuvlari (${expense.from||report.from} — ${expense.to||report.to}): ${money(expense)}.${/^0(?:\.0+)?$/.test(expense.value)?' Bu biznesda umuman xarajat yo‘q degani emas; kiritilgan yozuvlarni tekshiring.':''}`);
+ const profit=facts.filter(f=>/^profit_profit_\d+$/.test(f.id)&&typeof f.value==='string'&&/^-?\d+(?:\.\d+)?$/.test(f.value)).slice(0,3);
+ if(profit.length)parts.push(`Mahsulot foydasi (${profit[0].from||report.from} — ${profit[0].to||report.to}):\n${profit.map(f=>`• ${f.label}: ${money(f)}`).join('\n')}\nBu tanlangan mahsulotlar foydasi, biznesning jami sof foydasi emas.`);
+ if(facts.some(f=>/^profit_profit_\d+$/.test(f.id)&&f.value===null))parts.push('Ayrim mahsulotlarning tarixiy tannarxi yetarli emas, shu sabab ularning foydasi hisoblanmagan.');
+ if(parts.length===1)return null;
+ parts.push(supplier?'Keyingi qadam: ta’minotchi hujjatlaridagi to‘lov muddatlarini tekshiring. Umumiy sof foydani baholash uchun to‘liq tannarx va xarajat ma’lumotlari kerak.':sales?'Keyingi qadam: savdoni oldingi teng davr bilan solishtiring. Shundan keyingina o‘sish yoki pasayishni baholash mumkin.':'Keyingi qadam: kerakli bo‘limning batafsil hisobotini tekshiring.');
+ return parts.join('\n\n');
+}
+export function safeAgentFallback(evidence,toolResults=[]){
+ const overview=toolResults.findLast(t=>t.result?.kind==='report'&&t.result.report?.topic==='business_overview')?.result.report;
+ const summary=overview&&overviewSummary(overview);
+ if(summary)return {answerSource:'verified_fallback',answer:summary};
+ return evidence.length?{answerSource:'verified_fallback',answer:'Tekshirilgan ma’lumotlar bo‘yicha qisqa xulosa:\n\n'+evidence.slice(0,3).map(f=>f.text).join('\n\n')+'\n\nQolgan ko‘rsatkichlar batafsil ma’lumotlarda berilgan.'}:
   {answerSource:'clarification_fallback',answer:'Javobni ishonchli ma’lumot bilan tasdiqlay olmadim. Savolni aniqlashtiring yoki kerakli hisobot, mahsulot va filialni ko‘rsating.'};
 }
 export function validateAgentReplyEvidence(reply,evidence=[]){

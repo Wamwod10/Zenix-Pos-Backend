@@ -38,7 +38,7 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   for(let step=0;step<MAX_STEPS;step++){
    signal.throwIfAborted();const current=await recheckAiActor(user,key);
    const remaining=deadline-clock(),finalizing=forceFinal||toolResults.length>0&&remaining<=finalReserve;
-   if(toolResults.length&&remaining<=1500){fallback=safeAgentFallback(buildAgentEvidence(toolResults));fallback.answer='Yangi tekshiruv uchun vaqt yetarli emas. '+fallback.answer;complete=true;break}
+   if(toolResults.length&&remaining<=1500){fallback=safeAgentFallback(buildAgentEvidence(toolResults),toolResults);fallback.answer='Yangi tekshiruv uchun vaqt yetarli emas. '+fallback.answer;complete=true;break}
    let result,repairing=false;
    for(;;){
     stage='provider';providerPending=true;callDispatched=false;progress('composing');
@@ -56,8 +56,10 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
      providerPending=false;
      if(inputTokens>settings.maxInputTokens||outputTokens>settings.maxOutputTokens||cost>settings.maxRequestMicros)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
      signal.throwIfAborted();await recheckAiActor(user,key);
-     if(preflight||repaired||settings.maxInputTokens-inputTokens<512||settings.maxOutputTokens-outputTokens<128||settings.maxRequestMicros-cost<tokenCostMicros(512,128)){
-      fallback=safeAgentFallback(buildAgentEvidence(toolResults));result={calls:[],reply:null};break;
+     const useFallback=preflight||repaired||settings.maxInputTokens-inputTokens<512||settings.maxOutputTokens-outputTokens<128||settings.maxRequestMicros-cost<tokenCostMicros(512,128);
+     console.warn(JSON.stringify({event:'ai_reply_recovery',requestId:input.requestId,aiReason:preflight?'repair_budget_limit':error.details.reason,recovery:useFallback?'verified_fallback':'repair'}));
+     if(useFallback){
+      fallback=safeAgentFallback(buildAgentEvidence(toolResults),toolResults);result={calls:[],reply:null};break;
      }
      repaired=true;repairing=true;
      // No rejected output is echoed; a single final-answer repair cannot run tools.
