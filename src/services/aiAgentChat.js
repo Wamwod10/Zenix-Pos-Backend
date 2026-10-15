@@ -9,7 +9,7 @@ import {authorizationKey} from './aiPolicy.js';
 import {reserveAi,markAiDispatched,finishAi} from './aiQuota.js';
 import {acquireConversation,releaseConversation} from './aiConversationStore.js';
 import {toolsFor,executeAgentTool,modelToolResult} from './aiAgentRegistry.js';
-import {assertAgentQuestion,renderAgentAnswer,buildAgentEvidence} from './aiAgentReply.js';
+import {assertAgentQuestion,renderAgentAnswer,buildAgentEvidence,repairableAgentReply,safeAgentFallback} from './aiAgentReply.js';
 
 const schema=z.object({requestId:z.string().uuid(),question:z.string().trim().min(1).max(1000),storeId:z.string().uuid().nullable().optional(),conversationId:z.string().uuid().nullable().optional()}).strict();
 const MAX_STEPS=6;
@@ -30,13 +30,34 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   conversation=await acquireConversation(user,{conversationId:input.conversationId,storeId,key,requestId:input.requestId,timeoutMs:settings.timeoutMs});
   const history=[...conversation.messages,{role:'user',content:question}],toolResults=[],actions=[],ids=new Set();
   const priorResults=conversation.messages.filter(m=>m.role==='assistant').flatMap(m=>{try{return JSON.parse(m.content).verifiedResults||[]}catch{return []}}).slice(-8);
-  let dispatched=false,reply=null,complete=false;
+  let dispatched=false,reply=null,complete=false,repaired=false,fallback=null;
   for(let step=0;step<MAX_STEPS;step++){
    signal.throwIfAborted();const current=await recheckAiActor(user,key);
-   stage='provider';providerPending=true;callDispatched=false;
-   const result=await provider(history,{signal,businessDate:current.businessDate,evidence:buildAgentEvidence([...toolResults,...priorResults]),tools:step===MAX_STEPS-1?[]:toolsFor(settings),budget:{inputTokens:settings.maxInputTokens-inputTokens,outputTokens:settings.maxOutputTokens-outputTokens,cost:settings.maxRequestMicros-cost},onDispatch:async()=>{if(!dispatched){await markAiDispatched(user,input.requestId);dispatched=true}callDispatched=true}});
-   if(!addUsage(result))throw new HttpError(502,'AI xarajat hisoboti noto‘g‘ri','AI_COST_LIMIT');
-   providerPending=false;
+   let result,repairing=false;
+   for(;;){
+    stage='provider';providerPending=true;callDispatched=false;
+    try{
+     result=await provider(history,{signal,businessDate:current.businessDate,evidence:buildAgentEvidence([...toolResults,...priorResults]),tools:repairing||step===MAX_STEPS-1?[]:toolsFor(settings),budget:{inputTokens:settings.maxInputTokens-inputTokens,outputTokens:settings.maxOutputTokens-outputTokens,cost:settings.maxRequestMicros-cost},onDispatch:async()=>{if(!dispatched){await markAiDispatched(user,input.requestId);dispatched=true}callDispatched=true}});
+     if(!addUsage(result))throw new HttpError(502,'AI xarajat hisoboti noto‘g‘ri','AI_COST_LIMIT');
+     providerPending=false;
+     if(repairing&&result.calls?.length)throw new HttpError(403,'Tiklashda tool chaqirish taqiqlangan','AI_TOOL_FORBIDDEN');
+     if(result.reply)renderAgentAnswer(result.reply,toolResults,{evidence:buildAgentEvidence([...toolResults,...priorResults])});
+     break;
+    }catch(error){
+     const preflight=repairing&&!callDispatched&&error instanceof HttpError&&error.status===413&&['AI_TOKEN_LIMIT','AI_COST_LIMIT'].includes(error.code);
+     if(!preflight&&!repairableAgentReply(error))throw error;
+     if(providerPending&&!preflight&&!addUsage(error.aiUsage))throw error;
+     providerPending=false;
+     if(inputTokens>settings.maxInputTokens||outputTokens>settings.maxOutputTokens||cost>settings.maxRequestMicros)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
+     signal.throwIfAborted();await recheckAiActor(user,key);
+     if(preflight||repaired||settings.maxInputTokens-inputTokens<512||settings.maxOutputTokens-outputTokens<128||settings.maxRequestMicros-cost<tokenCostMicros(512,128)){
+      fallback=safeAgentFallback(buildAgentEvidence(toolResults));result={calls:[],reply:null};break;
+     }
+     repaired=true;repairing=true;
+     // No rejected output is echoed; a single final-answer repair cannot run tools.
+     history.push({role:'developer',content:'The final answer failed validation. Return the reply JSON once more, with no tools. Use only server {{id}} anchors for every business quantity/date/name. Do not copy numbers into prose. Explain concepts without unsupported claims, or ask for clarification.'});
+    }
+   }
    signal.throwIfAborted();
    if(inputTokens>settings.maxInputTokens||outputTokens>settings.maxOutputTokens||cost>settings.maxRequestMicros)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
    if(!Array.isArray(result.calls)||result.calls.length>1)throw new HttpError(502,'AI vosita javobi noto‘g‘ri','AI_INVALID_RESPONSE');
@@ -65,11 +86,11 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   stage='evidence';
   const report=toolResults.findLast(t=>t.result.kind==='report')?.result.report||null;
   const evidence=buildAgentEvidence([...toolResults,...priorResults]);
-  const response={requestId:input.requestId,conversationId:conversation.id,answer:renderAgentAnswer(reply,toolResults,{evidence}),report,insights:[],toolResults,actions,generatedAt:new Date().toISOString()};
+  const response={requestId:input.requestId,conversationId:conversation.id,...(fallback||{answer:renderAgentAnswer(reply,toolResults,{evidence})}),report,insights:[],toolResults,actions,generatedAt:new Date().toISOString()};
   // Per-call rounding is conservative; accounting boundary uses the same whole-turn total.
   const totalCost=tokenCostMicros(inputTokens,outputTokens);
   if(totalCost>settings.maxRequestMicros)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
-  stage='settlement';settled=Boolean(await finishAi(user,input.requestId,{response,inputTokens,outputTokens,cost:totalCost}));
+  stage='settlement';settled=Boolean(await finishAi(user,input.requestId,{response,inputTokens,outputTokens,cost:totalCost,countSuccess:!fallback}));
   if(!settled)throw new HttpError(409,'AI so‘rov muddati tugagan','AI_TIMEOUT');
   completedHistory=[...conversation.messages,{role:'user',content:question},{role:'assistant',content:JSON.stringify({answer:response.answer,verifiedResults:toolResults.map(t=>({name:t.name,result:modelToolResult(t.result)}))})}];
   return response;

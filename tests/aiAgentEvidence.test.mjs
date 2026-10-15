@@ -13,6 +13,10 @@ test('evidence anchors preserve context and natural reply',()=>{
 test('general numeric advice can remain natural',()=>{
  assert.equal(renderAgentAnswer({kind:'advice',reply:'Umumiy tavsiya: 3 bosqichda tekshiring: savdo, xarajat va qoldiq.'},[]),'Umumiy tavsiya: 3 bosqichda tekshiring: savdo, xarajat va qoldiq.');
 });
+
+test('ordinary Uzbek connective words are not invented statistics',()=>{
+ for(const reply of ['Bu ikki xil tushuncha.','Bir vaqtning o‘zida savdo va qoldiqni tekshirish mumkin.','Hisobotlarni bir-biridan ajratib ko‘ring.'])assert.equal(renderAgentAnswer({kind:'advice',reply},[]),reply);
+});
 test('numbered advice is not a bypass for invented business quantities',()=>{
  for(const reply of ['100 ta mahsulot bor.','Qoldiq oltita.','3 maslahat: savdo 100000.','Mahsulotlar nol dona.','Ellikta mahsulot mavjud.','O’ttizta mahsulot mavjud.'])assert.throws(()=>renderAgentAnswer({kind:'advice',reply},[]),e=>e.code==='AI_EVIDENCE_INVALID');
  assert.equal(renderAgentAnswer({kind:'advice',reply:'1. Hisobotlarni tekshiring.\n2. Xarajatlarni toifalang.'},[]),'1. Hisobotlarni tekshiring.\n2. Xarajatlarni toifalang.');
