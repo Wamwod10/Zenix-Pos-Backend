@@ -24,6 +24,28 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
  const call=(name,args)=>{const callId=randomUUID();return {...final(),reply:null,calls:[{callId,name,args}],items:[{type:'function_call',status:'completed',name,call_id:callId,arguments:JSON.stringify(args)}]}};
  const providerFor=responses=>async(_history,{onDispatch})=>{await onDispatch();return responses.shift()};
  try{
+  await t.test('repeated read calls reuse current-turn data; a new turn rereads fresh data',async()=>{
+   const f=await fixture();let reads=0,step=0;
+   const runner=async()=>{reads++;return {kind:'report',report:{topic:'today_sales',facts:[{label:'Sof savdo',value:'100',unit:'UZS'}],tables:[],notes:[]}}};
+   const response=await aiAgentChat(f.user,body('Bugungi savdo'),{settings,toolRunner:runner,provider:async(_h,{onDispatch})=>{await onDispatch();return step++<2?call('get_business_report',{topic:'today_sales',storeId:null}):final()}});
+   assert.equal(reads,1);
+   await aiAgentChat(f.user,body('Qayta tekshir',{conversationId:response.conversationId}),{settings,toolRunner:runner,provider:providerFor([call('get_business_report',{topic:'today_sales',storeId:null}),final()])});assert.equal(reads,2);
+  });
+  await t.test('time reserve disables further exploration but preserves grounded followup',async()=>{
+   const f=await fixture();let elapsed=0,step=0;
+   await aiAgentChat(f.user,body('Biznesimni tahlil qil'),{settings,clock:()=>elapsed,provider:async(_h,{onDispatch,tools,evidence})=>{await onDispatch();if(step++===0){elapsed=settings.timeoutMs-5000;return call('get_business_report',{topic:'today_sales',storeId:null})}assert.deepEqual(tools,[]);return {...final(),reply:{kind:'results',reply:`Tekshirilgan natija: {{${evidence[0].id}}}`}}},toolRunner:async()=>({kind:'report',report:{facts:[{label:'Sof savdo',value:'100',unit:'UZS'}],tables:[],notes:[]}})});
+   assert.equal(step,2);
+  });
+  await t.test('very little time returns current facts without another dispatch or success quota',async()=>{
+   const f=await fixture();let elapsed=0,dispatches=0;
+   const response=await aiAgentChat(f.user,body('Biznesimni tahlil qil'),{settings,clock:()=>elapsed,provider:async(_h,{onDispatch})=>{await onDispatch();dispatches++;return call('get_business_report',{topic:'today_sales',storeId:null})},toolRunner:async()=>{elapsed=settings.timeoutMs-1000;return {kind:'report',report:{facts:[{label:'Sof savdo',value:'123',unit:'UZS'}],tables:[],notes:[]}}}});
+   assert.equal(dispatches,1);assert.equal(response.answerSource,'verified_fallback');assert.match(response.answer,/123/);
+   const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];assert.equal(usage.successes,0);assert.equal(Number(usage.input_tokens),100);
+  });
+  await t.test('cached reads cannot bypass live permission revocation',async()=>{
+   const f=await fixture();let reads=0,step=0;
+   await assert.rejects(()=>aiAgentChat(f.user,body('Savdoni tekshir'),{settings,provider:async(_h,{onDispatch})=>{await onDispatch();if(step++===1)await pool.query("UPDATE users SET app_role='SALES' WHERE id=$1",[f.user.id]);return call('get_business_report',{topic:'today_sales',storeId:null})},toolRunner:async()=>{reads++;return {kind:'report',report:{facts:[],tables:[],notes:[]}}}}),e=>e.code==='AI_ACCESS_CHANGED');assert.equal(reads,1);
+  });
   await t.test('numeric output is repaired once with no tools and all calls billed once',async()=>{
    const f=await fixture();let attempts=0;
    const response=await aiAgentChat(f.user,body('Bugungi savdo natijalarini tahlil qil'),{settings,provider:async(_h,{onDispatch,tools,evidence})=>{

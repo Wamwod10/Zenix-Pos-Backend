@@ -10,6 +10,7 @@ test('read analytics schemas reject invalid, unbounded and extra arguments',asyn
  for(const extra of [{from:'2026-02-30'},{to:'2025-01-01'},{from:'2020-01-01'},{organizationId:randomUUID()}])assert.equal(s.compare_sales_periods.safeParse({...dates,...extra}).success,false);
  assert.equal(s.get_product_sales_report.safeParse({storeId:null,ranking:'slow',from:null,to:'2026-01-31'}).success,false);
  assert.equal(s.get_warehouse_summary.safeParse({storeId:null,sql:'SELECT 1'}).success,false);
+ assert.equal(s.get_business_overview.safeParse({storeId:null,organizationId:randomUUID()}).success,false);
 });
 
 const url=process.env.AI_AGENT_TEST_DATABASE_URL;
@@ -34,6 +35,20 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
  const facts=r=>Object.fromEntries(r.report.facts.map(f=>[f.id,f.value]));
  try{
   const a=await fixture(),b=await fixture();
+  await t.test('one overview combines authorized facts with explicit periods and no invented total profit',async()=>{
+   const report=(await executeAgentTool(a.user,'get_business_overview',{storeId:a.store},context)).report;
+   assert.equal(report.topic,'business_overview');assert.equal(report.storeId,a.store);
+   assert.ok(report.facts.some(f=>f.id==='today_sales_sales_count'));
+   assert.ok(report.facts.some(f=>f.id==='inventory_warehouse_catalog_products'));
+   assert.ok(report.facts.every(f=>f.from&&f.to));assert.equal(new Set(report.facts.map(f=>f.id)).size,report.facts.length);
+   assert.ok(!report.facts.some(f=>f.id==='total_profit'));
+   const sale=(await pool.query('INSERT INTO sales(organization_id,store_id,seller_id,sale_number,total,business_date) VALUES($1,$2,$3,$4,200,$5) RETURNING id',[a.org,a.store,a.user.id,randomUUID(),report.to])).rows[0].id;
+   await pool.query(`INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,line_total,metadata) VALUES($1,$2,'Rice',2,100,200,'{"unitCost":50}')`,[sale,a.products[0]]);
+   const live=(await executeAgentTool(a.user,'get_business_overview',{storeId:a.store},context)).report;
+   assert.equal(live.facts.find(f=>f.id==='today_sales_today_net').value,'200.00');
+   const profit=live.facts.find(f=>f.id==='profit_profit_0');assert.equal(profit.value,'100.00');assert.match(profit.label,/Rice/);assert.notEqual(profit.from,report.to);
+   await assert.rejects(()=>executeAgentTool(a.user,'get_business_overview',{storeId:b.store},context),e=>e.code==='STORE_NOT_FOUND');
+  });
   await t.test('catalog, available and low stock are independent, including zero low stock',async()=>{
    const r=await executeAgentTool(a.user,'get_warehouse_summary',{storeId:null},context),f=facts(r);
    assert.equal(f.warehouse_catalog_products,'2');assert.equal(f.warehouse_available_products,'2');assert.equal(f.warehouse_low_stock_count,'0');assert.equal(f.warehouse_count,'1');assert.equal(f.warehouse_store_count,'1');
@@ -64,6 +79,8 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
    await assert.rejects(()=>executeAgentTool(a.user,'get_warehouse_summary',{storeId:b.store},{...context,storeId:a.store}),e=>e.code==='STORE_FORBIDDEN');
    await pool.query("UPDATE users SET app_role='SALES' WHERE id=$1",[a.user.id]);
    const seller={...a.user,appRole:'SALES'};
+   const overview=(await executeAgentTool(seller,'get_business_overview',{storeId:null},context)).report;
+   assert.equal(overview.sellerScoped,true);assert.equal(overview.storeId,a.store);assert.ok(overview.facts.every(f=>f.id.startsWith('today_sales_')));
    await assert.rejects(()=>executeAgentTool(seller,'get_warehouse_summary',{storeId:null},context),e=>e.code==='AI_FORBIDDEN');
    await assert.rejects(()=>executeAgentTool(seller,'compare_sales_periods',{storeId:b.store,from:'2026-02-01',to:'2026-02-28',comparisonFrom:'2026-01-01',comparisonTo:'2026-01-31'},context),e=>e.code==='STORE_FORBIDDEN');
    const r=await executeAgentTool(seller,'get_product_sales_report',{storeId:null,ranking:'top',from:'2026-02-01',to:'2026-02-28'},context);assert.equal(r.report.sellerScoped,true);assert.equal(r.report.storeId,a.store);

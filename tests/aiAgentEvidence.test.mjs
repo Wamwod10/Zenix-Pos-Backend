@@ -14,6 +14,11 @@ test('general numeric advice can remain natural',()=>{
  assert.equal(renderAgentAnswer({kind:'advice',reply:'Umumiy tavsiya: 3 bosqichda tekshiring: savdo, xarajat va qoldiq.'},[]),'Umumiy tavsiya: 3 bosqichda tekshiring: savdo, xarajat va qoldiq.');
 });
 
+test('table evidence carries the exact period and branch scope',()=>{
+ const report={from:'2026-10-01',to:'2026-10-15',storeId:'test',facts:[],notes:[],tables:[{title:'Mahsulot foydasi',from:'2026-10-09',to:'2026-10-15',columns:['Mahsulot','Foyda'],rows:[['Guruch','100']]}]};
+ const [e]=buildAgentEvidence([{result:{kind:'report',report}}]);assert.match(e.text,/2026-10-09 - 2026-10-15/);assert.match(e.text,/Tanlangan filial/);assert.match(e.text,/Guruch/);
+});
+
 test('ordinary Uzbek connective words are not invented statistics',()=>{
  for(const reply of ['Bu ikki xil tushuncha.','Bir vaqtning o‘zida savdo va qoldiqni tekshirish mumkin.','Hisobotlarni bir-biridan ajratib ko‘ring.'])assert.equal(renderAgentAnswer({kind:'advice',reply},[]),reply);
 });

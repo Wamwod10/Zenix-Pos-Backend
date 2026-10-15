@@ -39,7 +39,7 @@ export function buildAgentEvidence(toolResults){
   const fragments=report?[
    ...(report.notes||[]).map(note=>prefix+note),
    ...(report.facts||[]).map(f=>(f.from&&f.to?`Hisobot davri: ${f.from} - ${f.to}; ${scope}\n`:prefix)+deterministicAnswer(null,[{result:{kind:'report',report:{facts:[f]}}}])),
-   ...(report.tables||[]).flatMap(t=>(t.rows||[]).slice(0,10).map(row=>t.title+': '+t.columns.map((column,i)=>column+': '+row[i]).join('; '))),
+   ...(report.tables||[]).flatMap(t=>(t.rows||[]).slice(0,10).map(row=>(t.from&&t.to?`Hisobot davri: ${t.from} - ${t.to}; ${scope}\n`:prefix)+t.title+': '+t.columns.map((column,i)=>column+': '+row[i]).join('; '))),
   ]:r.kind==='stock'&&r.locations?.length?r.locations.map(location=>deterministicAnswer(null,[{result:{...r,locations:[location]}}])):r.kind==='locations'&&r.locations?.length?r.locations.map(location=>deterministicAnswer(null,[{result:{...r,locations:[location]}}])):[deterministicAnswer(null,[entry])];
   for(const fragment of fragments){
    const text=fragment;

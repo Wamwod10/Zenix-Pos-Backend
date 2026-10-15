@@ -1,11 +1,13 @@
 import {z} from 'zod';
 import {scopedStoreId,assertOrganizationStore} from '../lib/storeScope.js';
 import {organizationBusinessDateISO} from '../lib/businessDate.js';
-import {authorizeTopic} from './aiPolicy.js';
+import {authorizeTopic,allowedTopics} from './aiPolicy.js';
+import {aiReport} from './aiReports.js';
 
 const storeId=z.string().uuid().nullable(),date=z.string().date();
 const bounded=(from,to)=>from<=to&&(Date.parse(to)-Date.parse(from))/86400000<366;
 export const READ_REPORT_SCHEMAS=Object.freeze({
+ get_business_overview:z.object({storeId}).strict(),
  get_warehouse_summary:z.object({storeId}).strict(),
  compare_sales_periods:z.object({storeId,from:date,to:date,comparisonFrom:date,comparisonTo:date}).strict().refine(v=>bounded(v.from,v.to)&&bounded(v.comparisonFrom,v.comparisonTo),'Periods must be ordered and at most 366 days'),
  get_product_sales_report:z.object({storeId,ranking:z.enum(['top','slow']),from:date.nullable(),to:date.nullable()}).strict().refine(v=>(v.from===null&&v.to===null)||(v.from!==null&&v.to!==null&&bounded(v.from,v.to)),'Supply both dates; period must be ordered and at most 366 days'),
@@ -15,13 +17,33 @@ const shift=(day,n)=>{const d=new Date(`${day}T12:00:00Z`);d.setUTCDate(d.getUTC
 
 // The caller must recheck the actor in the same transaction before entering here.
 export async function readAgentReport(db,user,name,input){
- authorizeTopic(user,name==='get_warehouse_summary'?'low_stock':'top_products');
+ authorizeTopic(user,name==='get_business_overview'?'recommendations':name==='get_warehouse_summary'?'low_stock':'top_products');
  const store=scopedStoreId(user,input.storeId),seller=['CASHIER','SALES'].includes(user.appRole)?user.id:null;
  if(store)await assertOrganizationStore(db,user.organizationId,store,{activeOnly:false});
  const org=(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
  const today=organizationBusinessDateISO(org),facts=[],tables=[],notes=[];
  const report={topic:name,from:input.from||today,to:input.to||today,storeId:store,sellerScoped:Boolean(seller),facts,tables,notes,eligibleInsights:[]};
  const fact=(id,text,value,unit='UZS')=>facts.push({id,label:text,value:value===null?null:String(value),unit});
+ if(name==='get_business_overview'){
+  // Same transaction/snapshot and the same topic permissions as individual reads.
+  // Profit is a bounded product ranking, never an invented total business profit.
+  const allowed=new Set(allowedTopics(user));report.topic='business_overview';report.from=shift(today,-6);
+  for(const topic of ['today_sales','profit','expenses','customer_debt','supplier_debt']){
+   if(!allowed.has(topic))continue;
+   const component=await aiReport(user,topic,store,db),snapshot=topic.endsWith('_debt');
+   const period={from:snapshot?today:component.from,to:component.to};
+   for(const [i,f] of component.facts.slice(0,topic==='profit'?3:4).entries())facts.push({...f,id:`${topic}_${f.id}`,label:topic==='profit'?`${component.tables[0]?.rows[i]?.[0]||'Mahsulot'} foydasi`:f.label,...period});
+   for(const table of component.tables.slice(0,1))tables.push({...table,rows:table.rows.slice(0,3),...period});
+   if(topic==='profit')notes.push('Tarixiy tannarx yetishmasa mahsulot foydasi hisoblanmaydi. Umumiy ko‘rinishda foyda bo‘yicha eng yuqori 3 mahsulotgacha beriladi; bu biznesning jami yoki sof foydasi emas.');
+  }
+  if(allowed.has('low_stock')){
+   const inventory=await readAgentReport(db,user,'get_warehouse_summary',{storeId:store});
+   for(const f of inventory.facts)facts.push({...f,id:`inventory_${f.id}`,from:today,to:today});
+   notes.push(...inventory.notes);
+  }
+  notes.push('Faqat ruxsat etilgan bo‘limlar jamlangan. Savdo bugungi, mahsulot foydasi va xarajatlar haftalik, qarz va qoldiq joriy holatdir. Sabablar yoki kelajak talabi bu raqamlardan isbotlanmaydi.');
+  return report;
+ }
  if(name==='get_warehouse_summary'){
   const row=(await db.query(`WITH stock AS (
    SELECT p.id,p.min_stock,COALESCE(sum(b.quantity),0) quantity FROM products p
