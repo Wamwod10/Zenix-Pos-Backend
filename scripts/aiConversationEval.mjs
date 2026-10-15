@@ -11,13 +11,17 @@ const groups=[
  ['comparison','comparison',['2026-10-01 dan 2026-10-07 gacha savdoni oldingi hafta bilan solishtiring.','Qaysi davr ko\'proq savdo qilgan?','Farq qancha?','Bu o\'sishning sababini ayta olasizmi?','Shu raqamlar asosida qanday umumiy tavsiya berasiz?']],
  ['products','products',['Guruch mahsulotini toping.','Uning ombordagi qoldig\'i qancha?','Eng yaxshi sotilgan mahsulot qaysi?','Kam sotilgan mahsulotning sababi nima?','Yana qaysi ma\'lumotni tekshirish kerak?']],
  ['receipt','receipt_clarification',['Guruchdan 10 kilo kirim qilmoqchiman.','Kirim uchun yana nima kerak?','Tannarxni hozir bilmayman, nima qilaman?','Tasdiqlamasdan kirim bajariladimi?','Hozircha faqat nimani tayyorlash mumkin?']],
+ ['latest','latest_sale',['Ohirgi savdo haqida malumot ber.','Охирги савдода нималар сотилган?','Bugun savdo bo‘lmasa ham oxirgi chekni toping.','O‘sha savdoning to‘lov usuli qanday?','Boshqa filialdagi oxirgi savdoni ko‘rish uchun doirani almashtirish kerakmi?']],
+ ['ranking','quantity_vs_revenue',['Eng kop qaysi tovar sotilgan?','Miqdor bo‘yicha ayting, tushum bo‘yicha emas.','Quruq salfetka 100 dona nomidagi 100 sotilgan miqdormi?','Eng ko‘p tushum bergan mahsulot qaysi?','Eng yaxshi mahsulot deganda miqdor, tushum yoki foydani nazarda tutishimni aniqlashtiring.']],
 ];
 export const AI_CONVERSATION_EVAL_CASES=Object.freeze(groups.flatMap(([conversation,capability,questions])=>questions.map((question,index)=>Object.freeze({id:conversation+'_'+(index+1),conversation,question,expectedCapabilities:[capability,...(index?['context_followup']:[])]}))));
-const topics=['inventory','sales','comparison','products','receipt'];
+const topics=['inventory','sales','comparison','products','receipt','latest','ranking'];
 const tools=[{type:'function',name:'read_synthetic_fixture',description:'Read synthetic test data only. inventory: total vs low stock; sales/comparison: dated reports; products: product stock; receipt: missing receipt fields, no execution.',strict:true,parameters:{type:'object',properties:{topic:{type:'string',enum:topics}},required:['topic'],additionalProperties:false}}];
 const report=(facts,notes=[],dates={})=>({kind:'report',report:{topic:'synthetic',from:'2026-10-15',to:'2026-10-15',storeId:null,facts,tables:[],notes,...dates}});
 const fact=(id,label,value,unit='count')=>({id,label,value,unit});
 const fixtures={
+ latest:report([fact('number','Oxirgi savdo raqami','TEST-014','text'),fact('date','Oxirgi savdo vaqti','2026-10-14T10:00:00+05:00','text'),fact('total','Oxirgi savdo jami','69000','UZS'),fact('payment','To‘lov usuli','Naqd','text'),fact('item','Quruq salfetka 100 dona sotilgan miqdori','2','dona')],['Bugun savdo yo‘q. Bu barcha sanalar orasidagi oxirgi savdo; mahsulot nomidagi 100 qadoq tavsifi, sotilgan miqdor emas.'],{from:'2026-10-14',to:'2026-10-14'}),
+ ranking:report([fact('quantity_leader','Miqdor bo‘yicha yetakchi: Quruq salfetka 100 dona','2','dona'),fact('quantity_revenue','Quruq salfetka 100 dona sof tushumi','69000','UZS'),fact('revenue_leader','Tushum bo‘yicha yetakchi: Choy','90000','UZS'),fact('revenue_quantity','Choy sotilgan miqdori','1','dona')],['Reyting miqdor va tushum uchun alohida. Mahsulot nomidagi 100 dona qadoq tavsifi, sotilgan miqdor 2 dona. Foyda haqida tannarxsiz xulosa berilmaydi.']),
  inventory:report([fact('total','Jami faol katalog mahsulotlari',2),fact('stocked','Qoldiq bor mahsulotlar',2),fact('low','Minimumdan past mahsulotlar',0)],['Jami katalog va minimumdan past mahsulotlar alohida ko\'rsatkichlar. Minimumdan past son jami katalog soni emas.']),
  sales:report([fact('gross','Yalpi savdo',120000,'UZS'),fact('refunds','Qaytarish',20000,'UZS'),fact('net','Sof savdo',100000,'UZS')],['Sabab va prognoz uchun tarixiy dalil yetarli emas.']),
  comparison:report([{...fact('current','Joriy davr sof savdosi',100000,'UZS'),from:'2026-10-01',to:'2026-10-07'},{...fact('prior','Taqqoslash davri sof savdosi',80000,'UZS'),from:'2026-09-24',to:'2026-09-30'},fact('difference','Joriy davr minus oldingi davr',20000,'UZS')],['Davrlar farqi sababni isbotlamaydi.'],{from:'2026-10-01',to:'2026-10-07',comparisonFrom:'2026-09-24',comparisonTo:'2026-09-30'}),
@@ -28,7 +32,7 @@ const safeCodes=new Set(['AI_INVALID_RESPONSE','AI_EVIDENCE_INVALID','AI_PROVIDE
 export async function runAiConversationEval({source=process.env,fetchImpl=fetch,write=console.log,cases=AI_CONVERSATION_EVAL_CASES}={}){
  if(source.ZENIX_AI_LIVE_EVAL!=='true')throw new Error('Synthetic eval requires explicit opt-in');
  if(!source.OPENAI_API_KEY?.trim())throw new Error('Synthetic eval requires server API key');
- if(!Array.isArray(cases)||cases.length>30)throw new Error('Synthetic eval case limit');
+ if(!Array.isArray(cases)||cases.length>40)throw new Error('Synthetic eval case limit');
  const settings={...aiSettings({OPENAI_API_KEY:source.OPENAI_API_KEY,ZENIX_AI_MODEL:source.ZENIX_AI_MODEL}),enabled:true,writesEnabled:false};
  const provider=createAiAgentProvider(settings,fetchImpl),maxTotalCostMicros=60000;
  const totals={inputTokens:0,outputTokens:0,costMicros:0,requests:0};

@@ -1,0 +1,61 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {assertSafeTestDatabaseUrl} from '../scripts/assertTestDatabase.js';
+const url=process.env.AI_AGENT_TEST_DATABASE_URL;
+test('intelligence SQL expectations: 50 products, historical documents and scoped reports',{skip:!url,timeout:60000},async()=>{
+ assertSafeTestDatabaseUrl(url);process.env.DATABASE_URL=url;process.env.NODE_ENV='test';
+ const {pool}=await import('../src/db/pool.js');
+ const {readAgentReport}=await import('../src/services/aiReadReports.js');
+ const {aiReport}=await import('../src/services/aiReports.js');
+ const db=await pool.connect();await db.query('BEGIN');
+ try{
+  const org=(await db.query("INSERT INTO organizations(name,plan_code,license_status,expiry_date) VALUES('SQL expectation fixture','BUSINESS','ACTIVE','2099-01-01') RETURNING id")).rows[0].id;
+  const stores=[];for(const name of ['Chilonzor','Yunusobod'])stores.push((await db.query('INSERT INTO stores(organization_id,name) VALUES($1,$2) RETURNING id',[org,name])).rows[0].id);
+  const seller=(await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Seller',$3,'test','SALES') RETURNING id",[org,stores[0],randomUUID()])).rows[0].id;
+  const owner={id:seller,organizationId:org,appRole:'OWNER'},salesUser={...owner,appRole:'SALES',storeId:stores[0]};
+  const names=['Quruq salfetka 100 dona','Guruch lazer','Coca-Cola 1.5 litr','Non patir','Sut 1 litr','Shakar','Choy qora','Yog 1 litr','Makaron','Tuz'];
+  const products=[];for(let i=0;i<50;i++)products.push((await db.query('INSERT INTO products(organization_id,name,unit,min_stock) VALUES($1,$2,$3,0) RETURNING id',[org,i<10?names[i]:`${names[i%10]} nav ${Math.floor(i/10)+1}`,i===1?'kg':'piece'])).rows[0].id);
+  const read=(name,input={},actor=owner)=>readAgentReport(db,actor,name,{storeId:null,...input});
+  const empty=await read('get_latest_sale');assert.equal(empty.sale,null);assert.equal(empty.latestSale,null);assert.equal(empty.from,null);assert.equal(empty.to,null);
+  const today=(await read('get_warehouse_summary')).to;
+  async function sale(store,product,quantity,price,cost,created,day=today,actor=seller){
+   const total=(Number(quantity)*Number(price)).toFixed(2);
+   const id=(await db.query('INSERT INTO sales(organization_id,store_id,seller_id,sale_number,total,business_date,created_at) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',[org,store,actor,randomUUID(),total,day,created])).rows[0].id;
+   await db.query('INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,line_total,metadata) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,product,names[products.indexOf(product)]||'Mahsulot',quantity,price,total,JSON.stringify({...cost===null?{}:{unitCost:cost},unit:product===products[1]?'kg':'piece'})]);
+   await db.query("INSERT INTO sale_payments(sale_id,method,amount) VALUES($1,'cash',$2)",[id,total]);return id;
+  }
+  const pack=await sale(stores[0],products[0],3,1000,400,'2010-01-01T10:00:00Z');
+  await db.query('INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,business_date,metadata) VALUES($1,$2,$3,$4,1,1000,$5,$6)',[org,pack,stores[0],products[0],today,JSON.stringify({unitCost:400})]);
+  const rice=await sale(stores[0],products[1],1.25,10000,6000,'2011-01-01T10:00:00Z');
+  await sale(stores[0],products[2],10,100,null,'2009-01-01T10:00:00Z');
+  const branchSale=await sale(stores[1],products[3],4,100,20,'2012-01-01T10:00:00Z',today,null);
+  const latest=await read('get_latest_sale');assert.equal(latest.latestSale.id,branchSale);assert.equal(latest.sale.total,'400.00');assert.equal(latest.sale.items[0].quantity,'4.000');assert.equal(latest.sale.payments[0].amount,'400.00');assert.equal(latest.latestSale.storeId,stores[1]);
+  const branch=await read('get_latest_sale',{storeId:stores[0]});assert.equal(branch.latestSale.id,rice);assert.equal(branch.sale.total,'12500.00');assert.equal(branch.sale.items[0].unit,'kg');assert.equal(branch.sale.items[0].quantity,'1.250');
+  const exact=await read('get_latest_sale',{saleId:pack});assert.equal(exact.latestSale.id,pack);assert.equal(exact.sale.items[0].name,names[0]);assert.equal(exact.sale.items[0].quantity,'3.000');assert.equal(exact.sale.payments[0].amount,'3000.00');
+  const missing=await read('get_latest_sale',{saleId:randomUUID()});assert.equal(missing.sale,null);
+  const wrongBranch=await read('get_latest_sale',{storeId:stores[0],saleId:branchSale});assert.equal(wrongBranch.sale,null);
+  const scoped=await read('get_latest_sale',{},salesUser);assert.equal(scoped.latestSale.id,rice);assert.equal(scoped.sellerScoped,true);assert.equal(scoped.storeId,stores[0]);
+  await assert.rejects(()=>read('get_latest_sale',{storeId:stores[1]},salesUser),e=>e.code==='STORE_FORBIDDEN');
+  const legacy=await aiReport(owner,'top_products',stores[0],db);
+  assert.equal(legacy.facts[0].productName,names[2]);assert.equal(legacy.facts[0].qty,'10.000');
+  const p=legacy.facts.find(f=>f.productId===products[0]&&f.metric==='revenue');assert.equal(p.qty,'2.000');assert.equal(p.value,'2000.00');assert.equal(p.quantityUnit,'piece');assert.equal(p.productName,names[0]);
+  const profit=await aiReport(owner,'profit',stores[0],db);
+  assert.equal(profit.facts.find(f=>f.productId===products[0]&&f.metric==='profit').value,'1200.00');
+  assert.equal(profit.facts.find(f=>f.productId===products[2]&&f.metric==='profit').value,null);
+  const overview=await read('get_business_overview');const leaders=overview.facts.filter(f=>f.metric==='profit');
+  assert.equal(leaders.length,3);assert.ok(leaders.every(f=>f.unit==='UZS'));assert.equal(leaders[0].productName,names[1]);assert.equal(leaders[1].productName,names[0]);assert.equal(leaders[2].productName,names[3]);
+  const revenue=await read('get_product_sales_report',{ranking:'top',from:today,to:today,storeId:stores[0]});
+  assert.equal(revenue.tables[0].rows[0][0],names[1]);assert.equal(revenue.tables[0].rows[0][2],'1.250');assert.equal(revenue.tables[0].rows[0][3],'12500.00');
+  const stock=await read('get_warehouse_summary');const f=Object.fromEntries(stock.facts.map(f=>[f.id,f.value]));assert.equal(f.warehouse_catalog_products,'50');assert.equal(f.warehouse_store_count,'2');assert.equal(f.warehouse_count,'2');assert.equal(f.warehouse_available_products,'0');
+  const old=await sale(stores[0],products[4],2,10,5,'2008-01-01T10:00:00Z','2024-01-02');
+  const current=await sale(stores[0],products[4],3,10,5,'2008-02-01T10:00:00Z','2024-02-02');
+  await db.query("INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,business_date) VALUES($1,$2,$3,$4,1,10,'2024-02-03')",[org,current,stores[0],products[4]]);
+  const comparison=await read('compare_sales_periods',{from:'2024-02-01',to:'2024-02-28',comparisonFrom:'2024-01-01',comparisonTo:'2024-01-31'});const c=Object.fromEntries(comparison.facts.map(f=>[f.id,f.value]));
+  assert.equal(c.period_current_net,'20.00');assert.equal(c.period_current_refunds,'10.00');assert.equal(c.period_delta_net,'0.00');assert.equal(c.period_current_count,'1');
+  const foreign=(await db.query("INSERT INTO organizations(name,plan_code,license_status,expiry_date) VALUES('Foreign fixture','BUSINESS','ACTIVE','2099-01-01') RETURNING id")).rows[0].id;
+  const foreignRead=await read('get_latest_sale',{saleId:pack},{...owner,organizationId:foreign});assert.equal(foreignRead.sale,null);
+  await assert.rejects(()=>read('get_latest_sale',{storeId:stores[0]},{...owner,organizationId:foreign}),e=>e.code==='STORE_NOT_FOUND');
+  assert.equal((await read('get_latest_sale')).latestSale.id,branchSale);assert.ok(old);
+ }finally{await db.query('ROLLBACK');db.release();await pool.end()}
+});

@@ -204,3 +204,13 @@ test('structured replies validate blocks and receive bounded memory as data',asy
  assert.deepEqual((await p(history,{...options,memory,evidence:[{id:'fabc',text:'Qoldiq: 12 kg'}]})).reply,reply);
  await assert.rejects(()=>provider([message({...reply,blocks:[{type:'paragraph',text:'Qoldiq 999 kg',factIds:[]}]})])(history,options),e=>e.code==='AI_EVIDENCE_INVALID');
 });
+test('provider guides latest sale, metric and packaging semantics without relaxing anchors',async()=>{
+ const p=provider([message()],async(url,{body})=>{
+  const instructions=JSON.parse(body).input[0].content;
+  assert.match(instructions,/get_latest_sale across all dates/);assert.match(instructions,/Most sold means net quantity, not revenue or profit/);
+  assert.match(instructions,/never quantity multipliers/);assert.match(instructions,/Ambiguous metric or product: clarify/);
+  assert.match(instructions,/server \{\{id\}\} anchors or block factIds only/);
+  return Response.json(payload([message()]));
+ });
+ await p(history,options);
+});

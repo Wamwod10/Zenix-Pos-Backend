@@ -35,6 +35,19 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
  const facts=r=>Object.fromEntries(r.report.facts.map(f=>[f.id,f.value]));
  try{
   const a=await fixture(),b=await fixture();
+  await t.test('latest sale reads historical items, exact totals and original payments within tenant/store scope',async()=>{
+   const empty=(await executeAgentTool(a.user,'get_latest_sale',{storeId:null},context)).report;
+   assert.equal(empty.sale,null);assert.equal(empty.from,null);
+   const sale=(await pool.query("INSERT INTO sales(organization_id,store_id,seller_id,sale_number,total,business_date,created_at) VALUES($1,$2,$3,$4,12500.25,'2020-01-01','2020-01-01T12:00:00Z') RETURNING id",[a.org,a.store,a.user.id,randomUUID()])).rows[0].id;
+   await pool.query(`INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,line_total,metadata) VALUES($1,$2,'Historical Rice',1.25,10000.20,12500.25,'{"unit":"kg","secret":"private"}')`,[sale,a.products[0]]);
+   await pool.query("INSERT INTO sale_payments(sale_id,method,amount) VALUES($1,'cash',12500.25)",[sale]);
+   await pool.query("INSERT INTO sales(organization_id,store_id,sale_number,total,business_date) VALUES($1,$2,$3,999,'2026-01-01')",[b.org,b.store,randomUUID()]);
+   const report=(await executeAgentTool(a.user,'get_latest_sale',{storeId:null},context)).report;
+   assert.equal(report.latestSale.id,sale);assert.equal(report.from,'2020-01-01');assert.equal(report.sale.total,'12500.25');
+   assert.deepEqual(report.sale.items,[{name:'Historical Rice',unit:'kg',quantity:'1.250',unitPrice:'10000.20',lineTotal:'12500.25'}]);
+   assert.deepEqual(report.sale.payments,[{method:'cash',amount:'12500.25'}]);assert.ok(!JSON.stringify(report).includes('private'));
+   await assert.rejects(()=>executeAgentTool(a.user,'get_latest_sale',{storeId:b.store},context),e=>e.code==='STORE_NOT_FOUND');
+  });
   await t.test('one overview combines authorized facts with explicit periods and no invented total profit',async()=>{
    const report=(await executeAgentTool(a.user,'get_business_overview',{storeId:a.store},context)).report;
    assert.equal(report.topic,'business_overview');assert.equal(report.storeId,a.store);
@@ -96,6 +109,7 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
   for(const org of fixtures){
    await pool.query('DELETE FROM sale_returns WHERE organization_id=$1',[org]);
    await pool.query('DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE organization_id=$1)',[org]);
+   await pool.query('DELETE FROM sale_payments WHERE sale_id IN (SELECT id FROM sales WHERE organization_id=$1)',[org]);
    await pool.query('DELETE FROM sales WHERE organization_id=$1',[org]);
    await pool.query('DELETE FROM users WHERE organization_id=$1',[org]);
    await pool.query('DELETE FROM products WHERE organization_id=$1',[org]);
