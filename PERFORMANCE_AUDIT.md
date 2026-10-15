@@ -110,3 +110,15 @@ Backend: node scripts/benchmark-bootstrap-dates.mjs [--optimized]; NODE_ENV=test
 Raw local evidence: artifacts/performance-20261016 at the shared workspace root. GitHub PR links and remote CI status are appended after creation.
 
 Final scanner-fix build: total JS 1398689 bytes; sum of gzip chunks 418627 bytes; Sales chunk 55153 bytes (15960 gzip).
+
+## GitHub handoff / remote checks
+
+Frontend commit: 0a56c87b20ae971aa3db8cf619abdc3ce0e60ad9, branch perf/catalog-search-20261016. Backend commit: 7eafd49e6a294478ebb355878ec362d11d4f6fc1, branch perf/read-latency-20261016. Both pushed successfully.
+
+PR creation is blocked: connected GitHub integration returned 403 Resource not accessible by integration. Automatic approval review also rejected extracting the existing local Git credential for PR API writes because that credential source was not explicitly authorized. No credential was extracted and that rejected action was not retried. Explicit permission is pending; no PR has been created.
+
+Review/create frontend: https://github.com/Wamwod10/Zenix-Pos/compare/feature%2Fai-intelligence-2...perf%2Fcatalog-search-20261016?expand=1
+
+Review/create backend: https://github.com/Wamwod10/Zenix-Pos-Backend/compare/feature%2Fai-intelligence-2...perf%2Fread-latency-20261016?expand=1
+
+Remote Actions API returned no workflow runs for these commits; green GitHub CI is therefore **not confirmed**. Frontend Vercel commit status was success for its feature-branch preview. No production promotion, merge or deployment command was run. Existing preview automation was not changed.
