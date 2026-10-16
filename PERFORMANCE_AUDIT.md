@@ -206,6 +206,15 @@ Component profiling: production React profiling renderer, 1366px/1x CPU, 1k and 
 | AI | partial | report queries 18→10, scroll layout reduced, 28 UI acceptance cases and security regressions | real OpenAI full-response/token/quality eval; consistent mobile <100ms feedback; safe streaming validation |
 | Mobile | partial | 360/390/768/1366/1920 synthetic Chromium, CPU/network/trace observations | real Android/touch/keyboard; long scroll/memory soak; observed mobile feedback tail |
 | Render / Neon | partial | existing Render CPU/memory read only; local pool/query metrics | authorized staging/cold-start/network separation, real Neon plans and hosting throughput |
-| Monitoring / CI | partial | bounded opt-in diagnostics, CPU/bundle/checkout budgets, local full verification | new remote CI confirmation and deployment-time metrics collection decision |
+| Monitoring / CI | partial | bounded opt-in diagnostics, CPU/bundle/checkout budgets, local full verification | deployment-time metrics collection decision; ongoing production observation |
 
 Merge order remains AI backend #11 / frontend #19 before performance backend #12 / frontend #20 (currently stacked on AI branches). Both new migrations require separate review before any production execution. Live OpenAI benchmarking requires a dedicated test key; device and staging gates must not be marked complete from mocks. No independent production release is authorized.
+
+### Continuation GitHub verification
+
+Both tested runtime heads passed GitHub Actions:
+
+- Frontend `52d2f3fabaf61d5f99cad0438476d78d9e50e56f`: [Verify Frontend run 38932104719](https://github.com/Wamwod10/Zenix-Pos/actions/runs/38932104719), success; full suite, design/import/readiness, build, CPU/bundle budgets and responsive login smoke.
+- Backend `4a63bec4fe2a1232c27df6b211e77387e26cb334`: [Verify Backend run 38932097986](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/38932097986), success; standalone and isolated DB/HTTP, trial/OTP, billing/AI, new index/capacity tests, checkout budget, legacy migration and backup/restore verification.
+
+These results supersede the earlier unconfirmed CI note. Existing PR #20/#12 were updated by pushing to their original branches; AI bases remain ancestors. This final report update changes documentation only. The named disposable PostgreSQL container was stopped after evidence capture; raw local JSON/traces remain in the workspace artifact directory.
