@@ -113,12 +113,12 @@ Final scanner-fix build: total JS 1398689 bytes; sum of gzip chunks 418627 bytes
 
 ## GitHub handoff / remote checks
 
-Frontend commit: 0a56c87b20ae971aa3db8cf619abdc3ce0e60ad9, branch perf/catalog-search-20261016. Backend commit: 7eafd49e6a294478ebb355878ec362d11d4f6fc1, branch perf/read-latency-20261016. Both pushed successfully.
+Frontend draft PR: https://github.com/Wamwod10/Zenix-Pos/pull/20 (perf/catalog-search-20261016).
 
-PR creation is blocked: connected GitHub integration returned 403 Resource not accessible by integration. Automatic approval review also rejected extracting the existing local Git credential for PR API writes because that credential source was not explicitly authorized. No credential was extracted and that rejected action was not retried. Explicit permission is pending; no PR has been created.
+Backend draft PR: https://github.com/Wamwod10/Zenix-Pos-Backend/pull/12 (perf/read-latency-20261016).
 
-Review/create frontend: https://github.com/Wamwod10/Zenix-Pos/compare/feature%2Fai-intelligence-2...perf%2Fcatalog-search-20261016?expand=1
+Both PRs target feature/ai-intelligence-2 to preserve AI #19 / #11. Retarget after those PRs merge. Runtime commits: frontend 0a56c87b20ae971aa3db8cf619abdc3ce0e60ad9; backend 7eafd49e6a294478ebb355878ec362d11d4f6fc1. Runtime changes and audit notes are pushed.
 
-Review/create backend: https://github.com/Wamwod10/Zenix-Pos-Backend/compare/feature%2Fai-intelligence-2...perf%2Fread-latency-20261016?expand=1
+The connector lacked PR-write permission. Following explicit user authorization, the existing Git authentication was used only to check/create these two draft PRs. Credentials were kept in memory and never printed or saved.
 
-Remote Actions API returned no workflow runs for these commits; green GitHub CI is therefore **not confirmed**. Frontend Vercel commit status was success for its feature-branch preview. No production promotion, merge or deployment command was run. Existing preview automation was not changed.
+Remote Actions API previously returned no workflow runs for the runtime commits; green GitHub CI is not confirmed. Local test evidence is recorded above. Frontend feature-branch preview status was success. No production promotion, merge or deployment command was run; preview automation was not changed.
