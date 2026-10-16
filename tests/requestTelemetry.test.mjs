@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {createRequestTelemetry} from '../src/middleware/requestTelemetry.js';
+import {createPerformanceMetrics} from '../src/lib/performanceMetrics.js';
+
+test('request histograms retain only fixed module labels, never URL identifiers or queries',()=>{
+ const metrics=createPerformanceMetrics();let now=1;
+ const middleware=createRequestTelemetry({metrics,clock:()=>now,logger:{warn:()=>{}}});
+ const req={method:'GET',originalUrl:'/api/sales/CUSTOMER_SECRET?token=PASSWORD_SECRET'};
+ const res=new EventEmitter();res.statusCode=200;res.setHeader=()=>{};
+ middleware(req,res,()=>{});now=11;res.emit('finish');
+ assert.equal(metrics.snapshot()['http.GET.sales'].p95,10);
+ assert.ok(!JSON.stringify(metrics.snapshot()).includes('SECRET'));
+});
 
 test('request telemetry exposes correlation ID but never logs session or body data',()=>{
  const entries=[];

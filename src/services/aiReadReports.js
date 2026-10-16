@@ -2,7 +2,7 @@ import {z} from 'zod';
 import {scopedStoreId,assertOrganizationStore} from '../lib/storeScope.js';
 import {organizationBusinessDateISO} from '../lib/businessDate.js';
 import {authorizeTopic,allowedTopics} from './aiPolicy.js';
-import {aiReport} from './aiReports.js';
+import {withAiReportSnapshot} from './aiReports.js';
 
 const storeId=z.string().uuid().nullable(),date=z.string().date();
 const bounded=(from,to)=>from<=to&&(Date.parse(to)-Date.parse(from))/86400000<366;
@@ -63,14 +63,16 @@ export async function readAgentReport(db,user,name,input){
   // Same transaction/snapshot and the same topic permissions as individual reads.
   // Profit is a bounded product ranking, never an invented total business profit.
   const allowed=new Set(allowedTopics(user));report.topic='business_overview';report.from=shift(today,-6);
+  await withAiReportSnapshot(db,user,store,async read=>{
   for(const topic of ['today_sales','profit','expenses','customer_debt','supplier_debt']){
    if(!allowed.has(topic))continue;
-   const component=await aiReport(user,topic,store,db),snapshot=topic.endsWith('_debt');
+   const component=await read(topic),snapshot=topic.endsWith('_debt');
    const period={from:snapshot?today:component.from,to:component.to};
    for(const f of (topic==='profit'?component.facts.filter(f=>f.metric==='profit'):component.facts).slice(0,topic==='profit'?3:4))facts.push({...f,id:`${topic}_${f.id}`,...period});
    for(const table of component.tables.slice(0,1))tables.push({...table,rows:table.rows.slice(0,3),...period});
    if(topic==='profit')notes.push('Tarixiy tannarx yetishmasa mahsulot foydasi hisoblanmaydi. Umumiy ko‘rinishda foyda bo‘yicha eng yuqori 3 mahsulotgacha beriladi; bu biznesning jami yoki sof foydasi emas.');
   }
+  });
   if(allowed.has('low_stock')){
    const inventory=await readAgentReport(db,user,'get_warehouse_summary',{storeId:store});
    for(const f of inventory.facts)facts.push({...f,id:`inventory_${f.id}`,from:today,to:today});

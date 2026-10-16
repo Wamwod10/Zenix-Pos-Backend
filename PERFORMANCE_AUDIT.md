@@ -84,6 +84,8 @@ Early verification attempts encountered sandbox subprocess restrictions; reruns 
 
 ## Remaining platform coverage / release gates
 
+The continuation results below supersede the original remaining-work table and earlier CI status. Historical measurements above are retained as their original cohorts.
+
 | Area | Current evidence | Remaining work |
 |---|---|---|
 | POS | search, scanner, cart CPU and business regression tests | timed server-confirmed checkout P50/P95/P99, physical scanner/printing, all payment modes under sustained concurrent load |
@@ -122,3 +124,88 @@ Both PRs target feature/ai-intelligence-2 to preserve AI #19 / #11. Retarget aft
 The connector lacked PR-write permission. Following explicit user authorization, the existing Git authentication was used only to check/create these two draft PRs. Credentials were kept in memory and never printed or saved.
 
 Remote Actions API previously returned no workflow runs for the runtime commits; green GitHub CI is not confirmed. Local test evidence is recorded above. Frontend feature-branch preview status was success. No production promotion, merge or deployment command was run; preview automation was not changed.
+
+## Continuation: P0/P1/P2, 2026-10-16
+
+Environment: Windows, Node 24.11.1, local Chromium, PostgreSQL 16 Alpine in an isolated loopback Docker container. Only synthetic fixtures and disposable DB migrations were used. Percentiles are nearest-rank observations, not production guarantees. CPU microbenchmarks, server-confirmed HTTP, first DOM mutation and React commit duration are different measurements. Root evidence: `artifacts/performance-continuation-20261016/`. No production write, migration, configuration change, merge or deployment was performed.
+
+### Measured bottlenecks and changes
+
+| Module | Operation | Before P50 | Before P95 | After P50 | After P95 | Improvement | Test Environment | Status |
+|---|---|---:|---:|---:|---:|---|---|---|
+| Entitlements | Unlimited capacity assertion, 50k products | 6.710 | 16.232 | 0.693 | 0.891 | 94.5% P95 | rollback-only disposable SQL, 50 samples | improved; migration review required |
+| Import | 100 product inserts at 50k | 572.422 | 728.249 | 23.710 | 30.415 | 95.8% P95 | disposable SQL/savepoints, 10 samples | improved; finite caps preserved |
+| Inventory | Owner catalog page, populated balances | 265.23 | 317.04 | 9.09 | 28.58 | 91.0% P95 | authenticated HTTP, 50k products / 100k balances, 30 samples | improved; index review required |
+| Inventory | 100 concurrent readers | — | 7652.4 | — | 177.01 | 97.7% P95 | bounded 10-second stage, local client/server | improved; not hosting capacity certification |
+| Analytics | 10k business-date records period filter CPU | 596.756 | 825.461 | 0.342 | 0.455 | 99.9% P95 | Node, 30 samples | improved |
+| AI overview | Report read orchestration | 279.751 | 282.743 | 155.205 | 156.893 | 44.5% adapter P95 | synthetic delayed query adapter, 30 samples | query count improved; not OpenAI latency |
+| POS | 1366px 50k search, trial 1 | 17.1 | 32.3 | 9.6 | 15.5 | 52.0% P95 | production browser, 30 samples per trial | improved |
+| POS | Same search, trial 2 | 13.2 | 21.0 | 8.3 | 14.9 | 29.0% P95 | same browser/environment | improved |
+| POS | Same search, trial 3 | 11.5 | 15.0 | 7.6 | 12.3 | 18.0% P95 | same browser/environment | improved; prior small regression not reproduced |
+| Bootstrap | 50k full response, identity versus gzip | 1165.82 | 1384.57 | 1286.91 | 1623.52 | wire bytes -91.4%; local P95 +17.3% | alternating 30+30 HTTP/decode/parse samples | payload improved; initial load unresolved |
+| AI/OpenAI | Live full-response latency | — | — | — | — | not measured | no local OpenAI key | remaining |
+
+P99 before→after (ms): unlimited capacity 26.784→0.942; 100 inserts 728.249→30.415 (only 10 observations); populated catalog 973.15→32.80; Analytics 10k CPU 888.458→0.824; AI query adapter 297.282→157.418; repeated search trials 48.7→18.4, 22.1→15.3, 15.1→13.2; paired bootstrap identity/gzip 1392.29→1809.17. Retained earlier noisy gzip cohort ran alongside frontend tests and is not used to claim improvement.
+
+Technical causes and changed code:
+
+- `migrations/038_resource_capacity_performance.sql`: every Premium product insertion previously counted all existing products even for an unlimited cap. Capacity-only checks now skip usage counts only for unlimited resources; the public two-argument entitlement function still computes exact usage. Finite caps, scheduled downgrade evaluation, organization lock, subscription validation and legacy behavior remain. Historical migrations are untouched; lock timeout and rollback preparation are included.
+- `migrations/039_inventory_catalog_lookup_index.sql`: the owner catalog stock subquery scanned 100k balances once for each visible product. The `(organization_id, product_id, store_id)` index changes the measured plan from 68,085 to 257 shared hits; execution 219.333→0.715 ms. Concurrent creation, invalid-index recovery and rollback notes included. This adds storage and write maintenance; no claim of zero write cost. Production migration requires review and operational scheduling.
+- `src/services/aiReports.js`, `aiReadReports.js`: one business overview now reuses a private, callback-scoped organization/store/day snapshot. Topic RBAC remains checked on each component; tenant/session context cannot be supplied by callers. Query count 18→10 and organization reads 7→3. No cross-request cache, financial fact streaming or write-tool authorization change.
+- `src/lib/bootstrapResponse.js`, `routes/bootstrap.js`: bounded asynchronous gzip for large read-only bootstrap responses (level 1, max two concurrent compressions, max 32 MiB). Negotiation, `Vary`, Express JSON settings and exact financial strings preserved. Same 23,436,490 decoded bytes became 2,008,594 wire bytes. Local CPU/decode cost increased; full-catalog JSON serialization, browser parsing and memory remain open. No omitted inventory, financial or permission fields.
+- Frontend `analytics/analyticsPeriod.js`, `Analytics.jsx`: reuse the already-computed date range rather than rebuild timezone formatters/range per record. At 1k records CPU P50/P95/P99 47.726/65.782/83.784→0.045/0.139/0.562 ms. Timestamp-only records retain their existing timezone work; no finance math changed.
+- Frontend `ai/aiScroll.js`, `ZenixAI.jsx`: defer scroll measurements into a cancellable animation frame and respect intervening user scrolling. Matched mobile trace launch-window layout total 163.165→43.5 ms, largest layout 118.64→7.2 ms; send layout 40.396→17.7 ms. This reduces forced-layout work but does not establish a consistent mobile feedback-tail win: 360px send P95 regressed 127.9→549.2 ms in the final cohort, while 390px was 218.4→214.9 ms. Sub-100ms mobile acceptance remains open.
+
+### Checkout correctness and latency
+
+Actual authenticated HTTP with three payment modes, refunds, three bursts each of 10/50 simultaneous sales, and ten concurrent identical references. Each cohort asserts exact stock, cash/card totals, returned amounts and tenant isolation: 274 unique sales, 90 refunds, final stock 9816; ten duplicate requests create exactly one sale. These are two observations of existing checkout behavior with diagnostics added, not a checkout rewrite or proven speedup.
+
+| Operation | Before P50/P95/P99 ms | After P50/P95/P99 ms |
+|---|---|---|
+| Cash checkout | 96.16 / 132.28 / 230.55 | 101.22 / 133.34 / 136.29 |
+| Card checkout | 49.93 / 130.61 / 150.03 | 67.08 / 129.02 / 129.92 |
+| Mixed checkout | 68.97 / 127.48 / 134.35 | 88.68 / 131.74 / 135.98 |
+| Cash refund | 110.33 / 153.50 / 157.29 | 124.58 / 147.22 / 183.01 |
+| Card refund | 48.74 / 135.18 / 212.82 | 82.88 / 131.89 / 134.96 |
+| Mixed refund | 65.99 / 145.55 / 150.51 | 89.32 / 147.67 / 182.85 |
+| Concurrent 10, n=30 | 522.32 / 1027.11 / 1135.77 | 435.73 / 941.40 / 1053.55 |
+| Concurrent 50, n=150 | 2139.98 / 3776.75 / 4048.88 | 2073.54 / 3842.67 / 4082.58 |
+
+One hot product/shift serializes valid stock/payment work, with pool max five and up to 88 queued acquisitions. Locks and transactions were retained for correctness; sustained multi-terminal throughput and physical receipt printing remain staging/device gates. Existing 20-scan browser assertions passed in all three optimized repeated trials; old AI-base baseline skips that assertion because it contains the previously fixed stale scanner callback.
+
+### Populated inventory, load and resource observations
+
+Fixture includes two branches, 50k products, 100k inventory balances, 100k warehouse balances, 100k movements and 1k synthetic sales. All entitlement/security guards remained enabled. Baseline versus index stages at 1/10/50/100 concurrent readers: P95 286.7/636.9/5371.5/7652.4→18.74/22.65/92.89/177.01 ms; throughput 4.13/18.16/11.78/13.08→87.16/580.65/639.67/652.41 requests/s. Zero errors. Acquisition P95 at 100 readers 6541.3→91.81 ms. Each stage lasted ten seconds, not a prolonged soak. Optimized process RSS reached 718 MB including local load client; higher throughput is not a memory reduction or proof that the 512 MB Render plan can sustain this load. Rare/no-match/barcode catalog SQL still scans the product OR/substring predicate, around 60–110 ms locally. No speculative text-search index was added.
+
+Render `My Workspace` read-only observation, Frankfurt production plan `0.5c-512mb`: 61 samples 15:15–16:15 UTC. Memory 171,331,580–190,414,850 bytes; CPU 0.00015585–0.0011625167 in the provider's reported `cpu` units. No HTTP latency samples returned. This quiet window cannot establish peak capacity, cold-start duration, Neon network latency or queue saturation. Staging requires a dedicated access token and database allowlist; no credentials were extracted or production load generated.
+
+### Platform, monitoring, budgets and regression verification
+
+Static interaction inventory records 725 lexical candidates across page/shared components with file/line references. This is an inventory, not certification of every save/edit/delete/export action. Browser coverage visits 15 owner routes at 360/390/768/1366/1920px, with mobile 4x CPU and throttled local assets; synthetic APIs, external origins blocked. First DOM mutation can be a skeleton rather than usable UI or physical paint. Root commit counts, long tasks and sampled heap are retained; real Android keyboard, touch, long scrolling and memory soak remain open.
+
+Opt-in `ZENIX_PERFORMANCE_METRICS=true` adds bounded recent-window P50/P95/P99 for fixed HTTP module labels, DB acquisition/query and transaction duration. Disabled by default; no production setting changed, no public diagnostics endpoint added. At most 128 series and 256 recent samples by default; lifetime count/failures and window sample count are distinguished. No SQL, tokens, request payloads, customer identifiers or sale details are logged by these metrics.
+
+CI adds CPU regression budgets (50k search P95 <100ms, indexed cart <5ms, 10k date filter <50ms), main gzip <130,000 bytes, all JS gzip <470,000 bytes, and isolated checkout correctness with sequential P95 <1500ms. These broad guards detect major regressions; they are not production UX SLAs. Final local bundle: main gzip 113,658 bytes; all JS gzip 418,802 bytes. This is not a bundle reduction claim.
+
+- Frontend full suite: 250/250 passed, zero skips/failures. Existing AI browser acceptance: 28 light/dark cases passed. All 23 CSS/SCSS match baseline. Import/readiness checks and production build passed.
+- Backend standalone: 599 passed, 49 DB-only skipped (648 total); syntax 145 modules passed. Serialized disposable DB/HTTP/billing/subscription/RBAC/AI/checkout suite with diagnostics enabled: 176/176 passed, zero skips/failures. New compression HTTP negotiation, exact JSON, bounded concurrency, finite/unlimited capacity, query-snapshot authorization, populated stock index and telemetry privacy tests passed.
+- Early sandbox subprocess failures and a missing JSDOM animation-frame cancellation fixture were corrected and rerun; failed attempts are not counted as passing evidence. No financial rounding, authorization, audit, transaction, branch isolation, confirmation or idempotency guard was removed.
+
+Component profiling: production React profiling renderer, 1366px/1x CPU, 1k and 10k synthetic sales/products, eight period selections each, zero browser errors. At 10k, Dashboard/Analytics each entered four renders per selection; page subtree commit actualDuration P50/P95 was 1.50/17.30 ms and 1.10/16.80 ms. Chart function entries were four/nine per selection. These include descendants and profiling overhead; current-code observations only, no before/after UI claim. Raw initial and per-commit samples: dashboard-render-results.json.
+
+### Remaining platform coverage: current status
+
+| Area | Status | Completed evidence | Remaining release gate |
+|---|---|---|---|
+| POS / checkout | partial | real cash/card/mixed/refund percentiles, 10/50 bursts, duplicate replay, repeated barcode assertions | physical scanner/printer; sustained realistic terminal workload; hot-row tail latency |
+| Navigation / controls | partial | 15 owner routes, 5 widths, static interaction inventory | authenticated real login-to-usable dashboard; every topbar/modal/control action and branch cache scenario |
+| Catalog / inventory | partial | 1k/10k/50k search and capacity tests; populated multi-branch balances/movements, query plans, bounded load | full 50k bootstrap/hydration/memory; long scrolling; realistic transfer/import workloads; index write-cost evaluation |
+| Dashboard / analytics | partial | date-filter CPU bottleneck fixed; profiling harness added | production-shaped widget/chart/API timings and physical-device profiles |
+| Customers / suppliers / expenses / history | partial | route availability and business regressions | large real-shaped per-module search/filter/save/export latency |
+| Settings / staff / billing / branches / Telegram | partial | route inventory, billing/RBAC/subscription regressions | timed per-control operations and browser permission/subscription/branch invalidation scenarios |
+| AI | partial | report queries 18→10, scroll layout reduced, 28 UI acceptance cases and security regressions | real OpenAI full-response/token/quality eval; consistent mobile <100ms feedback; safe streaming validation |
+| Mobile | partial | 360/390/768/1366/1920 synthetic Chromium, CPU/network/trace observations | real Android/touch/keyboard; long scroll/memory soak; observed mobile feedback tail |
+| Render / Neon | partial | existing Render CPU/memory read only; local pool/query metrics | authorized staging/cold-start/network separation, real Neon plans and hosting throughput |
+| Monitoring / CI | partial | bounded opt-in diagnostics, CPU/bundle/checkout budgets, local full verification | new remote CI confirmation and deployment-time metrics collection decision |
+
+Merge order remains AI backend #11 / frontend #19 before performance backend #12 / frontend #20 (currently stacked on AI branches). Both new migrations require separate review before any production execution. Live OpenAI benchmarking requires a dedicated test key; device and staging gates must not be marked complete from mocks. No independent production release is authorized.

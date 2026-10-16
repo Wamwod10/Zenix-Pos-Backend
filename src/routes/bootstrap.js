@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
-import { asyncRoute, ok } from "../lib/http.js";
+import { asyncRoute } from "../lib/http.js";
 import { requireAuth, requireOrganization } from "../middleware/auth.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import { canReadEmployees, hasPermission } from "../lib/permissions.js";
@@ -10,6 +10,7 @@ import { shiftSalesStats } from "../services/financeReport.js";
 import {subscriptionState} from '../services/subscriptions.js';
 import {effectiveStoreLimit as resolveStoreLimit} from '../services/extraStoreEntitlements.js';
 import {createBootstrapDateParts} from '../lib/bootstrapDates.js';
+import {sendBootstrap} from '../lib/bootstrapResponse.js';
 
 const router=Router();
 const n=(value)=>Number(value||0);
@@ -140,7 +141,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const activityVisible=can("moduleActivityLog")||settingsVisible;
   const billingVisible=hasPermission(req.user,"moduleBilling")||hasPermission(req.user,"billingWrite");
 
-  ok(res,{
+  return sendBootstrap(req,res,{
     organization:{serverNow:new Date().toISOString(),id:org.id,name:org.name,phone:org.phone,address:org.address,timezone:org.timezone,currency:org.currency,plan:org.plan,licenseStatus:org.license_status,expiryDate:org.expiry_date,storeLimit:effectiveStoreLimit,baseStoreLimit:Number(org.store_limit||0),activeExtraStores,extraStoreEntitlements,settings:org.settings||{},...subscription},
     stores,
     inventory:inventoryVisible?inventory:[],

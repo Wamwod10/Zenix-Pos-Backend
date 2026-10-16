@@ -34,3 +34,6 @@ backend/.git-legacy/
 *.njsproj
 *.sln
 *.sw?
+
+# Local performance evidence
+.cache/
