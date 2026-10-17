@@ -24,6 +24,29 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
  const call=(name,args)=>{const callId=randomUUID();return {...final(),reply:null,calls:[{callId,name,args}],items:[{type:'function_call',status:'completed',name,call_id:callId,arguments:JSON.stringify(args)}]}};
  const providerFor=responses=>async(_history,{onDispatch})=>{await onDispatch();return responses.shift()};
  try{
+  await t.test('business improvement question returns actionable advice or safe intent-aware recovery',async()=>{
+   const question='Biznesimni qanday yaxshilasam bo‘ladi?';
+   const report={kind:'report',report:{topic:'business_overview',storeId:null,facts:[{id:'supplier_debt_supplier_debt',label:'To‘lanadigan qarz',value:'125000',unit:'UZS'}],tables:[],notes:[]}};
+   for(const invalid of [false,true]){
+    const f=await fixture();let attempts=0;const logs=[],warn=console.warn;
+    console.warn=line=>logs.push(JSON.parse(line));
+    let response;
+    try{response=await aiAgentChat(f.user,body(question),{settings:{...settings,maxOutputTokens:400},provider:async(_h,{onDispatch,evidence})=>{
+     await onDispatch();attempts++;
+     if(attempts===1)return call('get_business_overview',{storeId:null});
+     return {...final(),outputTokens:150,cost:tokenCostMicros(100,150),reply:invalid?{kind:'advice',reply:'Sof savdo: 999 so‘m.'}:{kind:'advice',reply:'Qisqa xulosa: hujjatlar asosida ustuvor ishlarni tanlang. 3 ta asosiy tavsiya:',blocks:[{type:'paragraph',text:'Asosiy masala: to‘lov muddatlari va taqqoslash davri tekshirilishi kerak.',factIds:[]},{type:'recommendation',text:'Xarajatlaringizni tekshiring. Keyingi qadam: yozuvlarni hujjatlar bilan solishtiring.',factIds:[evidence[0].id]},{type:'recommendation',text:'Savdongizni solishtiring. Keyingi qadam: oldingi teng davr hisobotini oching.',factIds:[]},{type:'recommendation',text:'Agar foydangiz past bo‘lsa, tannarxni tekshiring. Keyingi qadam: yetishmayotgan hujjatlarni to‘ldiring.',factIds:[]}]}};
+    },toolRunner:async()=>report})}finally{console.warn=warn}
+    if(invalid){
+     assert.equal(response.answerSource,'verified_fallback');assert.match(response.answer,/125 000 so‘m/);assert.match(response.answer,/Keyingi qadam/);assert.doesNotMatch(response.answer,/999/);
+     assert.ok(logs.some(l=>l.initialReason==='unsupported_numeric_claim'&&l.recovery==='verified_fallback'));
+     assert.ok(!JSON.stringify(logs).includes(question));assert.ok(!JSON.stringify(logs).includes('125000'));
+    }else{
+     assert.equal(response.answerSource,undefined);assert.equal(response.blocks.filter(b=>b.type==='recommendation').length,3);
+     assert.match(response.blocks[1].facts[0].text,/125000/);assert.equal(logs.length,0);
+    }
+    const replay=await aiAgentChat(f.user,{requestId:response.requestId,question},{settings,provider:async()=>{throw Error('replay must not call provider')}});assert.deepEqual(replay,response);
+   }
+  });
   await t.test('typed memory carries verified identities without replaying receipt quantities',async()=>{
    const f=await fixture(),first=await aiAgentChat(f.user,body('Guruch qoldig‘ini tekshir',{storeId:f.store}),{settings,provider:providerFor([call('search_products',{query:'Guruch'}),call('get_product_stock',{productId:f.product,storeId:f.store,warehouseId:f.warehouse}),final()])});
    const second=await aiAgentChat(f.user,body('Undan kirim tayyorla',{storeId:f.store,conversationId:first.conversationId}),{settings,provider:async(_h,{onDispatch,memory})=>{await onDispatch();assert.equal(memory.product.id,f.product);assert.equal(memory.warehouse.id,f.warehouse);assert.equal(memory.product.unit,'kg');assert.ok(!JSON.stringify(memory).includes('costPrice'));return call('prepare_stock_receipt',{productId:memory.product.id,warehouseId:memory.warehouse.id,storeId:f.store,quantity:null,unit:memory.product.unit,costPrice:null,batchNo:null,expiryDate:null})}});

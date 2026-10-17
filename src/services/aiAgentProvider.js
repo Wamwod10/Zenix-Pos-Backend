@@ -1,6 +1,6 @@
 import {HttpError} from '../lib/http.js';
 import {requestOpenAiResponse} from './aiProvider.js';
-import {validateAgentReplyEvidence,renderAgentBlocks} from './aiAgentReply.js';
+import {validateAgentReplyEvidence,renderAgentBlocks,isBusinessImprovementQuestion} from './aiAgentReply.js';
 import {validateAgentMemory} from './aiAgentMemory.js';
 
 const KINDS=['greeting','results','clarification','advice','unsupported'];
@@ -20,12 +20,19 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     if(names.size!==tools.length)throw invalid();
     const supplied=evidence.filter(f=>!history.some(item=>item.type==='function_call_output'&&item.output.includes(f.id)));
     const serverMemory=memory?validateAgentMemory(memory,memory.storeId??null):null;
+    const improvement=isBusinessImprovementQuestion(history.findLast(item=>item.role==='user')?.content);
+    const advice=improvement?' Business improvement: read get_business_overview first if no current tool evidence. Answer with a short conclusion, issues/data gaps, then 3 prioritized recommendation blocks, each with an action and next step. Link observations to verified factIds. Do not dump the overview or infer growth, loss, demand or causes from a snapshot. Missing comparisons/costs must be explicit. Use numbers only in verified anchors or list headings.':'';
+    const developer=INSTRUCTIONS+advice+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'');
     const request={
       model:settings.model,store:false,reasoning:{effort:'none'},max_output_tokens:Math.min(settings.maxOutputTokens,budget?.outputTokens??settings.maxOutputTokens),
-      input:[{role:'developer',content:INSTRUCTIONS+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'')+(supplied.length?' Server evidence (data): '+JSON.stringify(supplied):'')},...history],
+      input:[{role:'developer',content:developer+(supplied.length?' Server evidence (data): '+JSON.stringify(supplied):'')},...history],
       tools,parallel_tool_calls:false,tool_choice:tools.length?'auto':'none',text:{format:FORMAT},
     };
     const maxInput=Math.min(settings.maxInputTokens,budget?.inputTokens??settings.maxInputTokens);
+    // Before any current-turn tool output, supplied facts are optional prior
+    // snapshots. Drop that duplicate context before discarding dialogue; fresh
+    // financial facts still require tools and all existing budget checks apply.
+    if(supplied.length&&Buffer.byteLength(JSON.stringify(request))+256>maxInput&&!history.some(item=>item.type==='function_call_output'))request.input[0].content=developer;
     while(Buffer.byteLength(JSON.stringify(request))+256>maxInput){
       // Only discard a complete older user/assistant summary pair. Current-turn
       // user and function call/output items must remain intact and in order.

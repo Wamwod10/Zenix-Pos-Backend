@@ -214,3 +214,28 @@ test('provider guides latest sale, metric and packaging semantics without relaxi
  });
  await p(history,options);
 });
+
+
+test('oversized historical evidence does not block a new turn or remove identity memory',async()=>{
+ const {toolsFor}=await import('../src/services/aiAgentRegistry.js');
+ const memory={storeId:null,product:null,warehouse:null,period:null};let sent;
+ const p=provider([message()],async(url,options)=>{sent=JSON.parse(options.body);return Response.json(payload([message()]))});
+ await p([{role:'user',content:'Old report'},{role:'assistant',content:'Verified prior overview'},{role:'user',content:'How can I improve sales?'}],{tools:toolsFor(settings),memory,evidence:[{id:'prior_fact',text:'Historical report '.repeat(900)}]});
+ assert.ok(Buffer.byteLength(JSON.stringify(sent))+256<=settings.maxInputTokens);
+ assert.match(sent.input[0].content,/server_memory/);
+ assert.ok(!sent.input[0].content.includes('prior_fact'));
+ assert.equal(sent.input.at(-1).content,'How can I improve sales?');
+ assert.ok(sent.tools.length>0);
+ sent=undefined;
+ await assert.rejects(()=>p([...history,call,{type:'function_call_output',call_id:call.call_id,output:'{}'}],{tools,evidence:[{id:'current_fact',text:'Current verified output '.repeat(900)}]}),e=>e.code==='AI_TOKEN_LIMIT');
+ assert.equal(sent,undefined,'current-turn evidence must never be silently dropped or dispatched over budget');
+});
+
+test('business improvement prompt requests prioritized actions within real tool budgets',async()=>{
+ const {toolsFor}=await import('../src/services/aiAgentRegistry.js');let sent;
+ const p=provider([message()],async(_url,options)=>{sent=JSON.parse(options.body);return Response.json(payload([message()]))});
+ await p([{role:'user',content:'Biznesimni qanday yaxshilasam bo‘ladi?'}],{tools:toolsFor({...settings,writesEnabled:true})});
+ assert.match(sent.input[0].content,/3 prioritized recommendation blocks/);
+ assert.match(sent.input[0].content,/Missing comparisons\/costs/);
+ assert.ok(Buffer.byteLength(JSON.stringify(sent))+256<=settings.maxInputTokens);
+});

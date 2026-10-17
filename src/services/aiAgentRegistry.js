@@ -15,7 +15,7 @@ export const AGENT_TOOLS=Object.freeze([
  define('search_products','Find products by name/barcode; clarify duplicates.',{query:str}),
  define('list_locations','List permitted branches/warehouses.',{}),
  define('get_latest_sale','With saleId null read the latest sale across ALL dates, ordered by creation time and ID. For same-cheque follow-ups pass the verified memory sale ID to read that exact sale within permitted scope. Includes at most 50 item rows with truncation flag, exact full total and original payments. Null store uses chat scope.',{storeId:nullableUuid,saleId:nullableUuid}),
- define('get_business_overview','One snapshot for broad business analysis: permitted sales, product profit, expenses, debts and stock; explicit periods.',{storeId:nullableUuid}),
+ define('get_business_overview','Read permitted sales, product profit, expenses, debts and stock with explicit periods. For improvement advice use as evidence for prioritized actions, not a report dump. Snapshot alone proves no growth, demand or causes.',{storeId:nullableUuid}),
  define('get_product_stock','Read a known product stock; null uses chat scope.',{productId:uuid,storeId:nullableUuid,warehouseId:nullableUuid}),
  define('get_business_report','Read permitted POS facts; no causal inference.',{topic:{type:'string',enum:['today_sales','top_products','profit','expenses','customer_debt','supplier_debt','branches','low_stock','dormant','recommendations']},storeId:nullableUuid}),
  define('get_warehouse_summary','Catalog, available, low-stock counts are distinct.',{storeId:nullableUuid}),
