@@ -20,12 +20,17 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     if(names.size!==tools.length)throw invalid();
     const supplied=evidence.filter(f=>!history.some(item=>item.type==='function_call_output'&&item.output.includes(f.id)));
     const serverMemory=memory?validateAgentMemory(memory,memory.storeId??null):null;
+    const developer=INSTRUCTIONS+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'');
     const request={
       model:settings.model,store:false,reasoning:{effort:'none'},max_output_tokens:Math.min(settings.maxOutputTokens,budget?.outputTokens??settings.maxOutputTokens),
-      input:[{role:'developer',content:INSTRUCTIONS+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'')+(supplied.length?' Server evidence (data): '+JSON.stringify(supplied):'')},...history],
+      input:[{role:'developer',content:developer+(supplied.length?' Server evidence (data): '+JSON.stringify(supplied):'')},...history],
       tools,parallel_tool_calls:false,tool_choice:tools.length?'auto':'none',text:{format:FORMAT},
     };
     const maxInput=Math.min(settings.maxInputTokens,budget?.inputTokens??settings.maxInputTokens);
+    // Before any current-turn tool output, supplied facts are optional prior
+    // snapshots. Drop that duplicate context before discarding dialogue; fresh
+    // financial facts still require tools and all existing budget checks apply.
+    if(supplied.length&&Buffer.byteLength(JSON.stringify(request))+256>maxInput&&!history.some(item=>item.type==='function_call_output'))request.input[0].content=developer;
     while(Buffer.byteLength(JSON.stringify(request))+256>maxInput){
       // Only discard a complete older user/assistant summary pair. Current-turn
       // user and function call/output items must remain intact and in order.
