@@ -143,7 +143,7 @@ export function validateAgentReplyEvidence(reply,evidence=[]){
  if(/(?:kiritildi|bajarildi|tasdiqlandi|to[‘’ʻʼ']landi|bekor qilindi|executed|confirmed|cancelled|deleted)/iu.test(prose))throw evidenceError('execution_claim');
  const statements=prose.replace(/[^.!?\n]*\?/gu,'');
  if(/\b(?:kamaydi|oshdi|sotildi|tashkil etdi)[.!]?(?:\s|$)/iu.test(statements))throw evidenceError('unsupported_business_assertion');
- if(/\b(?:oshadi|o[‘’ʻʼ']sadi|ko[‘’ʻʼ']payadi|kamayadi|pasayadi)(?:\s+albatta)?\s*(?:[.!?,;]|$)/iu.test(statements))throw evidenceError('unsupported_business_assertion');
+ if(/\b(?:oshadi|o[‘’ʻʼ']sadi|ko[‘’ʻʼ']payadi|kamayadi|pasayadi|oshgan|o[‘’ʻʼ']sgan|ko[‘’ʻʼ']paygan|kamaygan|zarar\s+ko[‘’ʻʼ']ryapsiz|talab\s+(?:yuqori|past))(?:\s+albatta)?\s*(?:[.!?,;]|$)/iu.test(statements))throw evidenceError('unsupported_business_assertion');
  // Exempt only explicit check/compare objects and hypothetical clauses, not
  // whole advice sentences: a factual assertion later in the sentence stays checked.
  const business='(?:mahsulot|savdo|foyda|daromad|ombor|qoldiq|xarajat|qarz)(?:lar)?i?ngiz';

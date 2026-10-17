@@ -6,7 +6,7 @@ test('business improvement advice permits presentation counts and conditional ch
  const reply={kind:'advice',reply:'Qisqa xulosa: avval tekshiriladigan masalalarni ajrating.\n3 ta asosiy tavsiya:\n**1.** Xarajatlaringizni tekshiring.\n2) Savdongizni solishtiring.\n3. Agar foydangiz past bo‘lsa, tannarx yozuvlarini tekshiring.'};
  assert.equal(renderAgentAnswer(reply,[]),reply.reply);
  assert.equal(renderAgentBlocks({blocks:[{type:'recommendation',text:'Xarajatlaringizni tekshiring.',factIds:['verified']} ]},[{id:'verified',text:'Xarajat yozuvlari: 0 so‘m'}])[0].facts[0].id,'verified');
- for(const text of ['3 ta mahsulot sotildi.','3 ta asosiy tavsiya: savdongiz 99 foiz oshadi.','1. Savdongiz kamaydi.','Agar foydangiz past bo‘lsa, daromadingiz oshdi.','Agar foydangiz past bo‘lsa, savdo oshadi.','Xarajatlaringiz yuqori, ularni tekshiring.','1. Qarz to‘landi.']){
+ for(const text of ['3 ta mahsulot sotildi.','3 ta asosiy tavsiya: savdongiz 99 foiz oshadi.','1. Savdongiz kamaydi.','Agar foydangiz past bo‘lsa, daromadingiz oshdi.','Agar foydangiz past bo‘lsa, savdo oshadi.','Xarajatlaringiz yuqori, ularni tekshiring.','1. Qarz to‘landi.','Xarajatlaringizni tekshiring. Siz zarar ko‘ryapsiz.','Talab oshgan.','Savdo o‘sgan.']){
   assert.throws(()=>renderAgentAnswer({kind:'advice',reply:text},[]),e=>e.code==='AI_EVIDENCE_INVALID',text);
  }
 });
