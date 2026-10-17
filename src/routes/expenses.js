@@ -8,6 +8,7 @@ import { writeAudit } from "../services/audit.js";
 import { enqueueNotification } from "../services/notifications.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { hasPermission } from "../lib/permissions.js";
+import {financialWriteReplay,lockFinancialOrganization} from '../services/financialWriteReplay.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
@@ -17,10 +18,11 @@ const schema=z.object({
   shiftId:z.string().uuid().optional().nullable(),
   title:z.string().trim().min(2).max(200),
   category:z.string().trim().max(120).default(""),
-  amount:z.coerce.number().positive(),
+  amount:z.coerce.number().positive().max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin'),
   paymentMethod:z.enum(["cash","card","transfer"]).default("cash"),
   note:z.string().max(500).default(""),
   metadata:z.record(z.string(),z.any()).default({}),
+  clientReference:z.string().trim().max(120).default(""),
 });
 
 async function requireCashShift(client,{organizationId,storeId,shiftId,paymentMethod}){
@@ -39,7 +41,7 @@ async function assertExpenseMutable(client,expense){
 
 router.post("/",requirePermission("expensesWrite"),asyncRoute(async(req,res)=>{
   const input=schema.parse(req.body);assertStoreScope(req.user,input.storeId);
-  const expense=await withTransaction(async(client)=>{
+  const expense=await withTransaction(async(client)=>financialWriteReplay(client,{organizationId:req.user.organizationId,userId:req.user.id,operation:'expense_create',clientReference:input.clientReference,input},async()=>{
     const store=await assertOrganizationStore(client,req.user.organizationId,input.storeId);
     const cashShift=await requireCashShift(client,{organizationId:req.user.organizationId,storeId:input.storeId,shiftId:input.shiftId,paymentMethod:input.paymentMethod});
     if(cashShift){
@@ -54,13 +56,14 @@ router.post("/",requirePermission("expensesWrite"),asyncRoute(async(req,res)=>{
     await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,storeId:input.storeId,action:"create",entityType:"expense",entityId:row.id,title:"Xarajat qo‘shildi",description:`${input.title} · ${input.amount}`});
     await enqueueNotification(client,{organizationId:req.user.organizationId,storeId:input.storeId,eventType:"expense.created",eventId:row.id,payload:{expenseId:row.id,title:input.title,amount:Number(input.amount),category:input.category,storeName:store.name,userName:req.user.name}});
     return row;
-  });
+  }));
   ok(res,{expense},201);
 }));
 
 router.patch("/:id",requirePermission("expensesWrite"),asyncRoute(async(req,res)=>{
   const input=schema.partial().parse(req.body);
   const expense=await withTransaction(async(client)=>{
+    await lockFinancialOrganization(client,req.user.organizationId);
     const old=(await client.query("SELECT * FROM expenses WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,req.user.organizationId])).rows[0];
     if(!old)throw new HttpError(404,"Xarajat topilmadi");
     assertStoreScope(req.user,old.store_id);
@@ -91,6 +94,7 @@ router.patch("/:id",requirePermission("expensesWrite"),asyncRoute(async(req,res)
 
 router.delete("/:id",requirePermission("expensesWrite"),asyncRoute(async(req,res)=>{
   await withTransaction(async(client)=>{
+    await lockFinancialOrganization(client,req.user.organizationId);
     const row=(await client.query("SELECT * FROM expenses WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,req.user.organizationId])).rows[0];
     if(!row)throw new HttpError(404,"Xarajat topilmadi");
     assertStoreScope(req.user,row.store_id);
