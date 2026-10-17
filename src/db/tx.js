@@ -1,6 +1,7 @@
 import { pool } from "./pool.js";
 import {requestScope} from '../lib/requestScope.js';
 import {HttpError} from '../lib/http.js';
+import {performanceMetrics} from '../lib/performanceMetrics.js';
 
 export async function lockBusinessScope(client){
   const scope=requestScope.getStore();
@@ -27,6 +28,7 @@ const beginStatement=(isolationLevel)=>{
 export async function runTransaction(db,work,{isolationLevel}={}){
   const begin=beginStatement(isolationLevel);
   const client=await db.connect();
+  const began=performanceMetrics.enabled?performance.now():0;
   let phase="begin";
   let releaseError;
   try{
@@ -47,6 +49,7 @@ export async function runTransaction(db,work,{isolationLevel}={}){
     }
     throw error;
   }finally{
+    if(performanceMetrics.enabled)performanceMetrics.observe('db.transaction',performance.now()-began,{failed:phase!=="done"});
     client.release(releaseError);
   }
 }

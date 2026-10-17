@@ -4,14 +4,27 @@ import {scopedStoreId,assertOrganizationStore} from '../lib/storeScope.js';
 import {allowedTopics,authorizeTopic} from './aiPolicy.js';
 const shift=(day,n)=>{const d=new Date(`${day}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10)};
 const safeLabel=value=>String(value||'').replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g,'').slice(0,120);
-export async function aiReport(user,topic,requestedStore,transactionDb){
+const reportSnapshot=Symbol('reportSnapshot');
+// Only this closure can create a reusable, transaction-local trusted snapshot.
+export async function withAiReportSnapshot(db,user,requestedStore,work){
+ const store=scopedStoreId(user,requestedStore);
+ await db.query("SET LOCAL statement_timeout='2000ms'");
+ if(store)await assertOrganizationStore(db,user.organizationId,store,{activeOnly:false});
+ const org=(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
+ const snapshot={[reportSnapshot]:true,active:true,db,user,store,org,today:organizationBusinessDateISO(org)};
+ try{return await work(topic=>aiReport(user,topic,store,db,snapshot))}
+ finally{snapshot.active=false}
+}
+export async function aiReport(user,topic,requestedStore,transactionDb,snapshot){
  authorizeTopic(user,topic);const store=scopedStoreId(user,requestedStore),seller=['CASHIER','SALES'].includes(user.appRole)?user.id:null;
  const db=transactionDb||await pool.connect();
  try{
-  if(!transactionDb)await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');await db.query("SET LOCAL statement_timeout='2000ms'");
-  if(store)await assertOrganizationStore(db,user.organizationId,store,{activeOnly:false});
-  const org=(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
-  const today=organizationBusinessDateISO(org),from=shift(today,-6),old=shift(today,-29);
+  if(!transactionDb)await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  const shared=snapshot?.[reportSnapshot]===true&&snapshot.active&&snapshot.db===db&&snapshot.user===user&&snapshot.store===store;
+  if(!shared)await db.query("SET LOCAL statement_timeout='2000ms'");
+  if(store&&!shared)await assertOrganizationStore(db,user.organizationId,store,{activeOnly:false});
+  const org=shared?snapshot.org:(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
+  const today=shared?snapshot.today:organizationBusinessDateISO(org),from=shift(today,-6),old=shift(today,-29);
   const facts=[],tables=[],notes=[],eligibleInsights=[];
   const fact=(id,label,value,unit='UZS')=>facts.push({id,label,value:value===null?null:String(value),unit});
   const args=[user.organizationId,store,seller,from,today];

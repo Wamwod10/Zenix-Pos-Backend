@@ -9,26 +9,20 @@ import { selectActiveBranchShifts } from "../lib/branchShift.js";
 import { shiftSalesStats } from "../services/financeReport.js";
 import {subscriptionState} from '../services/subscriptions.js';
 import {effectiveStoreLimit as resolveStoreLimit} from '../services/extraStoreEntitlements.js';
+import {createBootstrapDateParts} from '../lib/bootstrapDates.js';
+import {sendBootstrap} from '../lib/bootstrapResponse.js';
 
+import {mapBootstrapProduct as mapProduct} from '../lib/posCatalog.js';
+import {readPosCatalog} from '../services/posCatalog.js';
 const router=Router();
+router.get('/catalog',requireAuth,requireOrganization,asyncRoute(async(req,res)=>ok(res,await readPosCatalog(pool,req.user,req.query))));
 const n=(value)=>Number(value||0);
-const dateParts=(value,timeZone="Asia/Tashkent")=>{
-  const date=value?new Date(value):new Date();
-  const dateISO=new Intl.DateTimeFormat("en-CA",{timeZone,year:"numeric",month:"2-digit",day:"2-digit"}).format(date);
-  const dateText=new Intl.DateTimeFormat("uz-UZ",{timeZone,day:"2-digit",month:"2-digit",year:"numeric"}).format(date);
-  const time=new Intl.DateTimeFormat("uz-UZ",{timeZone,hour:"2-digit",minute:"2-digit",hour12:false}).format(date);
-  return {dateISO,date:dateText,time};
-};
-const mapProduct=(row)=>({
-  ...(row.metadata||{}),
-  id:row.id,name:row.name,sku:row.sku,barcode:row.barcode,category:row.category,brand:row.brand,unit:row.unit,
-  costPrice:n(row.cost_price),sellPrice:n(row.sell_price),price:n(row.sell_price),wholesalePrice:n(row.wholesale_price),minStock:n(row.min_stock),archived:row.archived,
-  stockByStore:row.stock_by_store||{},lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},
-});
 const statusTransfer=(status)=>({pending:"PENDING",approved:"PENDING",dispatched:"IN_TRANSIT",received:"RECEIVED",received_with_difference:"RECEIVED_WITH_DIFFERENCE",cancelled:"REJECTED"}[status]||String(status||"").toUpperCase());
 const statusCount=(status)=>({review:"PENDING",applying:"PENDING",approved:"APPROVED",rejected:"REJECTED",conflict:"CONFLICT"}[status]||String(status||"").toUpperCase());
 
 router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
+  res.vary('X-Zenix-Bootstrap');
+  const core=req.get('x-zenix-bootstrap')==='core';
   const orgId=req.user.organizationId;
   const branchStoreId=isBranchLocked(req.user)?req.user.storeId:null;
   const orgResult=await pool.query(`SELECT *,CASE WHEN expiry_date IS NULL THEN true ELSE expiry_date >= (now() AT TIME ZONE COALESCE(NULLIF(timezone,''),'Asia/Tashkent'))::date END AS license_date_valid FROM organizations WHERE id=$1`,[orgId]);
@@ -46,23 +40,26 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const effectiveStoreLimit=org.plan_code?await resolveStoreLimit(pool,org,businessDate):Number(org.store_limit||0)+activeExtraStores;
   const subscription=await subscriptionState(pool,orgId);
   const timeZone=org.timezone||"Asia/Tashkent";
+  const dateParts=createBootstrapDateParts(timeZone);
   const storeArg=branchStoreId?[orgId,branchStoreId]:[orgId];
   const storeFilter=(alias="")=>branchStoreId?` AND ${alias?`${alias}.`:""}store_id=$2`:"";
 
   const [storesResult,productsResult,salesResult,returnsResult,suppliersResult,invoicesResult,invoiceItemsResult,supplierPaymentsResult,expensesResult,shiftsResult,shiftMovementsResult,logsResult,movementsResult,transfersResult,countsResult,businessDaysResult,billingResult,telegramResult,usersResult,serialsResult,batchesResult]=await Promise.all([
     pool.query(`SELECT * FROM stores WHERE organization_id=$1${branchStoreId?" AND id=$2":""} ORDER BY created_at`,storeArg),
-    pool.query(`SELECT p.*,
-      COALESCE(jsonb_object_agg(ib.store_id,ib.quantity) FILTER (WHERE ib.store_id IS NOT NULL),'{}'::jsonb) AS stock_by_store,
-      max(ls.last_sale_at) AS last_sale_at
+    core?Promise.resolve({rows:[]}):pool.query(`SELECT p.*,COALESCE(ib.stock_by_store,'{}'::jsonb) AS stock_by_store,ls.last_sale_at
       FROM products p
-      LEFT JOIN inventory_balances ib ON ib.product_id=p.id AND ib.organization_id=p.organization_id ${branchStoreId?"AND ib.store_id=$2":""}
+      LEFT JOIN (
+        SELECT product_id,jsonb_object_agg(store_id,quantity) AS stock_by_store
+        FROM inventory_balances WHERE organization_id=$1 ${branchStoreId?"AND store_id=$2":""}
+        GROUP BY product_id
+      ) ib ON ib.product_id=p.id
       LEFT JOIN (
         SELECT si.product_id,max(s.created_at) AS last_sale_at
         FROM sale_items si JOIN sales s ON s.id=si.sale_id
         WHERE s.organization_id=$1 ${branchStoreId?"AND s.store_id=$2":""}
         GROUP BY si.product_id
       ) ls ON ls.product_id=p.id
-      WHERE p.organization_id=$1 GROUP BY p.id ORDER BY p.created_at`,storeArg),
+      WHERE p.organization_id=$1 ORDER BY p.created_at`,storeArg),
     pool.query(`SELECT s.*,u.name seller_name,st.name store_name,
       COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id',si.id,'productId',si.product_id,'name',si.product_name,'sku',si.sku,'barcode',si.barcode,'quantity',si.quantity,'qty',si.quantity,'finalPrice',si.unit_price*(1-si.discount_percent/100.0),'unitPrice',si.unit_price,'discountPercent',si.discount_percent,'lineTotal',si.line_total,'metadata',si.metadata,'unit',COALESCE(si.metadata->>'unit','dona'),'returnedQty',COALESCE(sr.returned_qty,0),'unitCost',COALESCE((SELECT sm.unit_cost FROM stock_movements sm WHERE sm.reference_type='sale' AND sm.reference_id=si.sale_id::text AND sm.product_id=si.product_id ORDER BY sm.created_at LIMIT 1),0))) FILTER (WHERE si.id IS NOT NULL),'[]'::jsonb) items,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('method',sp.method,'amount',sp.amount,'metadata',sp.metadata) ORDER BY sp.id) FROM sale_payments sp WHERE sp.sale_id=s.id),'[]'::jsonb) payments
@@ -87,8 +84,8 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
     pool.query("SELECT * FROM billing_payments WHERE organization_id=$1 ORDER BY submitted_at DESC LIMIT 500",[orgId]),
     pool.query("SELECT * FROM telegram_connections WHERE organization_id=$1 AND enabled=true ORDER BY linked_at DESC",[orgId]),
     pool.query("SELECT id,organization_id,store_id,name,username,phone,app_role,permission_overrides,active,must_change_password,created_at FROM users WHERE organization_id=$1 ORDER BY created_at",[orgId]),
-    pool.query(`SELECT ps.* FROM product_serials ps WHERE ps.organization_id=$1${storeFilter("ps")} ORDER BY ps.created_at`,storeArg),
-    pool.query(`SELECT ib.* FROM inventory_batches ib WHERE ib.organization_id=$1${storeFilter("ib")} AND ib.remaining_quantity>0 ORDER BY ib.created_at`,storeArg),
+    core?Promise.resolve({rows:[]}):pool.query(`SELECT ps.* FROM product_serials ps WHERE ps.organization_id=$1${storeFilter("ps")} ORDER BY ps.created_at`,storeArg),
+    core?Promise.resolve({rows:[]}):pool.query(`SELECT ib.* FROM inventory_batches ib WHERE ib.organization_id=$1${storeFilter("ib")} AND ib.remaining_quantity>0 ORDER BY ib.created_at`,storeArg),
   ]);
 
   const stores=storesResult.rows.map((row)=>({id:row.id,name:row.name,active:row.active,archivedAt:row.archived_at}));
@@ -145,9 +142,10 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   const activityVisible=can("moduleActivityLog")||settingsVisible;
   const billingVisible=hasPermission(req.user,"moduleBilling")||hasPermission(req.user,"billingWrite");
 
-  ok(res,{
+  return sendBootstrap(req,res,{
     organization:{serverNow:new Date().toISOString(),id:org.id,name:org.name,phone:org.phone,address:org.address,timezone:org.timezone,currency:org.currency,plan:org.plan,licenseStatus:org.license_status,expiryDate:org.expiry_date,storeLimit:effectiveStoreLimit,baseStoreLimit:Number(org.store_limit||0),activeExtraStores,extraStoreEntitlements,settings:org.settings||{},...subscription},
     stores,
+    ...(core?{catalog:{complete:false,mode:'remote-v1'}}:{}),
     inventory:inventoryVisible?inventory:[],
     dailySales:salesVisible?dailySales:[],salesHistory:salesVisible?salesHistory:[],returns:salesVisible?returns:[],
     suppliers:supplierVisible?suppliers:[],expenses:expenseVisible?expenses:[],
