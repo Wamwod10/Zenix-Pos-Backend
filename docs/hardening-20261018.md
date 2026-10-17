@@ -45,7 +45,7 @@ No production data, configuration or infrastructure was changed. No new schema m
 
 - Frontend pushed: `hardening/platform-20261018`, commit `24b26f3`.
 - Backend pushed: `hardening/refund-ai-bounds-20261018`.
-- Draft PR creation is blocked: GitHub connector returns HTTP 403 (Resource not accessible by integration). Automatic approval rejected reading Git credential-helper credentials for an API fallback; no credential was read. Browser fallback is unavailable. PRs have not been created.
-- GitHub PR-triggered CI cannot be verified before PR creation; local test results above are distinct from hosted CI.
+- Draft PRs created after explicit user authorization to use existing Git authentication: frontend https://github.com/Wamwod10/Zenix-Pos/pull/22 and backend https://github.com/Wamwod10/Zenix-Pos-Backend/pull/14. The connector's initial HTTP 403 blocker was resolved through the authorized GitHub API fallback; credentials were never printed or stored in files.
+- Hosted CI must complete before release; local test results above are distinct from hosted CI. Neither PR was merged or deployed.
 
 Changed application files: backend `src/routes/sales.js`, `src/services/posReplay.js`, `src/services/aiAgentReply.js`; frontend `src/context/StoreContext.jsx`, `src/utils/checkoutAttempt.js`, `src/utils/refundAttempt.js`. Regression tests, the backend POS integration CI step and this report accompany them. No styles or production deployment settings changed.
