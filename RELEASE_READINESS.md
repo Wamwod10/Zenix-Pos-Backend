@@ -51,3 +51,9 @@ No staging stress test was performed because authenticated access and DB isolati
 Use the deployment system's previously verified backend/frontend revisions. The response protocol remains compatible. Keep financial records and audit history intact; never undo sales by deleting rows. For 039, an approved `DROP INDEX CONCURRENTLY` outside a transaction can remove the optional index after checking dependencies. For 038, restore the prior 034 function definitions before removing the overload, following the disposable-tested script; review any intervening data/capacity changes. Do not automatically delete migration history or alter production schema during application rollback.
 
 PRs: [Frontend #20](https://github.com/Wamwod10/Zenix-Pos/pull/20), [Backend #12](https://github.com/Wamwod10/Zenix-Pos-Backend/pull/12). Full measured limitations and raw evidence paths: `PERFORMANCE_AUDIT.md`.
+
+## Verified runtime CI
+
+- Frontend runtime `3c05aff`: [39022937418](https://github.com/Wamwod10/Zenix-Pos/actions/runs/39022937418) **success**.
+- Backend runtime `3892e96`: [39023031810](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/39023031810) **success**.
+- Final local serialized DB/HTTP/security 166/166 plus trial/OTP 12/12 passed; checkout benchmark 274 sales/90 refunds and duplicate/stock assertions passed. Final report synchronization is documentation only; branch-tip CI must also pass before release.

@@ -296,4 +296,11 @@ Final local production POS browser passed at 390/768/1366/1920px: every width re
 - `benchmark-ai-phases.mjs` reran successfully with process exit 0 using a local scripted provider and actual DB; this still does not validate real OpenAI.
 - Logs: `artifacts/performance-final-db.log`, `performance-final-trial.log`, `performance-final-checkout.log`, `performance-final-ai-phases.log`, frontend `.cache/performance/final-full-tests.log`, backend `performance-final-tests.log`.
 
-Push/CI: final runtime branches are being verified below; historical green heads above do not certify later commits. PR metadata editing is unavailable (connector 403); committed audit/readiness reports provide the reviewable update instead. No credential extraction was attempted.
+Push/CI: both final runtime heads passed; exact run links follow. Historical green heads above do not certify later commits. PR metadata editing is unavailable (connector 403); committed audit/readiness reports provide the reviewable update instead. No credential extraction was attempted.
+
+### Final runtime GitHub verification
+
+- Frontend `3c05aff303395b0a138d41f4ca1f5277048067ee`: [Verify Frontend 39022937418](https://github.com/Wamwod10/Zenix-Pos/actions/runs/39022937418), **success**.
+- Backend `3892e96223aab4b29d8a0a573b6f51f02d68f30c`: [Verify Backend 39023031810](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/39023031810), **success**, including isolated DB, billing/AI, checkout budget, legacy migration and backup/restore.
+
+Both existing performance branches were pushed; AI base commits remain ancestors. The follow-up report synchronization changes documentation only. Check the branch-tip workflow as well before release. Disposable container `zenix-perf-final-20261017` was verified loopback-only and stopped after all tests. No production resources were modified. Overall release status remains **BLOCKED** for the explicit staging/provider/device and large-snapshot/mobile gates in `RELEASE_READINESS.md`.
