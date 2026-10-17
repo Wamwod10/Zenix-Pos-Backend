@@ -1,4 +1,4 @@
-# ZENIX POS release readiness ? progressive continuation 2026-10-17
+# ZENIX POS release readiness - progressive continuation 2026-10-17
 
 **BLOCKED FOR PRODUCTION RELEASE.** Reviewable local code is implemented on existing performance branches. No main merge, production deployment, database write/migration or production AI quota use occurred.
 
@@ -13,9 +13,9 @@
 
 | Gate | Status | Evidence / next action |
 |---|---|---|
-| Remove50k initial full parse dependency | COMPLETED | Same fresh fixture: core HTTP P95 936.5?44.9ms; mobile parse726.3?3.8ms; cold POS4840.7?2786.2ms. Full catalog is loaded only when a legacy consumer explicitly needs it. |
-| Universal instant POS/navigation | PARTIALLY COMPLETED | 1k mobile cold P95 worsens2718.1?3110.8ms; warm desktop router236.2?869.2ms; remote50k mobile search304.5?648.8ms. These regressions require targeted follow-up or explicit accepted budgets; do not promote as all-targets-met. |
-| Mobile AI100ms goal | PARTIALLY COMPLETED |100-message input P95 294.4?143.3ms, send392.6?228.9ms, mode2389.5?828.2ms. Mocked provider; cold launch and remaining tails are open. |
+| Remove50k initial full parse dependency | COMPLETED | Same fresh fixture: core HTTP P95 936.5 -> 44.9ms; mobile parse726.3 -> 3.8ms; cold POS4840.7 -> 2786.2ms. Full catalog is loaded only when a legacy consumer explicitly needs it. |
+| Universal instant POS/navigation | PARTIALLY COMPLETED | 1k mobile cold P95 worsens2718.1 -> 3110.8ms; warm desktop router236.2 -> 869.2ms; remote50k mobile search304.5 -> 648.8ms. These regressions require targeted follow-up or explicit accepted budgets; do not promote as all-targets-met. |
+| Mobile AI100ms goal | PARTIALLY COMPLETED |100-message input P95 294.4 -> 143.3ms, send392.6 -> 228.9ms, mode2389.5 -> 828.2ms. Mocked provider; cold launch and remaining tails are open. |
 | Legacy full modules/high-cardinality tracking | PARTIALLY COMPLETED | Products/inventory/analytics/history/settings still need full snapshot on demand. Core historical arrays, categories and per-product tracking children may grow. Do not claim fully bounded platform memory. |
 | Actual UI/HTTP POS correctness | COMPLETED | Synthetic real DB at390/768/1366: login/dashboard/search/retry20scans/draft branch/reload/card checkout/refund and exact stock; desktop full-catalog completion preserves cart.390 branch-selector step used768, not mobile header certification. |
 | Real Android/keyboard/scanner/printer/multiple terminals | REQUIRES REAL DEVICE | Browser keyboard scans and4xCPU are simulations. Test physical devices, keyboard focus, long sessions and sustained memory. |
@@ -40,7 +40,7 @@ No new migration.038 capacity/subscription logic and039 index definitions are un
 
 No authenticated isolated staging validation or Render/Neon stress was performed. Existing synthetic provider phase evidence remains mocked. With an operator-supplied dedicated test key/quota, inspect and use backend scripts/aiAgentLiveSmoke.mjs and scripts/aiConversationEval.mjs against synthetic cases; never production users' quota and never fetch credentials. Real-device and current-branch OpenAI results remain release gates.
 
-## Release order ? operator action only
+## Release order - operator action only
 
 1. Review and resolve/explicitly accept measured small-catalog/navigation/search and AI-tail regressions; verify current branch-tip CI and complete audit.
 2. Validate isolated staging, physical devices, sustained load and dedicated-provider quality/latency; verify tenant/branch/RBAC/subscription/financial invariants.

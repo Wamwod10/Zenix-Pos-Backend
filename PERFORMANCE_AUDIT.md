@@ -306,7 +306,7 @@ Push/CI: both final runtime heads passed; exact run links follow. Historical gre
 Both existing performance branches were pushed; AI base commits remain ancestors. The follow-up report synchronization changes documentation only. Check the branch-tip workflow as well before release. Disposable container `zenix-perf-final-20261017` was verified loopback-only and stopped after all tests. No production resources were modified. Overall release status remains **BLOCKED** for the explicit staging/provider/device and large-snapshot/mobile gates in `RELEASE_READINESS.md`.
 
 
-## 2026-10-17 progressive POS and mobile AI continuation ? supersedes earlier remaining gates
+## 2026-10-17 progressive POS and mobile AI continuation - supersedes earlier remaining gates
 
 **Release status: BLOCKED.** This section records new working-branch code and fresh local evidence; historical tables above remain historical. No production database, deployment setting, migration, sale or AI quota was changed. Frontend baseline: 6548e80; backend baseline: 8fb0360. Existing AI #11/#19 ancestry and performance #12/#20 branches retained.
 
@@ -333,13 +333,13 @@ Frontend: src/context/StoreContext.jsx, new PosWorkspace.jsx and utils/posCatalo
 
 Local PostgreSQL16 disposable loopback :55436, Node24.11.1, authenticated synthetic Premium fixtures, two branches. 30 observations/group after three warmups, alternating legacy/core order. These measure full-response client latency, not isolated SQL time or Render/Neon latency. Richer 50k fixture is **32.75MB JSON**, unlike historical 23.3MB fixture; comparisons below use the same fresh fixture on both paths. P50 / P95 / P99 milliseconds.
 
-| Products | Legacy full | Core initial | JSON bytes full ? core |
+| Products | Legacy full | Core initial | JSON bytes full  ->  core |
 | --- | --- | --- | --- |
-| 1000 | 75.2 / 95.2 / 100.3 | 37.0 / 56.2 / 60.6 | 656550 ? 1599 |
-| 10000 | 212.1 / 280.4 / 308.6 | 22.8 / 61.0 / 71.8 | 6551552 ? 1601 |
-| 50000 | 845.5 / 936.5 / 970.3 | 20.3 / 44.9 / 46.1 | 32751552 ? 1601 |
+| 1000 | 75.2 / 95.2 / 100.3 | 37.0 / 56.2 / 60.6 | 656550  ->  1599 |
+| 10000 | 212.1 / 280.4 / 308.6 | 22.8 / 61.0 / 71.8 | 6551552  ->  1601 |
+| 50000 | 845.5 / 936.5 / 970.3 | 20.3 / 44.9 / 46.1 | 32751552  ->  1601 |
 
-50k full gzip transfer median 2,091,361 bytes ? core 1,601 identity bytes. First catalog response median 30899 bytes; on-demand data is additional traffic, not eliminated. At50k, first-page API 20.8 / 28.5 / 28.9, unloaded-name search 95.9 / 126.6 / 160.2, exact barcode 20.8 / 35.6 / 37.3. All 495 HTTP assertions passed. RSS contains both server/client and retained snapshots in one process: no server peak-memory/capacity claim.
+50k full gzip transfer median 2,091,361 bytes  ->  core 1,601 identity bytes. First catalog response median 30899 bytes; on-demand data is additional traffic, not eliminated. At50k, first-page API 20.8 / 28.5 / 28.9, unloaded-name search 95.9 / 126.6 / 160.2, exact barcode 20.8 / 35.6 / 37.3. All 495 HTTP assertions passed. RSS contains both server/client and retained snapshots in one process: no server peak-memory/capacity claim.
 
 ### Actual production React before/after browser benchmarks
 
@@ -378,7 +378,7 @@ Exact previous runtime files vs current runtime, captured disposable responses, 
 | searchMs (ms) | 1366 | 58.4 / 64.1 / 64.1 | 273.0 / 286.2 / 286.2 |
 | fcpMs (ms) | 1366 | 188.0 / 248.0 / 248.0 | 204.0 / 292.0 / 292.0 |
 
-Blocking=sum(max(longTask-50ms,0)); heap is largest sampled main JS heap at250ms intervals through search/cart-add, not OS peak or a GC-normalized leak test. 50k mobile cold-POS P95 improves 42.4%; parse P95 726.3?3.8ms, blocking P95 2526?768ms. **1k mobile cold POS P95 regresses 2718.1?3110.8ms**; smaller catalogs do not benefit equally.
+Blocking=sum(max(longTask-50ms,0)); heap is largest sampled main JS heap at250ms intervals through search/cart-add, not OS peak or a GC-normalized leak test. 50k mobile cold-POS P95 improves 42.4%; parse P95 726.3 -> 3.8ms, blocking P95 2526 -> 768ms. **1k mobile cold POS P95 regresses 2718.1 -> 3110.8ms**; smaller catalogs do not benefit equally.
 
 | 50k journey metric | Viewport | Before P50/P95/P99 | After P50/P95/P99 |
 | --- | --- | --- | --- |
@@ -392,7 +392,7 @@ Blocking=sum(max(longTask-50ms,0)); heap is largest sampled main JS heap at250ms
 | posUsableMs | 1366 | 1620.6 / 1661.1 / 1661.1 | 1823.9 / 1856.6 / 1856.6 |
 | navigationMs | 1366 | 214.6 / 236.2 / 236.2 | 858.7 / 869.2 / 869.2 |
 
-**Observed regressions remain open:** warm local search becomes debounced remote search; 50k mobile search P95 304.5?648.8ms and10k mobile reaches681ms, above600ms goal. Warm Dashboard?POS router navigation regresses, including desktop236.2?869.2ms; tablet total journey also regresses. Diagnostic1k desktop catalog resolves in13?30ms and Sales resources finish soon afterward, with remaining gap before visible controls; this does not establish a slow SQL cause. A POS-local Suspense experiment did not improve the gap and was reverted. Small-n variability is disclosed; no assertion that every interaction improved. Follow-up render/scheduling/visibility profiling and isolated staging are required before approving these regressions.
+**Observed regressions remain open:** warm local search becomes debounced remote search; 50k mobile search P95 304.5 -> 648.8ms and10k mobile reaches681ms, above600ms goal. Warm Dashboard -> POS router navigation regresses, including desktop236.2 -> 869.2ms; tablet total journey also regresses. Diagnostic1k desktop catalog resolves in13 -> 30ms and Sales resources finish soon afterward, with remaining gap before visible controls; this does not establish a slow SQL cause. A POS-local Suspense experiment did not improve the gap and was reverted. Small-n variability is disclosed; no assertion that every interaction improved. Follow-up render/scheduling/visibility profiling and isolated staging are required before approving these regressions.
 
 ### AI mobile responsiveness
 
@@ -401,20 +401,20 @@ Safe changes in src/pages/ai/ZenixAI.jsx: memoized transcript/history/action car
 | Interaction | Before P50/P95/P99 | After P50/P95/P99 |
 | --- | --- | --- |
 | 100-message typing / two rAF | 201.3 / 294.4 / 294.4 | 79.6 / 143.3 / 143.3 |
-| Send ? pending DOM | 261.3 / 392.6 / 392.6 | 106.5 / 228.9 / 228.9 |
+| Send  ->  pending DOM | 261.3 / 392.6 / 392.6 | 106.5 / 228.9 / 228.9 |
 | Mode switch / two rAF | 876.1 / 2389.5 / 2389.5 | 626.3 / 828.2 / 828.2 |
 | Mocked verified reply DOM | 783.9 / 989.7 / 989.7 | 604.9 / 682.2 / 682.2 |
 
-19-message input P95 165.6?65.5ms;10-message85.6?45.8ms;empty66.3?73.0ms. Single cold-launch DOM885.2?834.5ms; two-rAF940.8?946.0ms is not a percentile or a speedup. Whole-page long-task count492?272 and end heap19.3?17.1MB are unnormalized observations, not per-action duration or peak memory. Mode-switch828ms, long-history input143ms and send229ms tails still miss targets. Real OpenAI latency/token/quality remains unmeasured on this branch; no credential retrieval or production quota use. Existing safe synthetic provider phase test commands remain applicable.
+19-message input P95 165.6 -> 65.5ms;10-message85.6 -> 45.8ms;empty66.3 -> 73.0ms. Single cold-launch DOM885.2 -> 834.5ms; two-rAF940.8 -> 946.0ms is not a percentile or a speedup. Whole-page long-task count492 -> 272 and end heap19.3 -> 17.1MB are unnormalized observations, not per-action duration or peak memory. Mode-switch828ms, long-history input143ms and send229ms tails still miss targets. Real OpenAI latency/token/quality remains unmeasured on this branch; no credential retrieval or production quota use. Existing safe synthetic provider phase test commands remain applicable.
 
-**Rejected optimization:** content-visibility:auto improved an isolated n6 experiment (mode P95872?284ms), but Chromium1243 AX inspection exposed only6/30 offscreen action buttons in actual chat. A reduced standalone30-button fixture exposed2/30 vs30/30 control, including Accessibility.enable-before-page. Reader anchor/history navigation passed; accessibility gate did not. This style is **absent from production runtime**. Optional ZENIX_AI_CONTAIN harness flag reproduces the rejected experiment only. This observation is not a universal browser/assistive-tech claim; [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/content-visibility) and [Chrome guidance](https://web.dev/articles/content-visibility) describe expected retained accessibility, so device/assistive-tech validation would be needed before reconsidering.
+**Rejected optimization:** content-visibility:auto improved an isolated n6 experiment (mode P95872 -> 284ms), but Chromium1243 AX inspection exposed only6/30 offscreen action buttons in actual chat. A reduced standalone30-button fixture exposed2/30 vs30/30 control, including Accessibility.enable-before-page. Reader anchor/history navigation passed; accessibility gate did not. This style is **absent from production runtime**. Optional ZENIX_AI_CONTAIN harness flag reproduces the rejected experiment only. This observation is not a universal browser/assistive-tech claim; [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/content-visibility) and [Chrome guidance](https://web.dev/articles/content-visibility) describe expected retained accessibility, so device/assistive-tech validation would be needed before reconsidering.
 
 ### Regression verification
 
 - Frontend full259/259; backend605 pass,51 DB-only skips,656 total; backend syntax153 modules.
 - Serialized actual disposable PostgreSQL/HTTP179/179, no skips: subscriptions/resource concurrency, tenant/branch isolation, checkout/refunds, AI evidence/confirmation/replay, bootstrap parity and new microsecond-cursor/scoped catalog tests.
 - Existing AI browser28/28; design23 CSS/SCSS hashes unchanged; imports/readiness/build and CPU/bundle budgets pass. Main gzip116,949bytes; total JS gzip422,629bytes (budgets130,000/470,000).
-- Real HTTP+React flows at1366/768/390: synthetic login?dashboard?remote POS, unloaded product search, deliberate503/retry preserving cart,20 rapid scans, branch/draft isolation+reload, confirmed card checkout with exact stock, UI refund with stock restored. Desktop also completes outer full-catalog while preserving active cashier. At390 only branch-selector step temporarily uses768 because existing mobile header hides it; no390 branch-selector success claim. Zero page errors/external requests. Cash/mixed financial paths covered by actual HTTP suite and benchmark, not separately all UI flows.
+- Real HTTP+React flows at1366/768/390: synthetic login -> dashboard -> remote POS, unloaded product search, deliberate503/retry preserving cart,20 rapid scans, branch/draft isolation+reload, confirmed card checkout with exact stock, UI refund with stock restored. Desktop also completes outer full-catalog while preserving active cashier. At390 only branch-selector step temporarily uses768 because existing mobile header hides it; no390 branch-selector success claim. Zero page errors/external requests. Cash/mixed financial paths covered by actual HTTP suite and benchmark, not separately all UI flows.
 - Existing complete-catalog POS browser passes390/768/1366/1920 with20 scans each; this checks backward-compatible full snapshot, not remote latency.
 - Current-only checkout revalidation: 274 unique sales/90 refunds, stock9816; duplicate replay/tenant assertions pass. No checkout speedup claimed.
 
@@ -441,7 +441,7 @@ Use a separately provisioned **disposable local** DB; scripts reject other targe
 | Gate | Status | Remaining work |
 | --- | --- | --- |
 | Progressive architecture + scoped POS recovery | COMPLETED | Code + local regression evidence; production approval remains separate. |
-| Universal50k instant usable UI | PARTIALLY COMPLETED | Large parse removed; mobile P95 still2.79s cold and4.43s Dashboard?POS journey. |
+| Universal50k instant usable UI | PARTIALLY COMPLETED | Large parse removed; mobile P95 still2.79s cold and4.43s Dashboard -> POS journey. |
 | Small catalog / warm router / remote search regressions | PARTIALLY COMPLETED | Documented above; require accepted budget or targeted scheduling/search fix and repeated same-environment validation. |
 | AI memoization + confirmation correctness | COMPLETED | Local safe implementation/tests complete; aggressive containment rejected. |
 | All AI interactions<100ms | PARTIALLY COMPLETED | Cold launch,100-message typing/send and mode tails remain. |
