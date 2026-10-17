@@ -218,3 +218,82 @@ Both tested runtime heads passed GitHub Actions:
 - Backend `4a63bec4fe2a1232c27df6b211e77387e26cb334`: [Verify Backend run 38932097986](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/38932097986), success; standalone and isolated DB/HTTP, trial/OTP, billing/AI, new index/capacity tests, checkout budget, legacy migration and backup/restore verification.
 
 These results supersede the earlier unconfirmed CI note. Existing PR #20/#12 were updated by pushing to their original branches; AI bases remain ancestors. This final report update changes documentation only. The named disposable PostgreSQL container was stopped after evidence capture; raw local JSON/traces remain in the workspace artifact directory.
+## Final optimization verification — 2026-10-17
+
+This section supersedes earlier completion counts and remaining-coverage labels. Production release is **BLOCKED** by staging, real-provider/device validation and unresolved large-snapshot/mobile tails. Historical observations above remain historical; no production load, deployment or migration was performed.
+
+### Shipped changes and controlled measurements
+
+- `backend/src/routes/bootstrap.js`: aggregate tenant/branch stock once before joining products. All product columns, complete inventory, last-sale data and authorization remain. Full-row comparisons passed for 50,000 products, owner and both branches; rollback-only fixtures cover missing/zero/negative/decimal balances and custom metadata. A real-route PostgreSQL regression is included in CI.
+- `frontend/src/utils/bootstrapInventory.js` and `StoreContext.jsx`: yield during complete inventory normalization with a time budget, cancel stale generations and publish only the complete authorized snapshot. JSON parsing remains synchronous. No fields are dropped; no cross-tenant cache is added.
+- `frontend/src/pages/ai/ZenixAI.jsx`: memoize unchanged answer/report content; live confirmation cards remain outside the memoized subtree. Existing layout/classes and security checks remain.
+- Backend `performanceTimer.js`, `aiAgentChat.js`, `aiAgentRegistry.js`, `bootstrapResponse.js`: opt-in fixed-label phase timing using the existing bounded metrics store. No prompts, SQL, identifiers, tokens or financial payloads enter these metrics. Disabled mode executes work directly.
+
+| Module | Operation | Before P50 | Before P95 | After P50 | After P95 | Improvement | Test Environment | Status |
+|---|---|---:|---:|---:|---:|---|---|---|
+| Bootstrap SQL | Owner full result | 483.09 | 530.36 | 424.43 | 483.62 | P95 -8.8% | Local PG16, 50k products/100k balances, 8 alternating samples | COMPLETED |
+| Bootstrap SQL | Locked branch full result | 427.86 | 502.20 | 393.85 | 454.56 | P95 -9.5% | Same local PG | COMPLETED |
+| Bootstrap HTTP | Complete authenticated snapshot | 1088.40 | 1267.57 | 1106.47 | 1201.93 | P95 -5.2%; P50 +1.7% | Same gzip/full data, 30 alternating samples per version | PARTIALLY COMPLETED |
+| AI UI | Mobile send DOM feedback | 144.4 | 187.8 | 67.2 | 102.9 | P95 -45.2%; 100ms target still missed | 390px, Chromium 4x CPU, 20 samples | PARTIALLY COMPLETED |
+| AI UI | Mobile verified mock reply rendered | 683.6 | 1399.1 | 515.7 | 570.3 | P95 -59.2% | Same, fixed 350ms synthetic response | COMPLETED |
+| AI UI | Mobile mode switch, two RAF | 474.9 | 1051.2 | 318.0 | 541.7 | P95 -48.5%; tail remains | Same | PARTIALLY COMPLETED |
+
+All values above are milliseconds. SQL n=8 P99 equals observed maximum/P95, not a stable production tail estimate. Engine execution owner P50/P95 205.98/215.85→173.20/175.40ms; branch 162.37/176.45→129.38/130.67ms. Full HTTP P99 1293.80→1212.35ms. Identical JSON length 23,294,729 bytes; median gzip bytes 1,990,408→1,994,513 (equal-timestamp ordering affects compression). HTTP-side JSON parse P50/P95/P99 84.43/121.85/122.60→84.42/125.78/129.57ms: no parsing win. Sampled Node RSS maximum 523,415,552→522,743,808 bytes includes the benchmark client/buffers; this does not establish memory savings or fitness for the 512MB production service. Gzip P95 139.49→155.56ms remains a CPU/tail cost. Evidence: `artifacts/performance-final-20261016/bootstrap-products-sql.json`, `bootstrap-sql-http.json`.
+
+A negotiated columnar snapshot and worker parsing/normalization were implemented and measured experimentally, then **rejected and removed** because transfer/reconstruction increased mobile usable-UI tails. Archived `rejected-worker-source` and experiment JSON files are not shipped code or release evidence. The shipped protocol remains the existing complete JSON response. Progressive server pagination requires a separate, correctness-preserving POS architecture change; it is not silently substituted here.
+
+AI mobile send P99 250.5→110.8ms; reply P99 1637.9→608.5ms; mode P99 1093.4→707.7ms. Long-history typing P50/P95/P99 60.6/141.2/208.3→43.2/124.9/163.3ms. Cold launch was a single ~803ms DOM/~963ms two-RAF observation, not a percentile or proof of instant launch. Two additional 20-sample desktop pairs did not reproduce the original mode P95 regression: 46.9→42.2ms and 63.9→44.4ms; P99 slightly worsened 84.9→85.8 and 71.9→73.8ms. No universal tail-win claim. Evidence: `artifacts/performance-continuation-20261016/ai-interaction-tails`.
+
+Current-only AI backend phase observations use real local PostgreSQL and a scripted 10ms provider, **not OpenAI**: verified report n=30 total P50/P95/P99 382.86/451.88/512.82ms; fallback n=10 430.35/512.55/512.55ms. Report phase P50/P95 58.05/71.87ms, tool 82.88/98.09, evidence 0.78/1.36, memory 0.06/0.15, validation 0.07/0.15. Provider phase includes dispatch/quota DB overhead and is not external model latency. Synthetic token counters are not tokenizer measurements. Evidence: `ai-backend-phases.json`. Live OpenAI key was absent; no credentials were obtained or production quota consumed.
+
+### Controls and migration security review
+
+`tests/finalControls.browser.mjs` passed 45 concrete checks across 15 modules with synthetic pending/error responses and zero external requests. Coverage includes catalog/inventory/customer/supplier/expense/staff dropdowns, search/columns/modals, settings branch/staff tabs, CRM pending/error/retry/edit, AI pending/reply and billing menus. This is not all 725 lexical interaction candidates: destructive actions, real persistence, exports/printing and every permission/branch transition remain partial. Single interaction observations include automation overhead and are not P95 or physical-paint guarantees.
+
+Migrations 038/039 remain unchanged and **REQUIRE PRODUCTION APPROVAL**. Disposable tests verified finite Business caps, unlimited Premium, concurrent capacity enforcement, downgrade/full usage behavior, security-invoker functions and unprivileged-role denial (42501), rollback/reapply, and the runner's nontransactional concurrent-index path. The new index complements existing store-leading keys. On 100k balances its size was 6,864,896 bytes; concurrent build 282.70ms, an independent insert 4.01ms while build waited on a virtual transaction lock. Ten batches of 500 inserts had P50/P95 318.89/385.37ms before and 280.65/367.83ms after; cache/noise prevents a write-overhead or speedup conclusion. Large production-table duration, IO, lock wait and disk headroom still require an approved rollout window. Evidence scripts: `final-migrations-safety.mjs`, `final-bootstrap-products-sql.mjs`.
+
+### Final browser snapshot observations
+
+Identical captured 50k JSON, exact prior StoreContext versus current production React app, alternating cohorts after two warmups, six observations per mode/width. At this small n, P95=P99=observed maximum. Desktop's first observations overlapped a short backend unit run; do not interpret noisy small differences as stable speedups. Network APIs are intercepted, so these usable times exclude real backend/network latency.
+
+| Operation | Before P50/P95/P99 ms | After P50/P95/P99 ms | Status |
+|---|---|---|---|
+| 1366px usable POS | 1329.1/1351.1/1351.1 | 1261.2/1440.7/1440.7 | PARTIALLY COMPLETED; tail worse |
+| 390px 4x usable POS | 4871.8/5358.1/5358.1 | 4940.7/5413.5/5413.5 | PARTIALLY COMPLETED; no overall win |
+| 390px complete snapshot ready | 3297.6/3989.5/3989.5 | 3209.7/3476.9/3476.9 | PARTIALLY COMPLETED |
+| 390px longest normalization slice | 166.3/248.9/248.9 | 12.3/30.1/30.1 | COMPLETED; reduced normalization blocking |
+| 390px JSON parse | 502.2/670.8/670.8 | 517.6/663.1/663.1 | PARTIALLY COMPLETED; still blocking |
+| 1366px JSON parse | 36.7/51.2/51.2 | 35.5/48.4/48.4 | PARTIALLY COMPLETED |
+
+Observed 250ms-sampled renderer JS heap maximum: desktop 50,719,012→50,452,120 bytes; mobile 61,272,340→61,575,416. This excludes worker/native/whole-browser memory and does not establish peak RAM reduction. Mobile longest task P95 756→778ms and total long-task P95 3596→3813ms show remaining parse/render bottlenecks. All 50k products remained present; last SKU search/cart add passed, zero page errors. Cooperative normalization ships for bounded individual work slices and stale safety, not an overall bootstrap latency claim. Evidence: `bootstrap-cooperative-browser.json`.
+
+### Remaining platform coverage — final status
+
+| Area | Status | Verified scope / remaining gate |
+|---|---|---|
+| POS/checkout | PARTIALLY COMPLETED | Cash/card/mixed/refunds, duplicate and 10/50 bursts; physical receipt/scanner and sustained terminal load remain. |
+| Navigation/controls | PARTIALLY COMPLETED | 15 routes, responsive browser coverage, 45 concrete control checks; not every destructive/export/branch transition. |
+| Catalog/inventory | PARTIALLY COMPLETED | Full-row 50k SQL parity and bounded normalization; 23.3MB parse/render and long-scroll/real imports remain. |
+| Dashboard/analytics | PARTIALLY COMPLETED | CPU bottleneck fixed and current render profile captured; production-shaped widget timings remain. |
+| Customers/suppliers/expenses/history | PARTIALLY COMPLETED | Synthetic route/control and business regressions; large persistence/export latency remains. |
+| Settings/staff/billing/branches/Telegram | PARTIALLY COMPLETED | Billing/RBAC suites and selected controls; exhaustive invalidation and integration scenarios remain. |
+| AI report rendering/phase diagnostics | COMPLETED | Targeted memo regression, paired UI measurements, fixed-label phase tests; this scope does not include real provider latency. |
+| AI overall mobile latency | PARTIALLY COMPLETED | Send/report improved; cold launch/mode/input tails still miss targets. |
+| Live OpenAI benchmark | BLOCKED | No authorized test key; operator-provided dedicated synthetic quota required. |
+| Android/printer/scanner | REQUIRES REAL DEVICE | Desktop Chromium emulation is not hardware certification. |
+| Hosting/cold start/sustained load | REQUIRES STAGING | Staging token/DB isolation not established; production excluded. |
+| Migrations 038/039 | REQUIRES PRODUCTION APPROVAL | Disposable safety/security/rollback/concurrent-index tests completed; execution remains separately approved. |
+| Monitoring/CI | PARTIALLY COMPLETED | Bounded optional phase/HTTP/DB metrics and regression budgets; production collection policy/observation remains. |
+
+Final local production POS browser passed at 390/768/1366/1920px: every width retained all 20 scanner inputs as five cart lines, quantity four each, zero browser errors. Search P50/P95/P99 ms respectively 47.0/126.4/150.8, 8.4/14.5/14.8, 11.0/16.1/16.2, 8.3/13.3/13.5. API intercepted, mobile 4x CPU; this was a functional regression run overlapping disposable DB tests, not an isolated before/after latency claim. Evidence: `artifacts/performance-final-pos-browser.log`.
+
+### Final local quality gate
+
+- Frontend full suite **253/253**, no failures/skips; backend standalone **600 passed, 50 DB-only skipped** (650 total), syntax **150 modules**.
+- Disposable PG/HTTP/billing/subscription/tenant/branch/checkout/AI evidence/confirmation/security: **166/166** passed with diagnostics enabled; additional trial/OTP security **12/12** passed, no skips. These are separate serialized runs (178 passing cases total), not 178 standalone unit tests.
+- Existing AI Chromium **28/28** cases, new representative controls **45 checks**, final four-width POS/barcode assertions passed. Design/import/readiness/build/CPU/bundle gates passed. Main gzip **113,908**, total JS gzip **419,053** bytes.
+- Final checkout current-only revalidation: cash P50/P95/P99 **78.06/130.38/132.08ms**, card **111.73/130.66/131.55**, mixed **67.48/130.62/132.16**; refund cash **125.48/150.40/151.27**, card **116.55/136.47/142.76**, mixed **108.21/153.60/159.79**. Ten-user burst **554.18/1061.21/1135.24**, fifty-user **1872.96/3804.31/4507.89**. Exact 274 sales/90 refunds/9816 stock, cash 12960/card 14440, duplicate replay and tenant isolation passed. Pool max five, peak waiting 78; transactions/locks retained. No checkout-speedup claim from this current-only repeat.
+- `benchmark-ai-phases.mjs` reran successfully with process exit 0 using a local scripted provider and actual DB; this still does not validate real OpenAI.
+- Logs: `artifacts/performance-final-db.log`, `performance-final-trial.log`, `performance-final-checkout.log`, `performance-final-ai-phases.log`, frontend `.cache/performance/final-full-tests.log`, backend `performance-final-tests.log`.
+
+Push/CI: final runtime branches are being verified below; historical green heads above do not certify later commits. PR metadata editing is unavailable (connector 403); committed audit/readiness reports provide the reviewable update instead. No credential extraction was attempted.

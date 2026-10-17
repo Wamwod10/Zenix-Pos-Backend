@@ -47,18 +47,20 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
 
   const [storesResult,productsResult,salesResult,returnsResult,suppliersResult,invoicesResult,invoiceItemsResult,supplierPaymentsResult,expensesResult,shiftsResult,shiftMovementsResult,logsResult,movementsResult,transfersResult,countsResult,businessDaysResult,billingResult,telegramResult,usersResult,serialsResult,batchesResult]=await Promise.all([
     pool.query(`SELECT * FROM stores WHERE organization_id=$1${branchStoreId?" AND id=$2":""} ORDER BY created_at`,storeArg),
-    pool.query(`SELECT p.*,
-      COALESCE(jsonb_object_agg(ib.store_id,ib.quantity) FILTER (WHERE ib.store_id IS NOT NULL),'{}'::jsonb) AS stock_by_store,
-      max(ls.last_sale_at) AS last_sale_at
+    pool.query(`SELECT p.*,COALESCE(ib.stock_by_store,'{}'::jsonb) AS stock_by_store,ls.last_sale_at
       FROM products p
-      LEFT JOIN inventory_balances ib ON ib.product_id=p.id AND ib.organization_id=p.organization_id ${branchStoreId?"AND ib.store_id=$2":""}
+      LEFT JOIN (
+        SELECT product_id,jsonb_object_agg(store_id,quantity) AS stock_by_store
+        FROM inventory_balances WHERE organization_id=$1 ${branchStoreId?"AND store_id=$2":""}
+        GROUP BY product_id
+      ) ib ON ib.product_id=p.id
       LEFT JOIN (
         SELECT si.product_id,max(s.created_at) AS last_sale_at
         FROM sale_items si JOIN sales s ON s.id=si.sale_id
         WHERE s.organization_id=$1 ${branchStoreId?"AND s.store_id=$2":""}
         GROUP BY si.product_id
       ) ls ON ls.product_id=p.id
-      WHERE p.organization_id=$1 GROUP BY p.id ORDER BY p.created_at`,storeArg),
+      WHERE p.organization_id=$1 ORDER BY p.created_at`,storeArg),
     pool.query(`SELECT s.*,u.name seller_name,st.name store_name,
       COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id',si.id,'productId',si.product_id,'name',si.product_name,'sku',si.sku,'barcode',si.barcode,'quantity',si.quantity,'qty',si.quantity,'finalPrice',si.unit_price*(1-si.discount_percent/100.0),'unitPrice',si.unit_price,'discountPercent',si.discount_percent,'lineTotal',si.line_total,'metadata',si.metadata,'unit',COALESCE(si.metadata->>'unit','dona'),'returnedQty',COALESCE(sr.returned_qty,0),'unitCost',COALESCE((SELECT sm.unit_cost FROM stock_movements sm WHERE sm.reference_type='sale' AND sm.reference_id=si.sale_id::text AND sm.product_id=si.product_id ORDER BY sm.created_at LIMIT 1),0))) FILTER (WHERE si.id IS NOT NULL),'[]'::jsonb) items,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('method',sp.method,'amount',sp.amount,'metadata',sp.metadata) ORDER BY sp.id) FROM sale_payments sp WHERE sp.sale_id=s.id),'[]'::jsonb) payments

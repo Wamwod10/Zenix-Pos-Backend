@@ -6,6 +6,7 @@ import {runAgentTool} from './aiAgentTools.js';
 import {withTransaction} from '../db/tx.js';
 import {assertAgentEnabled,recheckAgentActor} from './aiAgentActor.js';
 import {READ_REPORT_SCHEMAS,readAgentReport} from './aiReadReports.js';
+import {measurePerformance} from '../lib/performanceTimer.js';
 
 const str={type:'string'},uuid={type:'string',format:'uuid'},nullableUuid={type:['string','null'],format:'uuid'};
 const nullableString={type:['string','null']};
@@ -31,13 +32,13 @@ export async function executeAgentTool(user,name,args,context){
  if(name==='get_business_report'){
   const input=z.object({topic:z.enum(AGENT_TOOLS.find(t=>t.name===name).parameters.properties.topic.enum),storeId:z.string().uuid().nullable()}).strict().parse(args);
   return withTransaction(async db=>{const current=await recheckAgentActor(db,user);authorizeTopic(current,input.topic);
-   return {kind:'report',report:await aiReport(current,input.topic,input.storeId||context.storeId,db)};
+   return {kind:'report',report:await measurePerformance('ai.report',()=>aiReport(current,input.topic,input.storeId||context.storeId,db))};
   });
  }
  if(READ_REPORT_SCHEMAS[name]){
   const input=READ_REPORT_SCHEMAS[name].parse(args);
   return withTransaction(async db=>{const current=await recheckAgentActor(db,user);await db.query("SET LOCAL statement_timeout='2000ms'");
-   return {kind:'report',report:await readAgentReport(db,current,name,{...input,storeId:input.storeId||context.storeId||null})};
+   return {kind:'report',report:await measurePerformance('ai.report',()=>readAgentReport(db,current,name,{...input,storeId:input.storeId||context.storeId||null}))};
   },{isolationLevel:'repeatable read'});
  }
  const scopedArgs={...args};

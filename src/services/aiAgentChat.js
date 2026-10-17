@@ -10,13 +10,21 @@ import {reserveAi,markAiDispatched,finishAi} from './aiQuota.js';
 import {acquireConversation,releaseConversation} from './aiConversationStore.js';
 import {toolsFor,executeAgentTool,modelToolResult} from './aiAgentRegistry.js';
 import {recordAgentProgress} from './aiAgentProgress.js';
-import {deriveAgentMemory} from './aiAgentMemory.js';
-import {assertAgentQuestion,renderAgentAnswer,renderAgentBlocks,buildAgentEvidence,repairableAgentReply,safeAgentFallback} from './aiAgentReply.js';
+import {deriveAgentMemory as deriveMemory} from './aiAgentMemory.js';
+import {assertAgentQuestion,renderAgentAnswer as renderAnswer,renderAgentBlocks as renderBlocks,buildAgentEvidence as buildEvidence,repairableAgentReply,safeAgentFallback as fallbackReply} from './aiAgentReply.js';
+import {measurePerformance} from '../lib/performanceTimer.js';
+
+const deriveAgentMemory=(...args)=>measurePerformance('ai.memory',()=>deriveMemory(...args));
+const buildAgentEvidence=(...args)=>measurePerformance('ai.evidence',()=>buildEvidence(...args));
+const renderAgentAnswer=(...args)=>measurePerformance('ai.validation',()=>renderAnswer(...args));
+const renderAgentBlocks=(...args)=>measurePerformance('ai.validation',()=>renderBlocks(...args));
+const safeAgentFallback=(...args)=>measurePerformance('ai.fallback',()=>fallbackReply(...args));
 
 const schema=z.object({requestId:z.string().uuid(),question:z.string().trim().min(1).max(1000),storeId:z.string().uuid().nullable().optional(),conversationId:z.string().uuid().nullable().optional()}).strict();
 const MAX_STEPS=6;
 const recheckAiActor=(user,key)=>withTransaction(db=>recheckAgentActor(db,user,key));
 export async function aiAgentChat(user,body,{settings,provider,toolRunner=executeAgentTool,clock=Date.now}){
+ const timedProvider=(...args)=>measurePerformance('ai.provider',()=>provider(...args));
  if(!settings.enabled)throw new HttpError(503,'AI faollashtirilmagan','AI_UNAVAILABLE');
  const input=schema.parse(body),question=assertAgentQuestion(input.question),storeId=scopedStoreId(user,input.storeId),key=authorizationKey(user);
  await recheckAiActor(user,key);
@@ -31,7 +39,7 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   inputTokens+=usage.inputTokens;outputTokens+=usage.outputTokens;cost+=usage.cost;return true;
  };
  try{
-  conversation=await acquireConversation(user,{conversationId:input.conversationId,storeId,key,requestId:input.requestId,timeoutMs:settings.timeoutMs});
+  conversation=await measurePerformance('ai.conversationRead',()=>acquireConversation(user,{conversationId:input.conversationId,storeId,key,requestId:input.requestId,timeoutMs:settings.timeoutMs}));
   const history=[...conversation.messages,{role:'user',content:question}],toolResults=[],actions=[],ids=new Set(),readCache=new Map();
   const priorResults=conversation.messages.filter(m=>m.role==='assistant').flatMap(m=>{try{return JSON.parse(m.content).verifiedResults||[]}catch{return []}}).slice(-8);
   let dispatched=false,reply=null,complete=false,repaired=false,fallback=null,forceFinal=false;
@@ -43,7 +51,7 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
    for(;;){
     stage='provider';providerPending=true;callDispatched=false;progress('composing');
     try{
-     result=await provider(history,{signal,businessDate:current.businessDate,memory:deriveAgentMemory(conversation.messages,toolResults,storeId),evidence:buildAgentEvidence([...toolResults,...priorResults]),tools:repairing||finalizing||step===MAX_STEPS-1?[]:toolsFor(settings),budget:{inputTokens:settings.maxInputTokens-inputTokens,outputTokens:settings.maxOutputTokens-outputTokens,cost:settings.maxRequestMicros-cost},onDispatch:async()=>{if(!dispatched){await markAiDispatched(user,input.requestId);dispatched=true}callDispatched=true}});
+     result=await timedProvider(history,{signal,businessDate:current.businessDate,memory:deriveAgentMemory(conversation.messages,toolResults,storeId),evidence:buildAgentEvidence([...toolResults,...priorResults]),tools:repairing||finalizing||step===MAX_STEPS-1?[]:toolsFor(settings),budget:{inputTokens:settings.maxInputTokens-inputTokens,outputTokens:settings.maxOutputTokens-outputTokens,cost:settings.maxRequestMicros-cost},onDispatch:async()=>{if(!dispatched){await markAiDispatched(user,input.requestId);dispatched=true}callDispatched=true}});
      if(!addUsage(result))throw new HttpError(502,'AI xarajat hisoboti noto‘g‘ri','AI_COST_LIMIT');
      providerPending=false;
      if((repairing||finalizing)&&result.calls?.length)throw new HttpError(403,'Yakuniy javobda tool chaqirish taqiqlangan','AI_TOOL_FORBIDDEN');
@@ -81,7 +89,7 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
    else if(cacheKey&&readCache.has(cacheKey)){output=readCache.get(cacheKey);forceFinal=true}
    else{
     let abortTool;
-    try{output=await Promise.race([toolRunner(user,call.name,call.args,{settings,requestId:input.requestId,conversationId:conversation.id,storeId,signal}),new Promise((_,reject)=>{abortTool=()=>reject(new HttpError(504,'Biznes ma’lumotini olish vaqti tugadi.','AI_TOOL_TIMEOUT',{stage:'tool',reason:'timeout'}));signal.addEventListener('abort',abortTool,{once:true});if(signal.aborted)abortTool()})])}
+    try{output=await Promise.race([measurePerformance('ai.tool',()=>toolRunner(user,call.name,call.args,{settings,requestId:input.requestId,conversationId:conversation.id,storeId,signal})),new Promise((_,reject)=>{abortTool=()=>reject(new HttpError(504,'Biznes ma’lumotini olish vaqti tugadi.','AI_TOOL_TIMEOUT',{stage:'tool',reason:'timeout'}));signal.addEventListener('abort',abortTool,{once:true});if(signal.aborted)abortTool()})])}
     catch(error){if(error instanceof HttpError||error?.name==='ZodError')throw error;throw new HttpError(503,error?.code==='57014'?'Biznes tool vaqti tugadi. Qayta urinib ko‘ring.':'Biznes ma’lumotini olib bo‘lmadi. Qayta urinib ko‘ring.',error?.code==='57014'?'AI_TOOL_TIMEOUT':'AI_TOOL_FAILURE',{stage:'tool'})}
     finally{if(abortTool)signal.removeEventListener('abort',abortTool)}
     if(cacheKey)readCache.set(cacheKey,output);
@@ -115,6 +123,6 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   if(error instanceof HttpError){error.details={...error.details,stage:error.details?.stage||stage};throw error}
   throw new HttpError(503,'AI vaqtincha javob bermadi',signal.aborted?'AI_TIMEOUT':'AI_FAILURE');
  }finally{
-  if(conversation)await releaseConversation(user,conversation.id,input.requestId,completedHistory).catch(()=>{});
+  if(conversation)await measurePerformance('ai.conversationWrite',()=>releaseConversation(user,conversation.id,input.requestId,completedHistory)).catch(()=>{});
  }
 }
