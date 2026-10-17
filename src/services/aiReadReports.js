@@ -7,6 +7,7 @@ import {aiReport} from './aiReports.js';
 const storeId=z.string().uuid().nullable(),date=z.string().date();
 const bounded=(from,to)=>from<=to&&(Date.parse(to)-Date.parse(from))/86400000<366;
 export const READ_REPORT_SCHEMAS=Object.freeze({
+ get_latest_sale:z.object({storeId,saleId:z.string().uuid().nullable().default(null)}).strict(),
  get_restock_advice:z.object({storeId}).strict(),
  get_business_overview:z.object({storeId}).strict(),
  get_warehouse_summary:z.object({storeId}).strict(),
@@ -19,13 +20,45 @@ const shift=(day,n)=>{const d=new Date(`${day}T12:00:00Z`);d.setUTCDate(d.getUTC
 // The caller must recheck the actor in the same transaction before entering here.
 export async function readAgentReport(db,user,name,input){
  if(name==='get_restock_advice')authorizeTopic(user,'low_stock');
- authorizeTopic(user,name==='get_business_overview'?'recommendations':name==='get_warehouse_summary'?'low_stock':'top_products');
+ authorizeTopic(user,name==='get_latest_sale'?'today_sales':name==='get_business_overview'?'recommendations':name==='get_warehouse_summary'?'low_stock':'top_products');
  const store=scopedStoreId(user,input.storeId),seller=['CASHIER','SALES'].includes(user.appRole)?user.id:null;
  if(store)await assertOrganizationStore(db,user.organizationId,store,{activeOnly:false});
  const org=(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
  const today=organizationBusinessDateISO(org),facts=[],tables=[],notes=[];
  const report={topic:name,from:input.from||today,to:input.to||today,storeId:store,sellerScoped:Boolean(seller),facts,tables,notes,eligibleInsights:[]};
  const fact=(id,text,value,unit='UZS')=>facts.push({id,label:text,value:value===null?null:String(value),unit});
+ if(name==='get_latest_sale'){
+  report.topic='latest_sale';report.selection=input.saleId?'by_id':'latest';report.from=null;report.to=null;report.sale=null;report.latestSale=null;
+  const sale=(await db.query(`SELECT s.id,s.store_id,s.sale_number,s.created_at,s.business_date::text,s.total::text,s.returned_amount::text,s.status
+   FROM sales s WHERE s.organization_id=$1 AND ($2::uuid IS NULL OR s.store_id=$2) AND ($3::uuid IS NULL OR s.seller_id=$3)
+   AND ($4::uuid IS NULL OR s.id=$4)
+   ORDER BY s.created_at DESC,s.id DESC LIMIT 1`,[user.organizationId,store,seller,input.saleId||null])).rows[0];
+  fact('latest_sale_count','Topilgan oxirgi savdo',sale?1:0,'count');
+  if(!sale){notes.push('Ruxsat etilgan doirada savdo topilmadi. Qidiruv barcha sanalarni qamrab oladi.');return report}
+  const items=(await db.query(`SELECT si.product_name,COALESCE(NULLIF(si.metadata->>'unit',''),p.unit) unit,
+   si.quantity::text,si.unit_price::text,si.line_total::text FROM sale_items si
+   JOIN sales s ON s.id=si.sale_id JOIN products p ON p.id=si.product_id AND p.organization_id=s.organization_id
+   WHERE s.id=$1 AND s.organization_id=$2 ORDER BY si.id LIMIT 51`,[sale.id,user.organizationId])).rows;
+  const payments=(await db.query(`SELECT sp.method,sum(sp.amount)::text amount FROM sale_payments sp
+   JOIN sales s ON s.id=sp.sale_id WHERE s.id=$1 AND s.organization_id=$2 GROUP BY sp.method ORDER BY sp.method`,[sale.id,user.organizationId])).rows;
+  report.from=sale.business_date;report.to=sale.business_date;
+  report.latestSale={id:sale.id,storeId:sale.store_id,saleNumber:label(sale.sale_number),businessDate:sale.business_date};
+  report.sale={createdAt:sale.created_at instanceof Date?sale.created_at.toISOString():String(sale.created_at),businessDate:sale.business_date,total:sale.total,returnedAmount:sale.returned_amount,status:label(sale.status),
+   hasMoreItems:items.length>50,items:items.slice(0,50).map(r=>({name:label(r.product_name),unit:label(r.unit),quantity:r.quantity,unitPrice:r.unit_price,lineTotal:r.line_total})),
+   payments:payments.map(r=>({method:['cash','card','transfer','credit'].includes(r.method)?r.method:'other',amount:r.amount}))};
+  fact('latest_sale_total','Oxirgi savdo jami',sale.total);
+  fact('latest_sale_returned_amount','Oxirgi savdo qaytarilgan summasi',sale.returned_amount);
+  fact('latest_sale_number','Savdo hujjati raqami',report.latestSale.saleNumber,'text');
+  fact('latest_sale_status','Savdo holati',report.sale.status,'text');
+  fact('latest_sale_created_at','Savdo yaratilgan vaqt (UTC)',report.sale.createdAt,'datetime');
+  report.sale.payments.forEach((r,i)=>fact(`latest_sale_payment_${i}`,`Savdo paytidagi ${r.method} to‘lovi`,r.amount));
+  report.sale.items.forEach((r,i)=>{fact(`latest_sale_item_${i}_quantity`,`${r.name} miqdori`,r.quantity,r.unit);fact(`latest_sale_item_${i}_total`,`${r.name} summasi`,r.lineTotal)});
+  tables.push({title:'Oxirgi savdo mahsulotlari',columns:['Mahsulot','Birlik','Miqdor','Birlik narxi','Summa'],rows:report.sale.items.map(r=>[r.name,r.unit,r.quantity,r.unitPrice,r.lineTotal])});
+  if(report.sale.hasMoreItems)notes.push('Faqat dastlabki 50 mahsulot qatori ko‘rsatilgan; jadval to‘liq emas. Savdo jami barcha qatorlar summasini bildiradi.');
+  if(input.saleId)notes.push('Oldingi suhbatdagi aynan shu savdo hujjati qayta o‘qildi; bu eng yangi savdo bo‘lishi shart emas.');
+  if(!input.saleId)notes.push('Barcha sanalar ichida yaratilish vaqti bo‘yicha eng oxirgi savdo; vaqt teng bo‘lsa hujjat identifikatori bo‘yicha tartiblanadi. Bu bugungi savdolar yig‘indisi emas. To‘lovlar savdo paytidagi yozuvlar; joriy qarz holatini bildirmaydi.');
+  return report;
+ }
  if(name==='get_business_overview'){
   // Same transaction/snapshot and the same topic permissions as individual reads.
   // Profit is a bounded product ranking, never an invented total business profit.
@@ -34,7 +67,7 @@ export async function readAgentReport(db,user,name,input){
    if(!allowed.has(topic))continue;
    const component=await aiReport(user,topic,store,db),snapshot=topic.endsWith('_debt');
    const period={from:snapshot?today:component.from,to:component.to};
-   for(const [i,f] of component.facts.slice(0,topic==='profit'?3:4).entries())facts.push({...f,id:`${topic}_${f.id}`,label:topic==='profit'?`${component.tables[0]?.rows[i]?.[0]||'Mahsulot'} foydasi`:f.label,...period});
+   for(const f of (topic==='profit'?component.facts.filter(f=>f.metric==='profit'):component.facts).slice(0,topic==='profit'?3:4))facts.push({...f,id:`${topic}_${f.id}`,...period});
    for(const table of component.tables.slice(0,1))tables.push({...table,rows:table.rows.slice(0,3),...period});
    if(topic==='profit')notes.push('Tarixiy tannarx yetishmasa mahsulot foydasi hisoblanmaydi. Umumiy ko‘rinishda foyda bo‘yicha eng yuqori 3 mahsulotgacha beriladi; bu biznesning jami yoki sof foydasi emas.');
   }
@@ -125,7 +158,7 @@ export async function readAgentReport(db,user,name,input){
  const rows=(await db.query(`WITH a AS(SELECT si.product_id,sum(si.quantity) quantity,sum(si.line_total) amount FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE ${scope} AND s.business_date BETWEEN $4 AND $5 GROUP BY si.product_id),
   b AS(SELECT r.product_id,sum(r.quantity) quantity,sum(r.amount) amount FROM sale_returns r JOIN sales s ON s.id=r.sale_id AND s.organization_id=r.organization_id WHERE ${returns} AND r.business_date BETWEEN $4 AND $5 GROUP BY r.product_id),
   x AS(SELECT p.id,p.name,p.unit,COALESCE(a.quantity,0)-COALESCE(b.quantity,0) quantity,COALESCE(a.amount,0)-COALESCE(b.amount,0) revenue FROM products p LEFT JOIN a ON a.product_id=p.id LEFT JOIN b ON b.product_id=p.id WHERE p.organization_id=$1 AND (NOT p.archived OR a.product_id IS NOT NULL OR b.product_id IS NOT NULL) AND ($3::uuid IS NULL OR a.product_id IS NOT NULL OR b.product_id IS NOT NULL))
-  SELECT name,unit,quantity::text,revenue::text FROM x ORDER BY revenue ${input.ranking==='slow'?'ASC':'DESC'},id LIMIT 10`,[user.organizationId,store,seller,report.from,report.to])).rows;
+  SELECT name,unit,quantity::text,revenue::text FROM x ORDER BY x.revenue ${input.ranking==='slow'?'ASC':'DESC'},id LIMIT 10`,[user.organizationId,store,seller,report.from,report.to])).rows;
  tables.push({title:input.ranking==='slow'?'Sof savdosi eng kam mahsulotlar (10 tagacha)':'Sof savdosi eng yuqori mahsulotlar (10 tagacha)',columns:['Mahsulot','Birlik','Sof miqdor','Sof savdo'],rows:rows.map(r=>[label(r.name),label(r.unit),r.quantity,r.revenue])});
  rows.forEach((r,i)=>{fact(`product_sales_${i}_quantity`,`${label(r.name)} sof miqdori`,r.quantity,label(r.unit));fact(`product_sales_${i}_revenue`,`${label(r.name)} sof savdosi`,r.revenue)});
  notes.push('Saralash sof savdo summasi bo‘yicha; turli mahsulot birliklari miqdori taqqoslanmaydi. Qaytarishlar qaytarish biznes sanasiga kiradi. Nol savdo sabab yoki kelajak talabi haqida dalil emas.');

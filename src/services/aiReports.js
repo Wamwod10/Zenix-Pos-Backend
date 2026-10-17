@@ -42,9 +42,16 @@ export async function aiReport(user,topic,requestedStore,transactionDb){
      b AS(SELECT r.product_id,sum(r.quantity) qty,sum(r.amount) amount,sum(r.quantity*(${refundCost})) cost,bool_and((${refundCost}) IS NOT NULL) known FROM sale_returns r JOIN sales s ON s.id=r.sale_id AND s.organization_id=r.organization_id WHERE ${retScope} AND r.business_date BETWEEN $4 AND $5 GROUP BY r.product_id),
      x AS(SELECT COALESCE(a.product_id,b.product_id) product_id,COALESCE(a.qty,0)-COALESCE(b.qty,0) qty,COALESCE(a.amount,0)-COALESCE(b.amount,0) revenue,
       CASE WHEN COALESCE(a.known,true) AND COALESCE(b.known,true) THEN COALESCE(a.amount,0)-COALESCE(b.amount,0)-COALESCE(a.cost,0)+COALESCE(b.cost,0) END profit FROM a FULL JOIN b ON b.product_id=a.product_id)
-     SELECT p.name,x.qty::text,x.revenue::text,ROUND(x.profit,2)::text profit,count(*) OVER()::text total FROM x JOIN products p ON p.id=x.product_id AND p.organization_id=$1 ORDER BY ${costs?'x.profit DESC NULLS LAST':'x.qty DESC'},p.id LIMIT 10`,args)).rows;
-    tables.push({title:costs?'Oxirgi 7 biznes kunidagi foyda (tarixiy tannarx)':'Oxirgi 7 biznes kunidagi mahsulotlar',columns:['Mahsulot','Sof miqdor',costs?'Foyda':'Sof savdo'],rows:rows.map(r=>[safeLabel(r.name),r.qty,costs?r.profit:r.revenue])});
-    rows.forEach((r,i)=>fact(`${kind}_${i}`,costs?'Mahsulot foydasi':'Mahsulot sof savdosi',costs?r.profit:r.revenue));
+     SELECT p.id product_id,p.name,p.unit,x.qty::text,x.revenue::text,ROUND(x.profit,2)::text profit,count(*) OVER()::text total FROM x JOIN products p ON p.id=x.product_id AND p.organization_id=$1 ORDER BY ${costs?'x.profit DESC NULLS LAST':'x.qty DESC'},p.id LIMIT 10`,args)).rows;
+    tables.push({title:costs?'Oxirgi 7 biznes kunidagi foyda (tarixiy tannarx)':'Oxirgi 7 biznes kunidagi mahsulotlar',columns:['Mahsulot','Sof miqdor','Birlik',costs?'Foyda':'Sof savdo'],rows:rows.map(r=>[safeLabel(r.name),r.qty,safeLabel(r.unit),costs?r.profit:r.revenue])});
+    rows.forEach((r,i)=>{
+     const identity={productId:r.product_id,productName:safeLabel(r.name),qty:String(r.qty),quantityUnit:safeLabel(r.unit)};
+     fact(`${kind}_${i}`,`${identity.productName}: ${costs?'foyda':'sof savdo'}`,costs?r.profit:r.revenue);
+     Object.assign(facts[facts.length-1],identity,{metric:costs?'profit':'revenue'});
+     fact(`${kind}_${i}_qty`,`${identity.productName}: sof miqdor`,r.qty,identity.quantityUnit);
+     Object.assign(facts[facts.length-1],identity,{metric:'net_quantity'});
+    });
+    if(!costs&&new Set(rows.map(r=>r.unit)).size>1)notes.push('Miqdor reytingida turli birliklar mavjud; dona, kg va boshqa birliklarni bevosita solishtirmang.');
     if(costs){notes.push('Tannarx mavjud bo‘lmagan foyda hisoblanmaydi. Jadval eng yuqori 10 natijani ko‘rsatadi.');eligibleInsights.push('FIX_COST_DATA')}else eligibleInsights.push('CHECK_WEEKLY');
    }
    if(kind==='low_stock'||kind==='dormant'){

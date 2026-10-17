@@ -37,6 +37,7 @@ export function buildAgentEvidence(toolResults){
   const scope=report?.storeId?'Tanlangan filial':'Ruxsat etilgan barcha filiallar';
   const prefix=report?.topic==='business_overview'?scope+'\n':report?.from&&report?.to?`${report.comparisonFrom?`Joriy davr: ${report.from} - ${report.to}; Taqqoslash davri: ${report.comparisonFrom} - ${report.comparisonTo}`:`Hisobot davri: ${report.from} - ${report.to}`}; ${scope}\n`:report?scope+'\n':'';
   const fragments=report?[
+   ...([reportSummary(report)].filter(Boolean)),
    ...(report.notes||[]).map(note=>prefix+note),
    ...(report.facts||[]).map(f=>(f.from&&f.to?`Hisobot davri: ${f.from} - ${f.to}; ${scope}\n`:prefix)+deterministicAnswer(null,[{result:{kind:'report',report:{facts:[f]}}}])),
    ...(report.tables||[]).flatMap(t=>(t.rows||[]).slice(0,10).map(row=>(t.from&&t.to?`Hisobot davri: ${t.from} - ${t.to}; ${scope}\n`:prefix)+t.title+': '+t.columns.map((column,i)=>column+': '+row[i]).join('; '))),
@@ -76,10 +77,43 @@ function overviewSummary(report){
  parts.push(supplier?'Keyingi qadam: ta’minotchi hujjatlaridagi to‘lov muddatlarini tekshiring. Umumiy sof foydani baholash uchun to‘liq tannarx va xarajat ma’lumotlari kerak.':sales?'Keyingi qadam: savdoni oldingi teng davr bilan solishtiring. Shundan keyingina o‘sish yoki pasayishni baholash mumkin.':'Keyingi qadam: kerakli bo‘limning batafsil hisobotini tekshiring.');
  return parts.join('\n\n');
 }
+const decimal=value=>typeof value==='string'&&/^-?\d+(?:\.\d+)?$/.test(value);
+const displayDecimal=value=>{const [whole,fraction='']=value.split('.');return whole.replace(/\B(?=(\d{3})+(?!\d))/g,' ')+(fraction.replace(/0+$/,'')?'.'+fraction.replace(/0+$/,''):'')};
+function reportSummary(report){
+ const scope=report.storeId?'Tanlangan filial':'Ruxsat etilgan barcha filiallar';
+ const context=`${scope}${report.sellerScoped?' — faqat o‘z savdolaringiz':''}`;
+ if(report.topic==='latest_sale'){
+  const sale=report.sale;
+  if(sale===null)return `${context}: savdo topilmadi.`;
+  if(!sale||!decimal(sale.total))return null;
+  const parts=[`${report.selection==='by_id'?'Tanlangan savdo hujjati':'Oxirgi savdo'} (${sale.businessDate}; ${sale.createdAt}): jami ${displayDecimal(sale.total)} so‘m.`,context+'.'];
+  for(const item of (sale.items||[]).slice(0,3))if(decimal(item.quantity))parts.push(`${item.name}: ${displayDecimal(item.quantity)} ${item.unit}${decimal(item.lineTotal)?`, summa ${displayDecimal(item.lineTotal)} so‘m`:''}.`);
+  if(sale.hasMoreItems)parts.push('Mahsulot qatorlari cheklangan; batafsil ma’lumotlar ham to‘liq emas. Jami summa barcha mahsulotlarni qamrab oladi.');
+  else if((sale.items||[]).length>3)parts.push('Qolgan mahsulotlar batafsil ma’lumotlarda.');
+  if(decimal(sale.returnedAmount)&&!/^0(?:\.0+)?$/.test(sale.returnedAmount))parts.push(`Qaytarilgan summa: ${displayDecimal(sale.returnedAmount)} so‘m.`);
+  return parts.join('\n');
+ }
+ if(report.topic!=='top_products')return null;
+ const rows=(report.facts||[]).filter(f=>/^top_products_\d+$/.test(f.id)&&f.productName&&decimal(f.qty));
+ const heading=`${report.from} — ${report.to}; ${context}.`;
+ if(!rows.length)return (report.facts||[]).some(f=>/^top_products_\d+$/.test(f.id))?null:`${heading}\nBu davrda savdo ma’lumoti topilmadi.`;
+ const sameQuantity=(a,b)=>{const [aw,af='']=a.split('.'),[bw,bf='']=b.split('.');return BigInt(aw)===BigInt(bw)&&af.replace(/0+$/,'')===bf.replace(/0+$/,'')&&a.startsWith('-')===b.startsWith('-')};
+ const first=rows[0],ties=rows.filter(f=>f.quantityUnit===first.quantityUnit&&sameQuantity(f.qty,first.qty));
+ const mixed=new Set(rows.map(f=>f.quantityUnit)).size>1;
+ const parts=[`${mixed?'Sof miqdor bo‘yicha ro‘yxat boshidagi mahsulotlar':ties.length>1?'Ko‘rsatilgan natijalarda sof miqdor bo‘yicha teng yetakchilar':'Sof miqdor bo‘yicha ro‘yxat boshida'}: ${ties.slice(0,3).map(f=>`${f.productName} — ${displayDecimal(f.qty)} ${f.quantityUnit||''}`).join('; ')}.`,heading];
+ for(const row of rows.slice(0,3))if(decimal(row.value))parts.push(`${row.productName}: Sof savdo ${displayDecimal(row.value)} so‘m.`);
+ parts.push('Sof miqdor qaytarishlar ayirilgan miqdor; sof savdo tushum bo‘lib, foyda emas.');
+ if(mixed)parts.push('Turli o‘lchov birliklaridagi miqdorlarni bevosita solishtirib bo‘lmaydi.');
+ return parts.join('\n');
+}
 export function safeAgentFallback(evidence,toolResults=[]){
- const overview=toolResults.findLast(t=>t.result?.kind==='report'&&t.result.report?.topic==='business_overview')?.result.report;
- const summary=overview&&overviewSummary(overview);
+ const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
+ const summary=latestReport?.topic==='business_overview'&&overviewSummary(latestReport);
  if(summary)return {answerSource:'verified_fallback',answer:summary};
+ const report=latestReport&&['top_products','latest_sale'].includes(latestReport.topic)?latestReport:null;
+ const direct=report&&reportSummary(report);
+ if(direct)return {answerSource:'verified_fallback',answer:direct};
+ if(latestReport)evidence=buildAgentEvidence([{result:{kind:'report',report:latestReport}}]);
  return evidence.length?{answerSource:'verified_fallback',answer:'Tekshirilgan ma’lumotlar bo‘yicha qisqa xulosa:\n\n'+evidence.slice(0,3).map(f=>f.text).join('\n\n')+'\n\nQolgan ko‘rsatkichlar batafsil ma’lumotlarda berilgan.'}:
   {answerSource:'clarification_fallback',answer:'Javobni ishonchli ma’lumot bilan tasdiqlay olmadim. Savolni aniqlashtiring yoki kerakli hisobot, mahsulot va filialni ko‘rsating.'};
 }

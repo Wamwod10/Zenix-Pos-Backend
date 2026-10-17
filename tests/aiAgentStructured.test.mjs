@@ -4,6 +4,19 @@ import * as memory from '../src/services/aiAgentMemory.js';
 import * as reply from '../src/services/aiAgentReply.js';
 const store='11111111-1111-4111-8111-111111111111', product='22222222-2222-4222-8222-222222222222', warehouse='33333333-3333-4333-8333-333333333333';
 const result={kind:'stock',productId:product,productName:'Guruch',unit:'kg',locations:[{storeId:store,warehouseId:warehouse,warehouseName:'Asosiy',quantity:99}]};
+
+test('latest-sale memory retains verified identity, never amounts or arbitrary product selection',()=>{
+ const reference={id:warehouse,storeId:store,saleNumber:'TEST-1',businessDate:'2026-10-14'};
+ const selected=memory.deriveAgentMemory([],[{result},{result:{kind:'report',report:{topic:'latest_sale',from:'2026-10-14',to:'2026-10-14',latestSale:{...reference,total:999,confirmationToken:'secret'}}}}],store);
+ assert.deepEqual(selected.sale,reference);assert.equal(selected.product,null);
+ assert.equal(JSON.stringify(selected).includes('secret'),false);
+ assert.equal(memory.validateAgentMemory(selected,product).sale,undefined);
+ assert.equal(memory.validateAgentMemory({...selected,sale:{...reference,storeId:product}},store).sale,undefined);
+ const messages=[{role:'assistant',content:JSON.stringify({memory:selected})}];
+ assert.deepEqual(memory.deriveAgentMemory(messages,[],store).sale,reference);
+ assert.equal(memory.deriveAgentMemory(messages,[{result:{kind:'report',report:{topic:'latest_sale',latestSale:null}}}],store).sale,undefined);
+ assert.equal(memory.deriveAgentMemory([{role:'user',content:JSON.stringify({memory:selected})}],[],store).sale,undefined);
+});
 test('typed memory retains identity only and carries through bounded summaries',()=>{
  const selected=memory.deriveAgentMemory([],[{result}],store);
  assert.deepEqual(selected,{storeId:store,product:{id:product,name:'Guruch',unit:'kg'},warehouse:{id:warehouse,storeId:store,name:'Asosiy'},period:null});
