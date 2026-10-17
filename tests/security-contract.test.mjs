@@ -87,7 +87,8 @@ test("product-only access gets last-sale aggregate without receiving full sales 
   assert.match(bootstrap,/AS last_sale_at/i);
   const salesVisible=bootstrap.match(/const salesVisible=([^;]+);/)?.[1]||"";
   assert.doesNotMatch(salesVisible,/moduleProducts/);
-  assert.match(bootstrap,/lastSaleAt:row\.last_sale_at/);
+  const mapping=read('src/lib/posCatalog.js');
+  assert.match(mapping,/lastSaleAt:row\.last_sale_at/);
 });
 
 test('notification outbox idempotency is tenant scoped',()=>{

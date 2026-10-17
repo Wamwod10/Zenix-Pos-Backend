@@ -21,9 +21,15 @@ test('actual bootstrap aggregation preserves owner and locked-branch product sna
   for(const branch of [null,...stores]){
    const baseline=await expected(branch);let body,failure;
    pool.query=(...args)=>db.query(...args);
-   await handler({user:{organizationId:org,appRole:branch?'CASHIER':'OWNER',storeId:branch,permissionOverrides:{moduleProducts:true,moduleInventory:true},rolePermissions:{}},acceptsEncodings:()=>false},{vary(){return this},status(){return this},json(value){body=JSON.parse(JSON.stringify(value));return this}},error=>{failure=error});
+   await handler({get:()=>undefined,user:{organizationId:org,appRole:branch?'CASHIER':'OWNER',storeId:branch,permissionOverrides:{moduleProducts:true,moduleInventory:true},rolePermissions:{}},acceptsEncodings:()=>false},{vary(){return this},status(){return this},json(value){body=JSON.parse(JSON.stringify(value));return this}},error=>{failure=error});
    pool.query=original;assert.ifError(failure);assert.equal(body.data.inventory.length,2);
    for(const item of body.data.inventory){const old=baseline.find(p=>p.id===item.id);assert.ok(old);assert.deepEqual(item.stockByStore,old.stock);assert.deepEqual(item.metadata,old.metadata);assert.equal(item.lastSaleAt,null);}
   }
+
+  let coreBody,failure;const queried=[];
+  pool.query=(sql,...args)=>{queried.push(sql);return db.query(sql,...args)};
+  await handler({get:()=> 'core',user:{organizationId:org,appRole:'OWNER'},acceptsEncodings:()=>false},{vary(){return this},status(){return this},json(value){coreBody=value;return this}},error=>{failure=error});
+  pool.query=original;assert.ifError(failure);assert.deepEqual(coreBody.data.inventory,[]);assert.deepEqual(coreBody.data.catalog,{complete:false,mode:'remote-v1'});
+  assert.equal(queried.some(sql=>/FROM products p|FROM product_serials ps|FROM inventory_batches ib/.test(sql)),false,'core skips product and tracking queries');
  }finally{pool.query=original;await db.query('ROLLBACK');db.release();await pool.end();}
 });

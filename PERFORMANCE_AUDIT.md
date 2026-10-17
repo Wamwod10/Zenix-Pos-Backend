@@ -304,3 +304,150 @@ Push/CI: both final runtime heads passed; exact run links follow. Historical gre
 - Backend `3892e96223aab4b29d8a0a573b6f51f02d68f30c`: [Verify Backend 39023031810](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/39023031810), **success**, including isolated DB, billing/AI, checkout budget, legacy migration and backup/restore.
 
 Both existing performance branches were pushed; AI base commits remain ancestors. The follow-up report synchronization changes documentation only. Check the branch-tip workflow as well before release. Disposable container `zenix-perf-final-20261017` was verified loopback-only and stopped after all tests. No production resources were modified. Overall release status remains **BLOCKED** for the explicit staging/provider/device and large-snapshot/mobile gates in `RELEASE_READINESS.md`.
+
+
+## 2026-10-17 progressive POS and mobile AI continuation ? supersedes earlier remaining gates
+
+**Release status: BLOCKED.** This section records new working-branch code and fresh local evidence; historical tables above remain historical. No production database, deployment setting, migration, sale or AI quota was changed. Frontend baseline: 6548e80; backend baseline: 8fb0360. Existing AI #11/#19 ancestry and performance #12/#20 branches retained.
+
+### Architecture and dependency audit
+
+The complete bootstrap coupled every initial route to product rows, all scoped serial/batch arrays, JSON serialization, compression, parse and normalization. Compression reduced transfer bytes but retained the expensive full parse. The new architecture chooses **opt-in core bootstrap + branch-scoped keyset catalog + bounded POS detail cache**. It removes full-catalog dependency from initial Dashboard/POS instead of moving the same huge parse to another thread. Financial write APIs, transactions, arithmetic, subscription checks and audit are unchanged.
+
+| Consumer | Initial data / completeness rule |
+| --- | --- |
+| Login/layout | Existing identity, organization, branches, settings, permissions and financial core remain; x-zenix-bootstrap:core skips product/serial/batch queries. Vary distinguishes representations; existing API no-store remains. |
+| Dashboard | Finance widgets use existing core/reports; inventory-derived totals show unknown/not-loaded, never false zero or no-alert. Full inventory is explicitly requested for stock inspection. |
+| POS | First 40 active products; later search/barcode/details use tenant + requested branch endpoint. Full product metadata, pricing, packaging/units, variants and scoped tracking are retained. |
+| Drafts/holds/refunds | Persisted draft IDs resolve before mounting cashier; held/refund IDs resolve before reconciliation. Explicit missingIds differs from network failure. Existing idempotent server confirmation remains mandatory. |
+| Products/inventory/suppliers/analytics/history/settings | Legacy consumers require complete full snapshot before rendering. Existing endpoint without header is backward compatible. This still has large-snapshot cost when explicitly opened. |
+| Other independent routes | Existing core data/API patterns retained; no unrelated module rewrite. |
+
+Backend: src/routes/bootstrap.js, new src/lib/posCatalog.js and src/services/posCatalog.js. Catalog queries validate mode, limit <=100, ids <=100 and branch scope before data access; microsecond timestamp + UUID cursor gives deterministic ordering. Browse excludes archived products; explicit IDs retain archived recovery context. Ambiguous barcode fails closed. Requested branch stock is authoritative, including explicit database zero. No new SQL migration.
+
+Frontend: src/context/StoreContext.jsx, new PosWorkspace.jsx and utils/posCatalog.js; App.jsx guards legacy consumers. Sales.jsx uses bounded remote results and queued scanner reads; MainLayout.jsx and Dashboard.jsx guard incomplete aggregates. Cache target 600 details, protected cart/recent IDs, visible page window <=200; cart resolution limit 250. Repeated pages/resolutions deduplicate; stale/out-of-order responses cannot publish across search generations or tenant/user/role/branch scope. StrictMode replay is supported. Completing an outer full snapshot does not remount/reset active remote cashier. Unknown/missing stock throws rather than becoming zero. Draft intent flushes on branch/unmount, while confirmed checkout does not resurrect a cleared cart. Hold/refund locks are acquired before asynchronous lookups. Checkout still validates stock/prices/permissions on backend.
+
+**Limits:** This is live keyset pagination, not an immutable database snapshot: concurrent newer inserts may appear on refresh; stock is rechecked at checkout. Catalog categories and per-product tracking children are not fully bounded; no silent truncation was introduced. Poor-network lookup fails with retry and retains draft; complete offline catalog support is not claimed. Existing cross-tab refresh protocol is retained; no new physical multiple-terminal/device certification.
+
+### Equal-environment HTTP benchmarks
+
+Local PostgreSQL16 disposable loopback :55436, Node24.11.1, authenticated synthetic Premium fixtures, two branches. 30 observations/group after three warmups, alternating legacy/core order. These measure full-response client latency, not isolated SQL time or Render/Neon latency. Richer 50k fixture is **32.75MB JSON**, unlike historical 23.3MB fixture; comparisons below use the same fresh fixture on both paths. P50 / P95 / P99 milliseconds.
+
+| Products | Legacy full | Core initial | JSON bytes full ? core |
+| --- | --- | --- | --- |
+| 1000 | 75.2 / 95.2 / 100.3 | 37.0 / 56.2 / 60.6 | 656550 ? 1599 |
+| 10000 | 212.1 / 280.4 / 308.6 | 22.8 / 61.0 / 71.8 | 6551552 ? 1601 |
+| 50000 | 845.5 / 936.5 / 970.3 | 20.3 / 44.9 / 46.1 | 32751552 ? 1601 |
+
+50k full gzip transfer median 2,091,361 bytes ? core 1,601 identity bytes. First catalog response median 30899 bytes; on-demand data is additional traffic, not eliminated. At50k, first-page API 20.8 / 28.5 / 28.9, unloaded-name search 95.9 / 126.6 / 160.2, exact barcode 20.8 / 35.6 / 37.3. All 495 HTTP assertions passed. RSS contains both server/client and retained snapshots in one process: no server peak-memory/capacity claim.
+
+### Actual production React before/after browser benchmarks
+
+Exact previous runtime files vs current runtime, captured disposable responses, APIs intercepted (no live network latency), two warmups + six alternating observations/group. 390px=4xCPU; 768/1366=1xCPU. Same explicit JSON.parse instrumentation. P95/P99 here are small-sample observed maxima, **not statistical guarantees**. DOM usable controls and FCP entries are measured; no physical paint/input/device claim.
+
+| Products | Viewport | Cold POS before P50/P95/P99 | After P50/P95/P99 |
+| --- | --- | --- | --- |
+| 1000 | 390 | 2311.4 / 2718.1 / 2718.1 | 2767.0 / 3110.8 / 3110.8 |
+| 1000 | 768 | 1026.2 / 1030.9 / 1030.9 | 1034.5 / 1059.0 / 1059.0 |
+| 1000 | 1366 | 1074.3 / 1098.8 / 1098.8 | 1039.4 / 1058.1 / 1058.1 |
+| 10000 | 390 | 3274.6 / 3731.4 / 3731.4 | 2670.2 / 3385.0 / 3385.0 |
+| 10000 | 768 | 1091.4 / 1134.9 / 1134.9 | 979.8 / 1046.8 / 1046.8 |
+| 10000 | 1366 | 1156.6 / 1168.8 / 1168.8 | 1041.5 / 1075.3 / 1075.3 |
+| 50000 | 390 | 4388.2 / 4840.7 / 4840.7 | 2357.8 / 2786.2 / 2786.2 |
+| 50000 | 768 | 1520.7 / 1583.7 / 1583.7 | 984.7 / 1064.3 / 1064.3 |
+| 50000 | 1366 | 1504.0 / 1587.3 / 1587.3 | 1053.4 / 1093.2 / 1093.2 |
+
+| 50k metric | Viewport | Before P50/P95/P99 | After P50/P95/P99 |
+| --- | --- | --- | --- |
+| parseTotalMs (ms) | 390 | 561.8 / 726.3 / 726.3 | 0.6 / 3.8 / 3.8 |
+| blockingMs (ms) | 390 | 2162.0 / 2526.0 / 2526.0 | 612.0 / 768.0 / 768.0 |
+| longMaxMs (ms) | 390 | 641.0 / 789.0 / 789.0 | 243.0 / 339.0 / 339.0 |
+| heapObservedMax (bytes) | 390 | 58894732.0 / 74880996.0 / 74880996.0 | 6800572.0 / 7164840.0 / 7164840.0 |
+| searchMs (ms) | 390 | 233.5 / 304.5 / 304.5 | 440.9 / 648.8 / 648.8 |
+| fcpMs (ms) | 390 | 1288.0 / 1412.0 / 1412.0 | 1348.0 / 1400.0 / 1400.0 |
+| parseTotalMs (ms) | 768 | 44.8 / 57.9 / 57.9 | 0.2 / 0.4 / 0.4 |
+| blockingMs (ms) | 768 | 36.0 / 94.0 / 94.0 | 30.0 / 55.0 / 55.0 |
+| longMaxMs (ms) | 768 | 86.0 / 124.0 / 124.0 | 80.0 / 105.0 / 105.0 |
+| heapObservedMax (bytes) | 768 | 41254324.0 / 51446148.0 / 51446148.0 | 6241612.0 / 6833440.0 / 6833440.0 |
+| searchMs (ms) | 768 | 59.0 / 66.2 / 66.2 | 258.2 / 295.0 / 295.0 |
+| fcpMs (ms) | 768 | 176.0 / 208.0 / 208.0 | 164.0 / 200.0 / 200.0 |
+| parseTotalMs (ms) | 1366 | 40.3 / 46.7 / 46.7 | 0.2 / 0.4 / 0.4 |
+| blockingMs (ms) | 1366 | 10.0 / 34.0 / 34.0 | 15.0 / 61.0 / 61.0 |
+| longMaxMs (ms) | 1366 | 60.0 / 84.0 / 84.0 | 65.0 / 111.0 / 111.0 |
+| heapObservedMax (bytes) | 1366 | 41308452.0 / 51101820.0 / 51101820.0 | 6216144.0 / 6301432.0 / 6301432.0 |
+| searchMs (ms) | 1366 | 58.4 / 64.1 / 64.1 | 273.0 / 286.2 / 286.2 |
+| fcpMs (ms) | 1366 | 188.0 / 248.0 / 248.0 | 204.0 / 292.0 / 292.0 |
+
+Blocking=sum(max(longTask-50ms,0)); heap is largest sampled main JS heap at250ms intervals through search/cart-add, not OS peak or a GC-normalized leak test. 50k mobile cold-POS P95 improves 42.4%; parse P95 726.3?3.8ms, blocking P95 2526?768ms. **1k mobile cold POS P95 regresses 2718.1?3110.8ms**; smaller catalogs do not benefit equally.
+
+| 50k journey metric | Viewport | Before P50/P95/P99 | After P50/P95/P99 |
+| --- | --- | --- | --- |
+| dashboardMs | 390 | 4571.6 / 5524.6 / 5524.6 | 2739.8 / 3220.4 / 3220.4 |
+| posUsableMs | 390 | 5520.4 / 6710.9 / 6710.9 | 3782.8 / 4428.4 / 4428.4 |
+| navigationMs | 390 | 842.6 / 1183.3 / 1183.3 | 1064.1 / 1302.2 / 1302.2 |
+| dashboardMs | 768 | 1415.0 / 1445.4 / 1445.4 | 956.7 / 996.3 / 996.3 |
+| posUsableMs | 768 | 1551.9 / 1696.7 / 1696.7 | 1824.4 / 1899.3 / 1899.3 |
+| navigationMs | 768 | 154.0 / 248.3 / 248.3 | 862.4 / 892.2 / 892.2 |
+| dashboardMs | 1366 | 1398.1 / 1494.0 / 1494.0 | 959.9 / 981.6 / 981.6 |
+| posUsableMs | 1366 | 1620.6 / 1661.1 / 1661.1 | 1823.9 / 1856.6 / 1856.6 |
+| navigationMs | 1366 | 214.6 / 236.2 / 236.2 | 858.7 / 869.2 / 869.2 |
+
+**Observed regressions remain open:** warm local search becomes debounced remote search; 50k mobile search P95 304.5?648.8ms and10k mobile reaches681ms, above600ms goal. Warm Dashboard?POS router navigation regresses, including desktop236.2?869.2ms; tablet total journey also regresses. Diagnostic1k desktop catalog resolves in13?30ms and Sales resources finish soon afterward, with remaining gap before visible controls; this does not establish a slow SQL cause. A POS-local Suspense experiment did not improve the gap and was reverted. Small-n variability is disclosed; no assertion that every interaction improved. Follow-up render/scheduling/visibility profiling and isolated staging are required before approving these regressions.
+
+### AI mobile responsiveness
+
+Safe changes in src/pages/ai/ZenixAI.jsx: memoized transcript/history/action cards, stable action callbacks and unchanged-message identities. Active confirmation/expiry/evidence/recovery behavior remains live. No CSS/SCSS changes. Current vs exact6548e80 AI source, local Chromium390px4xCPU, n10, mock reply350ms; shared working-tree app context is an attribution limitation. 100 unique unresolved EXECUTING messages are genuinely retained; ordinary completed-history cap is unchanged.
+
+| Interaction | Before P50/P95/P99 | After P50/P95/P99 |
+| --- | --- | --- |
+| 100-message typing / two rAF | 201.3 / 294.4 / 294.4 | 79.6 / 143.3 / 143.3 |
+| Send ? pending DOM | 261.3 / 392.6 / 392.6 | 106.5 / 228.9 / 228.9 |
+| Mode switch / two rAF | 876.1 / 2389.5 / 2389.5 | 626.3 / 828.2 / 828.2 |
+| Mocked verified reply DOM | 783.9 / 989.7 / 989.7 | 604.9 / 682.2 / 682.2 |
+
+19-message input P95 165.6?65.5ms;10-message85.6?45.8ms;empty66.3?73.0ms. Single cold-launch DOM885.2?834.5ms; two-rAF940.8?946.0ms is not a percentile or a speedup. Whole-page long-task count492?272 and end heap19.3?17.1MB are unnormalized observations, not per-action duration or peak memory. Mode-switch828ms, long-history input143ms and send229ms tails still miss targets. Real OpenAI latency/token/quality remains unmeasured on this branch; no credential retrieval or production quota use. Existing safe synthetic provider phase test commands remain applicable.
+
+**Rejected optimization:** content-visibility:auto improved an isolated n6 experiment (mode P95872?284ms), but Chromium1243 AX inspection exposed only6/30 offscreen action buttons in actual chat. A reduced standalone30-button fixture exposed2/30 vs30/30 control, including Accessibility.enable-before-page. Reader anchor/history navigation passed; accessibility gate did not. This style is **absent from production runtime**. Optional ZENIX_AI_CONTAIN harness flag reproduces the rejected experiment only. This observation is not a universal browser/assistive-tech claim; [MDN](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/content-visibility) and [Chrome guidance](https://web.dev/articles/content-visibility) describe expected retained accessibility, so device/assistive-tech validation would be needed before reconsidering.
+
+### Regression verification
+
+- Frontend full259/259; backend605 pass,51 DB-only skips,656 total; backend syntax153 modules.
+- Serialized actual disposable PostgreSQL/HTTP179/179, no skips: subscriptions/resource concurrency, tenant/branch isolation, checkout/refunds, AI evidence/confirmation/replay, bootstrap parity and new microsecond-cursor/scoped catalog tests.
+- Existing AI browser28/28; design23 CSS/SCSS hashes unchanged; imports/readiness/build and CPU/bundle budgets pass. Main gzip116,949bytes; total JS gzip422,629bytes (budgets130,000/470,000).
+- Real HTTP+React flows at1366/768/390: synthetic login?dashboard?remote POS, unloaded product search, deliberate503/retry preserving cart,20 rapid scans, branch/draft isolation+reload, confirmed card checkout with exact stock, UI refund with stock restored. Desktop also completes outer full-catalog while preserving active cashier. At390 only branch-selector step temporarily uses768 because existing mobile header hides it; no390 branch-selector success claim. Zero page errors/external requests. Cash/mixed financial paths covered by actual HTTP suite and benchmark, not separately all UI flows.
+- Existing complete-catalog POS browser passes390/768/1366/1920 with20 scans each; this checks backward-compatible full snapshot, not remote latency.
+- Current-only checkout revalidation: 274 unique sales/90 refunds, stock9816; duplicate replay/tenant assertions pass. No checkout speedup claimed.
+
+| Actual HTTP financial path | N | Current P50/P95/P99 |
+| --- | --- | --- |
+| checkout_cash | 30 | 97.1 / 131.4 / 134.8 |
+| refund_cash | 30 | 84.8 / 157.4 / 207.5 |
+| checkout_card | 30 | 68.4 / 137.3 / 143.0 |
+| refund_card | 30 | 75.8 / 127.9 / 139.3 |
+| checkout_mixed | 30 | 81.3 / 128.5 / 151.0 |
+| refund_mixed | 30 | 94.7 / 136.3 / 138.4 |
+| concurrent_10 | 30 | 438.3 / 959.1 / 985.4 |
+| concurrent_50 | 150 | 1933.1 / 4024.1 / 4218.4 |
+| duplicate_replay | 10 | 302.8 / 416.0 / 416.0 |
+
+### Reproduction / evidence
+
+Runtime scripts/tests are committed; large synthetic fixtures and local logs are intentionally not source code. Local evidence: artifacts/performance-progressive-20261017/{http-results.json,browser-results-direct.json,browser-results-journey.json,flows-results-desktop.json,flows-results-tablet.json,flows-results-mobile.json,checkout-results.json}; AI before/after: artifacts/performance-continuation-20261017/ai-interaction-tails. Full logs: performance-progressive-db.log, performance-progressive-checkout.log, performance-progressive-ai-acceptance.log; frontend .cache/performance/progressive-final-tests.log and progressive-build.log.
+
+Use a separately provisioned **disposable local** DB; scripts reject other targets. With NODE_ENV=test and DATABASE_URL=TEST_DATABASE_URL pointing to127.0.0.1:55436/zenix_perf_test, run backend node scripts/benchmark-progressive-bootstrap.mjs; this creates1k/10k/50k synthetic fixtures and captured responses. Run frontend node tests/progressiveBootstrap.browser.mjs (ZENIX_PROGRESSIVE_SAMPLES=6; ZENIX_PROGRESSIVE_DIRECT=true for cold POS), then the documented environment parameters in progressiveFlows.browser.mjs with the local --serve backend. Never point these commands at production. AI: node tests/aiInteractionTails.browser.mjs with argument before (fixed6548e80 source) and argument after for current.
+
+### Remaining coverage / release gates
+
+| Gate | Status | Remaining work |
+| --- | --- | --- |
+| Progressive architecture + scoped POS recovery | COMPLETED | Code + local regression evidence; production approval remains separate. |
+| Universal50k instant usable UI | PARTIALLY COMPLETED | Large parse removed; mobile P95 still2.79s cold and4.43s Dashboard?POS journey. |
+| Small catalog / warm router / remote search regressions | PARTIALLY COMPLETED | Documented above; require accepted budget or targeted scheduling/search fix and repeated same-environment validation. |
+| AI memoization + confirmation correctness | COMPLETED | Local safe implementation/tests complete; aggressive containment rejected. |
+| All AI interactions<100ms | PARTIALLY COMPLETED | Cold launch,100-message typing/send and mode tails remain. |
+| Heavy legacy modules/full history | PARTIALLY COMPLETED | Explicit full hydration remains; core historical arrays and high-cardinality tracking/categories still need separately safe architecture. |
+| Real Android/keyboard/scanner/printer/multiple terminals | REQUIRES REAL DEVICE | Physical interaction and sustained-memory validation. |
+| Isolated authenticated staging and sustained10/50/100 users | REQUIRES STAGING | Authorized isolation/resource attestation unavailable; no production stress. |
+| Current-branch real OpenAI | BLOCKED | Dedicated test key/quota unavailable; no credential retrieval. |
+| 038/039 production migration | REQUIRES PRODUCTION APPROVAL | No new migration; prior disposable review/rollback constraints retained. |
+| Current pushed-head GitHub CI | PARTIALLY COMPLETED | Record exact new runs after push; historical green heads do not certify this work. |

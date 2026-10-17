@@ -85,8 +85,10 @@ test('bootstrap labels historical and future entitlements inactive without addin
   };
   try{
     let body,failure;
-    await handler(bootstrap,'/','get')({user:{organizationId:ORG,appRole:'OWNER'},acceptsEncodings:()=>false},{vary(name){assert.equal(name,'Accept-Encoding');return this},status(){return this},json(value){body=value}},error=>{failure=error});
+    const varied=[];
+    await handler(bootstrap,'/','get')({user:{organizationId:ORG,appRole:'OWNER'},get:()=>undefined,acceptsEncodings:()=>false},{vary(name){varied.push(name);return this},status(){return this},json(value){body=value}},error=>{failure=error});
     assert.ifError(failure);
+    assert.deepEqual(varied,['X-Zenix-Bootstrap','Accept-Encoding']);
     assert.equal(body.data.organization.storeLimit,1);
     assert.deepEqual(body.data.organization.extraStoreEntitlements.map(row=>row.status),['INACTIVE','INACTIVE']);
   }finally{pool.query=original;}
@@ -106,8 +108,10 @@ test('bootstrap expiry-day and not-yet-started entitlements never increase capac
   };
   try{
     let body,failure;
-    await handler(bootstrap,'/','get')({user:{organizationId:ORG,appRole:'OWNER'},acceptsEncodings:()=>false},{vary(name){assert.equal(name,'Accept-Encoding');return this},status(){return this},json(value){body=value}},error=>{failure=error});
+    const varied=[];
+    await handler(bootstrap,'/','get')({user:{organizationId:ORG,appRole:'OWNER'},get:()=>undefined,acceptsEncodings:()=>false},{vary(name){varied.push(name);return this},status(){return this},json(value){body=value}},error=>{failure=error});
     assert.ifError(failure);
+    assert.deepEqual(varied,['X-Zenix-Bootstrap','Accept-Encoding']);
     assert.equal(body.data.organization.storeLimit,3);
     assert.equal(body.data.organization.activeExtraStores,2);
     assert.deepEqual(body.data.organization.extraStoreEntitlements.map(row=>row.status),['INACTIVE','INACTIVE','ACTIVE']);

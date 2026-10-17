@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
-import { asyncRoute } from "../lib/http.js";
+import { asyncRoute, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization } from "../middleware/auth.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import { canReadEmployees, hasPermission } from "../lib/permissions.js";
@@ -12,18 +12,17 @@ import {effectiveStoreLimit as resolveStoreLimit} from '../services/extraStoreEn
 import {createBootstrapDateParts} from '../lib/bootstrapDates.js';
 import {sendBootstrap} from '../lib/bootstrapResponse.js';
 
+import {mapBootstrapProduct as mapProduct} from '../lib/posCatalog.js';
+import {readPosCatalog} from '../services/posCatalog.js';
 const router=Router();
+router.get('/catalog',requireAuth,requireOrganization,asyncRoute(async(req,res)=>ok(res,await readPosCatalog(pool,req.user,req.query))));
 const n=(value)=>Number(value||0);
-const mapProduct=(row)=>({
-  ...(row.metadata||{}),
-  id:row.id,name:row.name,sku:row.sku,barcode:row.barcode,category:row.category,brand:row.brand,unit:row.unit,
-  costPrice:n(row.cost_price),sellPrice:n(row.sell_price),price:n(row.sell_price),wholesalePrice:n(row.wholesale_price),minStock:n(row.min_stock),archived:row.archived,
-  stockByStore:row.stock_by_store||{},lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},
-});
 const statusTransfer=(status)=>({pending:"PENDING",approved:"PENDING",dispatched:"IN_TRANSIT",received:"RECEIVED",received_with_difference:"RECEIVED_WITH_DIFFERENCE",cancelled:"REJECTED"}[status]||String(status||"").toUpperCase());
 const statusCount=(status)=>({review:"PENDING",applying:"PENDING",approved:"APPROVED",rejected:"REJECTED",conflict:"CONFLICT"}[status]||String(status||"").toUpperCase());
 
 router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
+  res.vary('X-Zenix-Bootstrap');
+  const core=req.get('x-zenix-bootstrap')==='core';
   const orgId=req.user.organizationId;
   const branchStoreId=isBranchLocked(req.user)?req.user.storeId:null;
   const orgResult=await pool.query(`SELECT *,CASE WHEN expiry_date IS NULL THEN true ELSE expiry_date >= (now() AT TIME ZONE COALESCE(NULLIF(timezone,''),'Asia/Tashkent'))::date END AS license_date_valid FROM organizations WHERE id=$1`,[orgId]);
@@ -47,7 +46,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
 
   const [storesResult,productsResult,salesResult,returnsResult,suppliersResult,invoicesResult,invoiceItemsResult,supplierPaymentsResult,expensesResult,shiftsResult,shiftMovementsResult,logsResult,movementsResult,transfersResult,countsResult,businessDaysResult,billingResult,telegramResult,usersResult,serialsResult,batchesResult]=await Promise.all([
     pool.query(`SELECT * FROM stores WHERE organization_id=$1${branchStoreId?" AND id=$2":""} ORDER BY created_at`,storeArg),
-    pool.query(`SELECT p.*,COALESCE(ib.stock_by_store,'{}'::jsonb) AS stock_by_store,ls.last_sale_at
+    core?Promise.resolve({rows:[]}):pool.query(`SELECT p.*,COALESCE(ib.stock_by_store,'{}'::jsonb) AS stock_by_store,ls.last_sale_at
       FROM products p
       LEFT JOIN (
         SELECT product_id,jsonb_object_agg(store_id,quantity) AS stock_by_store
@@ -85,8 +84,8 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
     pool.query("SELECT * FROM billing_payments WHERE organization_id=$1 ORDER BY submitted_at DESC LIMIT 500",[orgId]),
     pool.query("SELECT * FROM telegram_connections WHERE organization_id=$1 AND enabled=true ORDER BY linked_at DESC",[orgId]),
     pool.query("SELECT id,organization_id,store_id,name,username,phone,app_role,permission_overrides,active,must_change_password,created_at FROM users WHERE organization_id=$1 ORDER BY created_at",[orgId]),
-    pool.query(`SELECT ps.* FROM product_serials ps WHERE ps.organization_id=$1${storeFilter("ps")} ORDER BY ps.created_at`,storeArg),
-    pool.query(`SELECT ib.* FROM inventory_batches ib WHERE ib.organization_id=$1${storeFilter("ib")} AND ib.remaining_quantity>0 ORDER BY ib.created_at`,storeArg),
+    core?Promise.resolve({rows:[]}):pool.query(`SELECT ps.* FROM product_serials ps WHERE ps.organization_id=$1${storeFilter("ps")} ORDER BY ps.created_at`,storeArg),
+    core?Promise.resolve({rows:[]}):pool.query(`SELECT ib.* FROM inventory_batches ib WHERE ib.organization_id=$1${storeFilter("ib")} AND ib.remaining_quantity>0 ORDER BY ib.created_at`,storeArg),
   ]);
 
   const stores=storesResult.rows.map((row)=>({id:row.id,name:row.name,active:row.active,archivedAt:row.archived_at}));
@@ -146,6 +145,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
   return sendBootstrap(req,res,{
     organization:{serverNow:new Date().toISOString(),id:org.id,name:org.name,phone:org.phone,address:org.address,timezone:org.timezone,currency:org.currency,plan:org.plan,licenseStatus:org.license_status,expiryDate:org.expiry_date,storeLimit:effectiveStoreLimit,baseStoreLimit:Number(org.store_limit||0),activeExtraStores,extraStoreEntitlements,settings:org.settings||{},...subscription},
     stores,
+    ...(core?{catalog:{complete:false,mode:'remote-v1'}}:{}),
     inventory:inventoryVisible?inventory:[],
     dailySales:salesVisible?dailySales:[],salesHistory:salesVisible?salesHistory:[],returns:salesVisible?returns:[],
     suppliers:supplierVisible?suppliers:[],expenses:expenseVisible?expenses:[],

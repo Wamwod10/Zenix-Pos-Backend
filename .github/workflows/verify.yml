@@ -33,7 +33,7 @@ jobs:
       - run: npm test
       - run: |
           npm run test:db
-          node --test --test-concurrency=1 tests/inventoryLookupPerformance.test.mjs tests/bootstrapInventoryAggregation.test.mjs
+          node --test --test-concurrency=1 tests/inventoryLookupPerformance.test.mjs tests/bootstrapInventoryAggregation.test.mjs tests/posCatalogDatabase.test.mjs
         env:
           TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
           DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
