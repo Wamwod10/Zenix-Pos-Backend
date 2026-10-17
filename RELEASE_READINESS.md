@@ -22,7 +22,7 @@
 | Isolated authenticated staging | REQUIRES STAGING | Access/isolation/resources not established; no staging/production stress. Repeat realistic UX and10/50/100 users only after isolation attestation and resource review. |
 | Current-branch live OpenAI | BLOCKED | No dedicated authorized local test key/quota; no credential retrieval. Mocked evidence/security tests do not establish provider latency. |
 |038/039 production execution | REQUIRES PRODUCTION APPROVAL | Existing reviewed migrations unchanged; separate approval/backup/lock/disk/rollback plan required. |
-| New branch-tip CI | PARTIALLY COMPLETED | Exact new pushed-head runs must pass; earlier green runs do not certify current changes. |
+| New runtime CI | COMPLETED | Frontend39042059854/backend39042080150 passed at the exact SHAs below; verify final report-only branch-tip run as well. |
 
 Small browser cohorts n6, AI n10 are descriptive; P95/P99 often observed maxima. HTTP n30 uses same fixture, alternates full/core and measures loopback response rather than Render/Neon capacity. Full tables, FCP, blocking, sampled heap, tradeoffs and evidence paths are in PERFORMANCE_AUDIT.md. Old23.3MB payload and current32.75MB richer fixture must not be conflated.
 
@@ -52,4 +52,12 @@ No authenticated isolated staging validation or Render/Neon stress was performed
 
 Restore previously verified application revisions through the approved deployment process. Do not delete financial records or audit history. Endpoint remains backward compatible; no new migration to revert.039 removal, if separately approved, uses DROP INDEX CONCURRENTLY after checking dependencies.038 rollback restores prior034 function definitions before removing overload, with intervening capacity/data changes reviewed. Never automatically edit production migration history during app rollback.
 
-PRs: [Frontend#20](https://github.com/Wamwod10/Zenix-Pos/pull/20), [Backend#12](https://github.com/Wamwod10/Zenix-Pos-Backend/pull/12). Exact new CI links will be appended after push.
+PRs: [Frontend#20](https://github.com/Wamwod10/Zenix-Pos/pull/20), [Backend#12](https://github.com/Wamwod10/Zenix-Pos-Backend/pull/12). Runtime CI links follow.
+
+
+## Progressive runtime GitHub verification
+
+- Frontend c28813ba00c5417abfe24eaeb62a9d08974988e1: [Verify Frontend39042059854](https://github.com/Wamwod10/Zenix-Pos/actions/runs/39042059854), **success**. Full tests, design, build, CPU/bundle and responsive login smoke passed.
+- Backend073cc699c2474df140d79f32cd7d5172a6a4880d: [Verify Backend39042080150](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/39042080150), **success**. Actual DB/HTTP/catalog, trial/OTP, subscriptions/resource limits/AI, checkout budget, legacy history and backup/restore passed.
+
+Both runtime branches were pushed; AI#19/#11 base commits remain ancestors. This synchronization changes reports only; check the branch-tip workflow as well. Disposable loopback container zenix-perf-progressive-20261017 was verified and stopped after all local tests. No production action occurred. Release remains BLOCKED for the explicitly documented regressions and external validation gates.

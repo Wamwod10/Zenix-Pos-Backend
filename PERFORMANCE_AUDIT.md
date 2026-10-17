@@ -450,4 +450,12 @@ Use a separately provisioned **disposable local** DB; scripts reject other targe
 | Isolated authenticated staging and sustained10/50/100 users | REQUIRES STAGING | Authorized isolation/resource attestation unavailable; no production stress. |
 | Current-branch real OpenAI | BLOCKED | Dedicated test key/quota unavailable; no credential retrieval. |
 | 038/039 production migration | REQUIRES PRODUCTION APPROVAL | No new migration; prior disposable review/rollback constraints retained. |
-| Current pushed-head GitHub CI | PARTIALLY COMPLETED | Record exact new runs after push; historical green heads do not certify this work. |
+| Current runtime GitHub CI | COMPLETED | Both new runtime runs passed; exact SHA/run links below. |
+
+
+## Progressive runtime GitHub verification
+
+- Frontend c28813ba00c5417abfe24eaeb62a9d08974988e1: [Verify Frontend39042059854](https://github.com/Wamwod10/Zenix-Pos/actions/runs/39042059854), **success**. Full tests, design, build, CPU/bundle and responsive login smoke passed.
+- Backend073cc699c2474df140d79f32cd7d5172a6a4880d: [Verify Backend39042080150](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/39042080150), **success**. Actual DB/HTTP/catalog, trial/OTP, subscriptions/resource limits/AI, checkout budget, legacy history and backup/restore passed.
+
+Both runtime branches were pushed; AI#19/#11 base commits remain ancestors. This synchronization changes reports only; check the branch-tip workflow as well. Disposable loopback container zenix-perf-progressive-20261017 was verified and stopped after all local tests. No production action occurred. Release remains BLOCKED for the explicitly documented regressions and external validation gates.
