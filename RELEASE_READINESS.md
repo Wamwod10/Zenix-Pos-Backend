@@ -61,3 +61,23 @@ PRs: [Frontend#20](https://github.com/Wamwod10/Zenix-Pos/pull/20), [Backend#12](
 - Backend073cc699c2474df140d79f32cd7d5172a6a4880d: [Verify Backend39042080150](https://github.com/Wamwod10/Zenix-Pos-Backend/actions/runs/39042080150), **success**. Actual DB/HTTP/catalog, trial/OTP, subscriptions/resource limits/AI, checkout budget, legacy history and backup/restore passed.
 
 Both runtime branches were pushed; AI#19/#11 base commits remain ancestors. This synchronization changes reports only; check the branch-tip workflow as well. Disposable loopback container zenix-perf-progressive-20261017 was verified and stopped after all local tests. No production action occurred. Release remains BLOCKED for the explicitly documented regressions and external validation gates.
+
+
+## Limited regression follow-up - 2026-10-17
+
+App.jsx/PosWorkspace.jsx now resolve Sales code and catalog in parallel for internal navigation, avoiding a measured second lazy/Suspense commit delay (~300ms plus browser-test polling). Loader selection is frozen to avoid cashier remount. Cold opens retain the old path. Sales.jsx debounce150 ->60ms; cache, barcode, financial writes and scope checks unchanged. Backend runtime unchanged.
+
+Same-session before290d8c9/current comparison: two warmups, n6 alternating,390px4xCPU/1366px1xCPU, intercepted synthetic APIs. P95 values are small-sample maxima; mobile host/FCP variability prevents cross-session SLA claims.
+
+| Operation | Before P95 ms | After P95 ms | Status |
+|---|---:|---:|---|
+|1k desktop Dashboard to POS|882.7|143.4|COMPLETED locally|
+|50k desktop Dashboard to POS|864.3|130.0|COMPLETED locally|
+|50k desktop remote search|369.3|258.7|Improved locally|
+|50k mobile remote search|814.5|807.6|PARTIALLY COMPLETED; inconclusive improvement|
+
+Cold-loader experiment (n4):1k mobile4473.2 ->3725.7ms but50k3465.4 ->3949.1ms. This cold-path change was rejected; final cold entry keeps existing prefetch/lazy behavior. The1k mobile cold-start blocker remains OPEN. No new architecture/cache work was attempted.
+
+Tests: full frontend candidate259/259; final targeted23/23 (draft/branch races, stock/tracking, barcode and duplicate protection); unchanged23 design hashes, build and CPU/bundle budgets passed. Final browser smoke covers1k/50k desktop/mobile and cold mobile, route/search/cart assertions only, not new percentile claims. Final PR CI reruns full suites and backend isolated DB/HTTP/billing/AI/checkout/isolation checks; previous179 local DB tests are historical, not rerun locally here.
+
+Evidence: artifacts/performance-progressive-20261017/navigation-fix-journey.json and navigation-fix-direct.json (cold experiment rejected); navigation-final-{smoke,cold-smoke}.json (final functional checks). Backend PR12 has report changes only. No production/staging/OpenAI/device work, deployment, merge or migration. Remaining mobile regressions stay release blockers; see current PR checks for final CI.
