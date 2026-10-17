@@ -44,12 +44,20 @@ test('001–032 license, payment and shift history survive 033–035 and repeat 
     assert.deepEqual((await db.query('SELECT * FROM billing_payments WHERE id=$1',[payment.id])).rows[0],payment);
     assert.deepEqual((await runMigrations({pool:db,directory,logger:{}})).applied,[]);
     await db.query(await fs.readFile(path.join(source,'035_zenix_ai.sql'),'utf8'));
+    // Keep the historical subscription assertions above, then verify the actual
+    // current schema, including additive replay state used by retry recovery.
+    const later=files.filter(file=>Number(file.slice(0,3))>35);
+    for(const file of later)await fs.copyFile(path.join(source,file),path.join(directory,file));
+    assert.deepEqual((await runMigrations({pool:db,directory,logger:{}})).applied,later);
+    assert.deepEqual((await db.query('SELECT * FROM billing_payments WHERE id=$1',[payment.id])).rows[0],payment);
+    assert.deepEqual((await db.query(`SELECT ${shiftColumns} FROM shifts WHERE organization_id=$1 ORDER BY id`,[org.id])).rows,shiftsBefore);
     // Synthetic modern records for the subsequent offline backup/restore gate.
     await db.query("INSERT INTO subscription_terms(organization_id,payment_id,plan_code,pricing_version,billing_interval,starts_on,ends_on,value_amount) VALUES($1,$2,'BUSINESS',1,'ANNUAL','2026-02-01','2027-02-01',3300000)",[org.id,payment.id]);
     await db.query("INSERT INTO subscription_events(organization_id,payment_id,event_type,payload) VALUES($1,$2,'ACTIVATE','{}')",[org.id,payment.id]);
     await db.query("INSERT INTO ai_monthly_usage(organization_id,period_start,successes,input_tokens,output_tokens,spent_micros) VALUES($1,'2000-01-01',1,100,20,18)",[org.id]);
     await db.query("INSERT INTO ai_daily_budget(day,spent_micros) VALUES('2000-01-01',18)");
     await db.query("INSERT INTO ai_requests(organization_id,user_id,request_id,period_start,day,fingerprint,authorization_key,status,reserved_cost,actual_cost,response_expires_at,response) VALUES($1,$2,$3,'2000-01-01','2000-01-01','synthetic','synthetic','SUCCEEDED',2000,18,'2099-01-01','{}')",[org.id,user,randomUUID()]);
+    await db.query("INSERT INTO financial_write_replays(organization_id,operation,client_reference,user_id,request_fingerprint,result) VALUES($1,'expense_create',$2,$3,'synthetic','{}')",[org.id,randomUUID(),user]);
     await verifyDatabaseSchema(db);
     assert.deepEqual(await checkMigrationStatus({db,directory}),{tableMissing:false,missing:[],drifted:[],unverified:[],unknown:[]});
   }finally{await db.end();await fs.rm(directory,{recursive:true,force:true})}

@@ -71,7 +71,7 @@ jobs:
           TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
           CHECKOUT_P95_BUDGET_MS: '1500'
           ZENIX_PERFORMANCE_METRICS: 'true'
-      - name: Legacy history survives 033-035 (separate empty PG database)
+      - name: Legacy history and financial replay state survive upgrades (separate empty PG database)
         shell: bash
         run: |
           set -euo pipefail

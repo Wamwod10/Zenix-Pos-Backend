@@ -76,12 +76,14 @@ Supplier UI restores a pending payment despite zero remaining debt and blocks do
 
 | Check | Passed | Failed | Skipped |
 |---|---:|---:|---:|
-| Backend standalone | 612 | 0 | 53 |
+| Backend standalone | 613 | 0 | 53 |
 | Frontend standalone | 269 | 0 | 0 |
 | Cross-repository contracts | 120 | 0 | 2 |
 | Combined disposable PostgreSQL integration | 129 | 0 | 0 |
 
 The 129-test run combines the previous broad suite, POS/refund/credit, new financial write replay, transfer receiving and AI conversation/evidence/action confirmation tests. The new database files are skipped in standalone runs without an explicit test URL and run explicitly in backend CI. Three source/schema snapshot failures caused by the new schema/money parser were updated to assert the new contracts without removing their original protections. Final backend syntax covers 154 modules. Frontend build, source audit and 23-file CSS/SCSS design baseline pass. An additional receipt upload/retry interaction passed after the full suite. Independent read-only review identified the shared-journal races above; both were corrected and re-reviewed with no remaining concrete finding.
+
+Release recovery verification also includes the new replay state: its tenant-scoped composite identity and row contents participate in restore fingerprints. A separate empty local database passed the historical 001–032 upgrade through current migration040 while preserving billing/shift history; the populated replay manifest integration passed. Local pg_dump→pg_restore into another independent test database then passed exact manifest comparison and tenant integrity on both sides (`complete:true`, `providerRestoreVerified:false`). This verifies local copies only, not a Neon/provider restore. The historical CI fixture now advances through current additive migrations before applying the current schema verifier; its subscription-specific history assertions remain intact.
 
 ### Coverage and remaining audit
 
@@ -105,4 +107,4 @@ No performance algorithm optimization was introduced. Existing local synthetic b
 
 Release remains gated: review hosted CI and validate staging; prepare migration040 through the authorized release process; make the new frontend immutable refund payload available **before** enabling backend strict refund replay. Supplier/expense replay guarantees require both corresponding frontend and backend versions; legacy clients omitting references remain compatible but cannot gain retry deduplication automatically. Do not drop replay records when deleting expenses; cached completion intentionally prevents resurrection. Replay retention and journals on browsers without Web Locks need a separately evaluated policy. Unknown outcomes must be reconciled, not silently discarded.
 
-Continuation application files: backend `src/services/financialWriteReplay.js`, `src/routes/suppliers.js`, `src/routes/expenses.js`, `src/routes/inventory.js`, `src/db/verifySchema.js`, migration040 and CI; frontend `src/utils/checkoutAttempt.js`, `src/utils/refundAttempt.js`, `src/context/StoreContext.jsx`, and supplier/expense/customer/sales/history pages. Focused tests accompany each changed flow. Both original draft PRs are retained; neither is merged.
+Continuation application files: backend `src/services/financialWriteReplay.js`, `src/services/tenantRecovery.js`, `src/routes/suppliers.js`, `src/routes/expenses.js`, `src/routes/inventory.js`, `src/db/verifySchema.js`, migration040 and CI; frontend `src/utils/checkoutAttempt.js`, `src/utils/refundAttempt.js`, `src/context/StoreContext.jsx`, and supplier/expense/customer/sales/history pages. Focused tests accompany each changed flow. Both original draft PRs are retained; neither is merged.
