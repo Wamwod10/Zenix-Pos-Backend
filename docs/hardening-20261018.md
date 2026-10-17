@@ -40,3 +40,12 @@ No exhaustive live module/device/role audit, real barcode/printer exercise, 1k/1
 ## Release
 
 No production data, configuration or infrastructure was changed. No new schema migration is required. Review and complete PR CI first; release the frontend immutable retry payload before enabling the stricter backend replay check. Validate retry/reconciliation in staging, then deploy only with explicit release authorization. Existing pending journals created by older clients cannot retroactively recover their original payload.
+
+## Delivery state
+
+- Frontend pushed: `hardening/platform-20261018`, commit `24b26f3`.
+- Backend pushed: `hardening/refund-ai-bounds-20261018`.
+- Draft PR creation is blocked: GitHub connector returns HTTP 403 (Resource not accessible by integration). Automatic approval rejected reading Git credential-helper credentials for an API fallback; no credential was read. Browser fallback is unavailable. PRs have not been created.
+- GitHub PR-triggered CI cannot be verified before PR creation; local test results above are distinct from hosted CI.
+
+Changed application files: backend `src/routes/sales.js`, `src/services/posReplay.js`, `src/services/aiAgentReply.js`; frontend `src/context/StoreContext.jsx`, `src/utils/checkoutAttempt.js`, `src/utils/refundAttempt.js`. Regression tests, the backend POS integration CI step and this report accompany them. No styles or production deployment settings changed.
