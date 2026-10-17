@@ -106,8 +106,24 @@ function reportSummary(report){
  if(mixed)parts.push('Turli o‘lchov birliklaridagi miqdorlarni bevosita solishtirib bo‘lmaydi.');
  return parts.join('\n');
 }
-export function safeAgentFallback(evidence,toolResults=[]){
+export const isBusinessImprovementQuestion=question=>/biznes|savdo|foyda|daromad/iu.test(question||'')&&/qanday|maslahat|tavsiya|nima/iu.test(question||'')&&/yaxshila|rivojlantir|oshir|ko[‘’ʻʼ']paytir/iu.test(question||'');
+function improvementFallback(report){
+ const facts=report?.facts||[],pick=id=>facts.find(f=>f.id===id&&decimal(f.value));
+ const positive=f=>f&&!f.value.startsWith('-')&&!/^0(?:\.0+)?$/.test(f.value);
+ const show=(f,label)=>`${label}: ${displayDecimal(f.value)} ${f.unit==='UZS'?'so‘m':'ta'}${f.from&&f.to?` (${f.from} — ${f.to})`:''}.`;
+ const supplier=pick('supplier_debt_supplier_debt'),customer=pick('customer_debt_customer_debt'),low=pick('inventory_warehouse_low_stock_count');
+ const steps=[];
+ if(positive(supplier)||positive(customer))steps.push(`${[positive(customer)&&show(customer,'Olinadigan qarz'),positive(supplier)&&show(supplier,'To‘lanadigan qarz')].filter(Boolean).join(' ')} To‘lov muddatlari tekshirilmagan. Amal: hujjatlarni muddat va kontragent bo‘yicha solishtiring. Keyingi qadam: muddatlarni tasdiqlab, undirish va to‘lov rejasini tuzing; to‘lov avtomatik bajarilmaydi.`);
+ if(positive(low))steps.push(`${show(low,'Minimum yoki undan past qoldiqdagi mahsulot turlari')} Talab o‘zgarishi bu qoldiqdan aniqlanmaydi. Amal: mahsulot kesimida qoldiq, sof sotuv va yetkazish muddatini tekshiring. Keyingi qadam: shundan keyin kerakli kirim rejasini alohida tasdiqlang.`);
+ steps.push('Amal: mahsulot kesimida tarixiy tannarx, qaytarish va xarajat yozuvlarini solishtiring. Keyingi qadam: yetishmayotgan hujjatlarni to‘ldirib, marjani qayta tekshiring; biznesning jami sof foydasini mahsulot foydasiga tenglashtirmang.');
+ steps.push('Amal: savdoni oldingi teng davr bilan mahsulot va filial kesimida solishtiring. Keyingi qadam: farq ko‘ringandan keyin kichik sinov tanlang va natijani yana o‘lchang; o‘sish kafolatlanmaydi.');
+ steps.push('Amal: ruxsat etilgan qoldiq va xarajat hisobotlarini tekshiring. Keyingi qadam: yozuvlarni hujjatlar bilan solishtirib, ustuvor ishni mas’ulga biriktiring.');
+ const scope=report?`${report.storeId?'Tanlangan filial':'Ruxsat etilgan filiallar'}${report.sellerScoped?' — savdo va mahsulot foydasi faqat o‘z savdolaringiz bo‘yicha':''}. `:'';
+ return {answerSource:facts.some(f=>decimal(f.value))?'verified_fallback':'clarification_fallback',answer:`Qisqa xulosa: avval pul oqimi, qoldiq va marjani dalil bilan tekshirib, keyin sinovli o‘zgarish qiling.\n\nAsosiy muammolar va ma’lumot chegarasi: ${scope}Sabablar, talab va o‘sishni bu ma’lumotlardan aniqlab bo‘lmaydi. Teng davrlar taqqoslovi, to‘liq tannarx va xarajat hujjatlari tekshirilishi kerak.\n\nEng muhim tavsiyalar:\n${steps.slice(0,3).map((step,i)=>`${i+1}. ${step}`).join('\n\n')}`};
+}
+export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
+ if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return improvementFallback(latestReport);
  const summary=latestReport?.topic==='business_overview'&&overviewSummary(latestReport);
  if(summary)return {answerSource:'verified_fallback',answer:summary};
  const report=latestReport&&['top_products','latest_sale'].includes(latestReport.topic)?latestReport:null;
@@ -124,15 +140,21 @@ export function validateAgentReplyEvidence(reply,evidence=[]){
  const prose=text.replace(/\{\{[^{}]+\}\}/g,'');
  if(/[{}]/.test(prose))throw evidenceError('malformed_anchor');
  // Conservative syntactic guards do not prove arbitrary prose semantically.
- if(/(?:kiritildi|bajarildi|tasdiqlandi|bekor qilindi|executed|confirmed|cancelled|deleted)/iu.test(prose))throw evidenceError('execution_claim');
+ if(/(?:kiritildi|bajarildi|tasdiqlandi|to[‘’ʻʼ']landi|bekor qilindi|executed|confirmed|cancelled|deleted)/iu.test(prose))throw evidenceError('execution_claim');
  const statements=prose.replace(/[^.!?\n]*\?/gu,'');
  if(/\b(?:kamaydi|oshdi|sotildi|tashkil etdi)[.!]?(?:\s|$)/iu.test(statements))throw evidenceError('unsupported_business_assertion');
- const claims=statements.replace(/\b(?:savdongizni|foydangizni|daromadingizni)\s+(?:tahlil qilish|oshirish|tekshirish)\s+uchun\b/giu,'');
+ if(/\b(?:oshadi|o[‘’ʻʼ']sadi|ko[‘’ʻʼ']payadi|kamayadi|pasayadi)(?:\s+albatta)?\s*(?:[.!?,;]|$)/iu.test(statements))throw evidenceError('unsupported_business_assertion');
+ // Exempt only explicit check/compare objects and hypothetical clauses, not
+ // whole advice sentences: a factual assertion later in the sentence stays checked.
+ const business='(?:mahsulot|savdo|foyda|daromad|ombor|qoldiq|xarajat|qarz)(?:lar)?i?ngiz';
+ const claims=statements.replace(/\b(?:savdongizni|foydangizni|daromadingizni)\s+(?:tahlil qilish|oshirish|tekshirish)\s+uchun\b/giu,'')
+  .replace(new RegExp('\\b'+business+'ni(?=\\s+(?:tekshiring|solishtiring|tahlil qiling|nazorat qiling)(?:[.!?,;:]|\\s|$))','giu'),'')
+  .replace(new RegExp('\\bagar\\s+'+business+'\\s+(?:kam|past|yuqori)\\s+bo[‘’ʻʼ\']lsa\\b','giu'),'');
  if(/(?:mahsulot|savdo|foyda|daromad|ombor|qoldiq|xarajat|qarz)\w*i?ngiz|\b(?:yakunlangan|pasaygan|qimmatlashgan|sotiladigan)\b|\bBu\s+zarar\s+ko[‘’']rsatkichi/iu.test(claims))throw evidenceError('unsupported_business_assertion');
  // Numbered advice is presentation, not a business statistic. All other
  // quantities (including numbers written in Uzbek words) require an anchor.
  const count='(?:\\d{1,2}|bir|ikki|uch|besh|olti|yetti|sakkiz)';
- const narrative=prose.replace(new RegExp('\\b'+count+'\\s+(?:maslahat|bosqich|tavsiya|qadam)(?:da|ni|dan)?\\b','giu'),'').replace(/(^|\n)\s*\d{1,2}[.)]\s/g,'$1').replace(/\bbir\s+(?:nechta|xil|savol|yo‘l|vaqtning o‘zida)\b|\bbir-biridan\b|\bikki xil tushuncha\b/giu,'');
+ const narrative=prose.replace(new RegExp('\\b'+count+'(?:ta)?\\s+(?:ta\\s+)?(?:(?:asosiy|muhim|ustuvor|eng muhim)\\s+)?(?:maslahat|bosqich|tavsiya|qadam)(?:lar)?(?:da|ni|dan)?\\b','giu'),'').replace(/(^|\n)\s*(?:#{1,4}\s+)?(?:\*\*)?\d{1,2}[.)](?:\*\*)?\s/g,'$1').replace(/\bbir\s+(?:nechta|xil|savol|yo‘l|vaqtning o‘zida)\b|\bbir-biridan\b|\bikki xil tushuncha\b/giu,'');
  if(/\p{N}|\b(?:nol|bir|bitta|ikki|ikkita|uch|uchta|to[\u2018\u2019\u02bb\u02bc']rt(?:ta)?|besh(?:ta)?|olti(?:ta)?|yetti(?:ta)?|sakkiz(?:ta)?|to[\u2018\u2019\u02bb\u02bc']qqiz(?:ta)?|o[\u2018\u2019\u02bb\u02bc']n|(?:yigirma|o[\u2018\u2019\u02bb\u02bc']ttiz|qirq|ellik|oltmish|yetmish|sakson|to[\u2018\u2019\u02bb\u02bc']qson)(?:ta|lab|dan|ga|lik)?|(?:yuz|ming|million|milliard)(?:ta|lab|dan|ga|lik)?)\b/iu.test(narrative))throw evidenceError('unsupported_numeric_claim');
  return text.replace(/\{\{([^{}]+)\}\}/g,(_,id)=>known.get(id));
 }

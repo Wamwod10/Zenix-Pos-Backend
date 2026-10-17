@@ -42,11 +42,11 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   conversation=await measurePerformance('ai.conversationRead',()=>acquireConversation(user,{conversationId:input.conversationId,storeId,key,requestId:input.requestId,timeoutMs:settings.timeoutMs}));
   const history=[...conversation.messages,{role:'user',content:question}],toolResults=[],actions=[],ids=new Set(),readCache=new Map();
   const priorResults=conversation.messages.filter(m=>m.role==='assistant').flatMap(m=>{try{return JSON.parse(m.content).verifiedResults||[]}catch{return []}}).slice(-8);
-  let dispatched=false,reply=null,complete=false,repaired=false,fallback=null,forceFinal=false;
+  let dispatched=false,reply=null,complete=false,repaired=false,fallback=null,forceFinal=false,initialReason=null;
   for(let step=0;step<MAX_STEPS;step++){
    signal.throwIfAborted();const current=await recheckAiActor(user,key);
    const remaining=deadline-clock(),finalizing=forceFinal||toolResults.length>0&&remaining<=finalReserve;
-   if(toolResults.length&&remaining<=1500){fallback=safeAgentFallback(buildAgentEvidence(toolResults),toolResults);fallback.answer='Yangi tekshiruv uchun vaqt yetarli emas. '+fallback.answer;complete=true;break}
+   if(toolResults.length&&remaining<=1500){fallback=safeAgentFallback(buildAgentEvidence(toolResults),toolResults,{question});fallback.answer='Yangi tekshiruv uchun vaqt yetarli emas. '+fallback.answer;console.warn(JSON.stringify({event:'ai_reply_recovery',requestId:input.requestId,aiReason:'final_deadline',initialReason,recovery:fallback.answerSource}));complete=true;break}
    let result,repairing=false;
    for(;;){
     stage='provider';providerPending=true;callDispatched=false;progress('composing');
@@ -65,9 +65,11 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
      if(inputTokens>settings.maxInputTokens||outputTokens>settings.maxOutputTokens||cost>settings.maxRequestMicros)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');
      signal.throwIfAborted();await recheckAiActor(user,key);
      const useFallback=preflight||repaired||settings.maxInputTokens-inputTokens<512||settings.maxOutputTokens-outputTokens<128||settings.maxRequestMicros-cost<tokenCostMicros(512,128);
-     console.warn(JSON.stringify({event:'ai_reply_recovery',requestId:input.requestId,aiReason:preflight?'repair_budget_limit':error.details.reason,recovery:useFallback?'verified_fallback':'repair'}));
+     const reason=preflight?'repair_budget_limit':error.details.reason;initialReason??=reason;
+     if(useFallback)fallback=safeAgentFallback(buildAgentEvidence(toolResults),toolResults,{question});
+     console.warn(JSON.stringify({event:'ai_reply_recovery',requestId:input.requestId,aiReason:reason,initialReason,recovery:useFallback?fallback.answerSource:'repair'}));
      if(useFallback){
-      fallback=safeAgentFallback(buildAgentEvidence(toolResults),toolResults);result={calls:[],reply:null};break;
+      result={calls:[],reply:null};break;
      }
      repaired=true;repairing=true;
      // No rejected output is echoed; a single final-answer repair cannot run tools.
