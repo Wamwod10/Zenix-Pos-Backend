@@ -522,14 +522,16 @@ integration("migrations apply to an empty database and rerun idempotently", asyn
   }
 });
 
-integration("concurrent runner migrations serialize on the advisory lock and converge", async () => {
+integration("concurrent runner migrations serialize on the advisory lock and converge", {timeout:180_000}, async () => {
   assertSafeTestDatabaseUrl(integrationUrl, { nodeEnv: process.env.NODE_ENV || "test" });
   const pool = testPool(4);
   try {
     await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
     const [first, second] = await Promise.all([
-      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} }, lockTimeoutMs: 15_000 }),
-      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} }, lockTimeoutMs: 15_000 }),
+      // Exercise the real runner deadline: the full catalogue can take more
+      // than 15 seconds on a cold local database. Lock expiry is tested separately.
+      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} } }),
+      runMigrations({ pool, directory: migrationsDirectory, logger: { log() {} } }),
     ]);
     assert.equal(first.applied.length + second.applied.length, first.total);
     assert.ok(first.applied.length === 0 || second.applied.length === 0);

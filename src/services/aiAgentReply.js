@@ -141,7 +141,9 @@ export function validateAgentReplyEvidence(reply,evidence=[]){
  if(/[{}]/.test(prose))throw evidenceError('malformed_anchor');
  // Conservative syntactic guards do not prove arbitrary prose semantically.
  if(/(?:kiritildi|bajarildi|tasdiqlandi|to[‘’ʻʼ']landi|bekor qilindi|executed|confirmed|cancelled|deleted)/iu.test(prose))throw evidenceError('execution_claim');
- const statements=prose.replace(/[^.!?\n]*\?/gu,'');
+ // Remove only an explicit hypothetical clause. The following recommendation
+ // still passes all assertion guards; numbers and execution claims use prose.
+ const statements=prose.replace(/[^.!?\n]*\?/gu,'').replace(/\bagar\s+(?:mahsulot|savdo|foyda|daromad|ombor|qoldiq|xarajat|qarz)(?:lar)?(?:i?ngiz)?\s+(?:kam|past|yuqori|oshgan|kamaygan|pasaygan|o[‘’ʻʼ']sgan|ko[‘’ʻʼ']paygan)\s+bo[‘’ʻʼ']lsa\b/giu,'');
  if(/\b(?:kamaydi|oshdi|sotildi|tashkil etdi)[.!]?(?:\s|$)/iu.test(statements))throw evidenceError('unsupported_business_assertion');
  if(/\b(?:oshadi|o[‘’ʻʼ']sadi|ko[‘’ʻʼ']payadi|kamayadi|pasayadi|oshgan|o[‘’ʻʼ']sgan|ko[‘’ʻʼ']paygan|kamaygan|zarar\s+ko[‘’ʻʼ']ryapsiz|talab\s+(?:yuqori|past))(?:\s+albatta)?\s*(?:[.!?,;]|$)/iu.test(statements))throw evidenceError('unsupported_business_assertion');
  // Exempt only explicit check/compare objects and hypothetical clauses, not

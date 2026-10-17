@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {renderAgentAnswer,assertAgentQuestion,renderAgentBlocks,safeAgentFallback} from '../src/services/aiAgentReply.js';
 
+test('hypothetical trends permit advice without exempting subsequent invented claims',()=>{
+ for(const condition of ['Agar savdongiz kamaygan bo‘lsa','Agar xarajatlaringiz oshgan bo‘lsa','Agar savdo pasaygan bo‘lsa']){
+  const reply=condition+', oldingi teng davr hisobotini solishtiring.';
+  assert.equal(renderAgentAnswer({kind:'advice',reply},[]),reply);
+  for(const claim of ['Savdongiz kamaydi.','Talab oshgan.','Qarz to‘landi.','Savdo 99 foiz oshadi.']){
+   assert.throws(()=>renderAgentAnswer({kind:'advice',reply:reply+' '+claim},[]),e=>e.code==='AI_EVIDENCE_INVALID');
+  }
+ }
+});
+
 test('business improvement advice permits presentation counts and conditional checks, not invented facts',()=>{
  const reply={kind:'advice',reply:'Qisqa xulosa: avval tekshiriladigan masalalarni ajrating.\n3 ta asosiy tavsiya:\n**1.** Xarajatlaringizni tekshiring.\n2) Savdongizni solishtiring.\n3. Agar foydangiz past bo‘lsa, tannarx yozuvlarini tekshiring.'};
  assert.equal(renderAgentAnswer(reply,[]),reply.reply);

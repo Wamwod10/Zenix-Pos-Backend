@@ -42,6 +42,11 @@ jobs:
           TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
           DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
           FRONTEND_ORIGIN: http://localhost:5173
+      - name: POS refunds, replay, stock, credit and tenant isolation
+        run: node --test tests/posHttpIntegration.test.mjs
+        env:
+          TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
+          DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
       - name: Trial modes and OTP (disposable PG, test-only SMS)
         run: node --test --test-concurrency=1 tests/temporaryTrialIntegration.test.mjs tests/trialOtpIntegration.test.mjs
         env:
