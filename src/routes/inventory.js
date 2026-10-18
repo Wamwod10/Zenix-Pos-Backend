@@ -289,7 +289,7 @@ router.post("/transfers/:id/dispatch",requirePermission("transferApprove"),async
 }));
 
 router.post("/transfers/:id/receive",requirePermission("transferReceive"),asyncRoute(async(req,res)=>{
-  const receiveItem=z.object({productId:z.string().uuid(),receivedQuantity:z.coerce.number().min(0)});
+  const receiveItem=z.object({productId:z.string().uuid(),receivedQuantity:z.coerce.number().min(0).max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin')});
   const input=z.object({items:z.array(receiveItem).default([]).superRefine((items,ctx)=>{const seen=new Set();items.forEach((item,index)=>{if(seen.has(item.productId))ctx.addIssue({code:z.ZodIssueCode.custom,path:[index,"productId"],message:"Bir mahsulot qabul ro‘yxatida takrorlanmasin"});seen.add(item.productId)})}),differenceReason:z.string().trim().max(500).default("")}).parse(req.body||{});
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;const transfer=(await client.query(`SELECT * FROM stock_transfers WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.params.id,orgId])).rows[0];

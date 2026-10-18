@@ -6,6 +6,8 @@ const conflict=()=>{throw new HttpError(409,'Bu identifikator boshqa amal uchun 
 export function assertSaleReplay(row,{storeId,actorId,fingerprint}){
  if(row.store_id!==storeId||row.seller_id!==actorId||row.metadata?.requestFingerprint&&row.metadata.requestFingerprint!==fingerprint)conflict();
 }
-export function assertRefundReplay(row,{saleId,actorId,productId,quantity,reason,refundMethod}){
+export function assertRefundReplay(row,{saleId,actorId,...input}){
+ const {productId,quantity,reason,refundMethod}=input;
  if(row.sale_id!==saleId||row.created_by!==actorId||row.product_id!==productId||Number(row.quantity)!==quantity||row.reason!==reason||row.refund_method!==refundMethod)conflict();
+ if(row.metadata?.requestFingerprint&&row.metadata.requestFingerprint!==requestFingerprint(input))conflict();
 }

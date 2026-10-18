@@ -14,3 +14,13 @@ test('refund retry matches sale, actor, product and quantity',()=>{
  assert.throws(()=>replay.assertRefundReplay(row,{...input,saleId:'sale-b'}));
  assert.throws(()=>replay.assertRefundReplay(row,{...input,quantity:2}));
 });
+
+test('new refund retries bind the complete validated financial intent',()=>{
+ const input={saleId:'sale',actorId:'actor',productId:'product',quantity:1,reason:'broken',refundMethod:'original',refundShiftId:'shift-a',refundBreakdown:{cash:100,card:0,transfer:0},metadata:{note:'return'}};
+ const {saleId,actorId,...intent}=input;
+ const row={sale_id:saleId,created_by:actorId,product_id:input.productId,quantity:'1',reason:input.reason,refund_method:input.refundMethod,metadata:{requestFingerprint:replay.requestFingerprint(intent)}};
+ assert.doesNotThrow(()=>replay.assertRefundReplay(row,input));
+ for(const changed of [{refundShiftId:'shift-b'},{refundBreakdown:{cash:0,card:100,transfer:0}},{metadata:{note:'changed'}}]){
+  assert.throws(()=>replay.assertRefundReplay(row,{...input,...changed}),e=>e.code==='IDEMPOTENCY_CONFLICT');
+ }
+});

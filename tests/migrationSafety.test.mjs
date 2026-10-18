@@ -74,6 +74,16 @@ test("migration runner locks before reading state and unlocks after applying", a
   });
 });
 
+test("an unavailable migration lock expires without reading or mutating schema", async () => {
+  await withMigrationDir({"001_initial.sql":"CREATE TABLE example(id uuid);\n"},async(directory)=>{
+    const db=fakePool(()=>({rows:[{locked:false}],rowCount:1}));
+    await assert.rejects(runnerModule.runMigrations({pool:db.pool,directory,lockTimeoutMs:0,logger:{log(){}}}),/Timed out waiting 0ms for the migration lock/);
+    assert.ok(db.calls.length>0);
+    assert.ok(db.calls.every(([sql])=>sql.startsWith('SELECT pg_try_advisory_lock')));
+    assert.equal(db.releases,1);
+  });
+});
+
 test("migration runner rejects checksum drift and still unlocks and releases", async () => {
   assert.equal(typeof runnerModule.runMigrations,"function");
   await withMigrationDir({"001_initial.sql":"SELECT 1;\n"},async(directory)=>{

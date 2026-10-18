@@ -64,6 +64,11 @@ const url=process.env.TEST_DATABASE_URL;
    const body={productId:product,quantity:1,reason:'Broken item',refundMethod:'original',refundShiftId:shift,clientReference:'refund-'+suffix};
    const results=await Promise.all([1,2].map(()=>request(`/api/sales/${sale.id}/returns`,{method:'POST',token:cashier,body})));
    const ret=expectStatus(results[0],201).return;assert.equal(expectStatus(results[1],201).return.id,ret.id);assert.equal(Number(ret.amount),100);
+   for(const changed of [{refundShiftId:randomUUID()},{refundBreakdown:{cash:0,card:100,transfer:0}},{metadata:{requestFingerprint:'forged'}}]){
+    const conflict=await request(`/api/sales/${sale.id}/returns`,{method:'POST',token:cashier,body:{...body,...changed}});
+    expectStatus(conflict,409);assert.equal(conflict.error.code,'IDEMPOTENCY_CONFLICT');
+   }
+   assert.equal(Number((await pool.query('SELECT count(*) n FROM sale_returns WHERE organization_id=$1 AND client_reference=$2',[org,body.clientReference])).rows[0].n),1);
    const date=(await pool.query('SELECT s.business_date::text sale_date,r.business_date::text return_date FROM sales s JOIN sale_returns r ON r.sale_id=s.id WHERE r.id=$1',[ret.id])).rows[0];assert.notEqual(date.sale_date,date.return_date);
    const last=await Promise.all([1,2].map(i=>request(`/api/sales/${sale.id}/returns`,{method:'POST',token:cashier,body:{...body,clientReference:`last-${i}-${suffix}`}})));
    assert.deepEqual(last.map(result=>result.status).sort(),[201,409]);

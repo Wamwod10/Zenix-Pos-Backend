@@ -38,9 +38,11 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "033_subscription_billing.sql",
   "034_resource_entitlements.sql",
   "035_zenix_ai.sql",
+  "040_financial_write_replays.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
+  'financial_replays_actor_tenant_fk',
   'ai_requests_actor_tenant_fk',
   'pos_registers_store_tenant_fk','shifts_register_tenant_fk',
   'subscription_terms_payment_tenant_fk',
@@ -121,6 +123,7 @@ export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
 ]);
 
 export const REQUIRED_TABLES = Object.freeze([
+    'financial_write_replays',
   'ai_requests','ai_monthly_usage','ai_daily_budget',
   "pos_registers",
   'subscription_plan_versions',

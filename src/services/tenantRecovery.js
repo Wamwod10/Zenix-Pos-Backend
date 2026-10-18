@@ -20,6 +20,7 @@ export const RECOVERY_ROW_SOURCES=Object.freeze([
   ].map(scoped),
   Object.freeze({table:'ai_monthly_usage',key:"(t.organization_id::text || ':' || t.period_start::text)",where:'t.organization_id=$1'}),
   Object.freeze({table:'ai_requests',key:"(t.user_id::text || ':' || t.request_id::text)",where:'t.organization_id=$1'}),
+  Object.freeze({table:'financial_write_replays',key:"(t.operation || ':' || t.client_reference)",where:'t.organization_id=$1'}),
   // Shared catalogue/budget state belongs to the restored database, not one tenant.
   // Only counts/digests leave the offline verifier, never values from other businesses.
   Object.freeze({table:'subscription_plan_versions',key:"(t.plan_code || ':' || t.version::text)",where:'TRUE'}),

@@ -9,8 +9,11 @@ import { writeAudit } from "../services/audit.js";
 import { enqueueNotification } from "../services/notifications.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { hasPermission } from "../lib/permissions.js";
+import {sumMoney} from '../lib/posMoney.js';
+import {financialWriteReplay,lockFinancialOrganization} from '../services/financialWriteReplay.js';
 
 const router=Router();
+const moneyValue=z.coerce.number().min(0).max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
 const supplierSchema=z.object({name:z.string().trim().min(2).max(180),phone:z.string().trim().max(40).default(""),contactName:z.string().trim().max(160).default(""),telegram:z.string().trim().max(160).default(""),metadata:z.record(z.string(),z.any()).default({})});
 
@@ -24,6 +27,7 @@ router.get("/",requirePermission("moduleSuppliers"),asyncRoute(async(req,res)=>{
 router.post("/",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
   const input=supplierSchema.parse(req.body);
   const supplier=await withTransaction(async(client)=>{
+    await lockFinancialOrganization(client,req.user.organizationId);
     const row=(await client.query(`INSERT INTO suppliers(organization_id,name,phone,contact_name,telegram,metadata) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[req.user.organizationId,input.name,input.phone,input.contactName,input.telegram,input.metadata||{}])).rows[0];
     await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,action:"create",entityType:"supplier",entityId:row.id,title:"Ta’minotchi qo‘shildi",description:row.name});
     return row;
@@ -34,6 +38,7 @@ router.post("/",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
 router.patch("/:id",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
   const input=supplierSchema.partial().parse(req.body);
   const supplier=await withTransaction(async(client)=>{
+    await lockFinancialOrganization(client,req.user.organizationId);
     const current=(await client.query("SELECT * FROM suppliers WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,req.user.organizationId])).rows[0];
     if(!current)throw new HttpError(404,"Ta’minotchi topilmadi");
     const row=(await client.query(`UPDATE suppliers SET name=$3,phone=$4,contact_name=$5,telegram=$6,metadata=$7,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING *`,[req.params.id,req.user.organizationId,input.name??current.name,input.phone??current.phone,input.contactName??current.contact_name,input.telegram??current.telegram,input.metadata??current.metadata??{}])).rows[0];
@@ -45,6 +50,7 @@ router.patch("/:id",requirePermission("supplierWrite"),asyncRoute(async(req,res)
 
 router.post("/:id/archive",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
   const supplier=await withTransaction(async(client)=>{
+    await lockFinancialOrganization(client,req.user.organizationId);
     const debt=Number((await client.query("SELECT COALESCE(sum(greatest(total-paid_amount,0)),0) debt FROM supplier_invoices WHERE organization_id=$1 AND supplier_id=$2",[req.user.organizationId,req.params.id])).rows[0].debt);
     if(debt>0)throw new HttpError(409,"Qarzi mavjud ta’minotchini arxivlab bo‘lmaydi","SUPPLIER_HAS_DEBT");
     const row=(await client.query("UPDATE suppliers SET archived=true,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING *",[req.params.id,req.user.organizationId])).rows[0];
@@ -57,6 +63,7 @@ router.post("/:id/archive",requirePermission("supplierWrite"),asyncRoute(async(r
 
 router.post("/:id/restore",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
   const supplier=await withTransaction(async(client)=>{
+    await lockFinancialOrganization(client,req.user.organizationId);
     const row=(await client.query("UPDATE suppliers SET archived=false,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING *",[req.params.id,req.user.organizationId])).rows[0];
     if(!row)throw new HttpError(404,"Ta’minotchi topilmadi");
     await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,action:"restore",entityType:"supplier",entityId:row.id,title:"Ta’minotchi tiklandi",description:row.name});
@@ -66,10 +73,11 @@ router.post("/:id/restore",requirePermission("supplierWrite"),asyncRoute(async(r
 }));
 
 router.post("/:id/invoices",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
-  const input=z.object({storeId:z.string().uuid().optional().nullable(),invoiceNo:z.string().trim().max(120).default(""),total:z.coerce.number().positive(),paidAmount:z.coerce.number().min(0).default(0),paymentMethod:z.enum(["cash","card","transfer","purchase"]).default("purchase"),dueDate:z.string().optional().nullable()}).refine((v)=>v.paidAmount<=v.total,{message:"To‘langan summa jami summadan oshmasin"}).parse(req.body);
+  const input=z.object({storeId:z.string().uuid().optional().nullable(),invoiceNo:z.string().trim().max(120).default(""),total:moneyValue.refine(value=>value>0),paidAmount:moneyValue.default(0),paymentMethod:z.enum(["cash","card","transfer","purchase"]).default("purchase"),dueDate:z.string().optional().nullable()}).refine((v)=>v.paidAmount<=v.total,{message:"To‘langan summa jami summadan oshmasin"}).parse(req.body);
   const effectiveStoreId=scopedStoreId(req.user,input.storeId);
   if(effectiveStoreId)assertStoreScope(req.user,effectiveStoreId);
   const invoice=await withTransaction(async(client)=>{
+    await lockFinancialOrganization(client,req.user.organizationId);
     let store=null;if(effectiveStoreId)store=await assertOrganizationStore(client,req.user.organizationId,effectiveStoreId);
     const supplier=(await client.query("SELECT * FROM suppliers WHERE id=$1 AND organization_id=$2 AND archived=false FOR UPDATE",[req.params.id,req.user.organizationId])).rows[0];
     if(!supplier)throw new HttpError(404,"Ta’minotchi topilmadi");
@@ -87,10 +95,10 @@ router.post("/:id/invoices",requirePermission("supplierWrite"),asyncRoute(async(
 }));
 
 router.post("/:id/payments",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
-  const input=z.object({invoiceId:z.string().uuid().optional().nullable(),storeId:z.string().uuid().optional().nullable(),shiftId:z.string().uuid().optional().nullable(),fromRegister:z.boolean().default(false),amount:z.coerce.number().positive(),method:z.enum(["cash","card","transfer"]),note:z.string().max(500).default("")}).parse(req.body);
+  const input=z.object({invoiceId:z.string().uuid().optional().nullable(),storeId:z.string().uuid().optional().nullable(),shiftId:z.string().uuid().optional().nullable(),fromRegister:z.boolean().default(false),amount:moneyValue.refine(value=>value>0,'Summa musbat bo‘lsin'),method:z.enum(["cash","card","transfer"]),note:z.string().max(500).default(""),clientReference:z.string().trim().max(120).default("")}).parse(req.body);
   const effectiveStoreId=scopedStoreId(req.user,input.storeId);
   if(effectiveStoreId)assertStoreScope(req.user,effectiveStoreId);
-  const payment=await withTransaction(async(client)=>{
+  const payment=await withTransaction(async(client)=>financialWriteReplay(client,{organizationId:req.user.organizationId,userId:req.user.id,operation:'supplier_payment',clientReference:input.clientReference,input:{supplierId:req.params.id,...input,storeId:effectiveStoreId}},async()=>{
     const orgId=req.user.organizationId;
     if(effectiveStoreId)await assertOrganizationStore(client,orgId,effectiveStoreId);
     if(input.method==="cash"&&input.fromRegister){
@@ -113,12 +121,12 @@ router.post("/:id/payments",requirePermission("supplierWrite"),asyncRoute(async(
     let remaining=input.amount;
     for(const invoice of invoices){
       if(remaining<=0)break;
-      const balance=Number(invoice.total)-Number(invoice.paid_amount);
+      const balance=sumMoney([invoice.total,-Number(invoice.paid_amount)]);
       const applied=Math.min(balance,remaining);
-      remaining-=applied;
+      remaining=sumMoney([remaining,-applied]);
       await client.query("UPDATE supplier_invoices SET paid_amount=paid_amount+$2 WHERE id=$1",[invoice.id,applied]);
     }
-    if(remaining>0.01)throw new HttpError(409,"To‘lov ochiq qarzdan oshib ketdi","PAYMENT_EXCEEDS_DEBT");
+    if(remaining>0)throw new HttpError(409,"To‘lov ochiq qarzdan oshib ketdi","PAYMENT_EXCEEDS_DEBT");
 
     const invoiceStoreIds=[...new Set(invoices.map((invoice)=>invoice.store_id).filter(Boolean))];
     const paymentStoreId=effectiveStoreId||(invoiceStoreIds.length===1?invoiceStoreIds[0]:null);
@@ -126,7 +134,7 @@ router.post("/:id/payments",requirePermission("supplierWrite"),asyncRoute(async(
     if(input.method==="cash"&&input.fromRegister)await client.query(`INSERT INTO shift_movements(organization_id,shift_id,type,amount,reason,source,reference_id,created_by) VALUES($1,$2,'out',$3,$4,'supplier',$5,$6)`,[orgId,input.shiftId,input.amount,`Ta’minotchi: ${supplier.name}`,row.id,req.user.id]);
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:paymentStoreId,action:"payment",entityType:"supplier",entityId:row.id,title:"Ta’minotchiga to‘lov",description:`${supplier.name} · ${input.amount}`});
     return row;
-  });
+  }));
   ok(res,{payment},201);
 }));
 

@@ -12,12 +12,14 @@ test('finance report keeps revenue date separate from refund cashflow and pagina
   await db.query('BEGIN');
   try {
     const {financeReport,shiftSalesStats}=await import('../src/services/financeReport.js');
-    const org=(await db.query("INSERT INTO organizations(name,timezone) VALUES('Finance fixture','Asia/Tashkent') RETURNING id")).rows[0].id;
+    const org=(await db.query("INSERT INTO organizations(name,timezone,license_status,expiry_date) VALUES('Finance fixture','Asia/Tashkent','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Fixture') RETURNING id",[org])).rows[0].id;
     const user=(await db.query("INSERT INTO users(organization_id,store_id,name,username,password_hash,app_role) VALUES($1,$2,'Actor',gen_random_uuid()::text,'unused','OWNER') RETURNING id",[org,store])).rows[0].id;
     const product=(await db.query("INSERT INTO products(organization_id,name) VALUES($1,'Fixture product') RETURNING id",[org])).rows[0].id;
-    const a=(await db.query("INSERT INTO shifts(organization_id,store_id,cashier_id,status,opening_cash,expected_cash,actual_cash,closed_at) VALUES($1,$2,$3,'closed',0,100000,100000,now()) RETURNING id",[org,store,user])).rows[0].id;
-    const b=(await db.query("INSERT INTO shifts(organization_id,store_id,cashier_id,opening_cash) VALUES($1,$2,$3,100000) RETURNING id",[org,store,user])).rows[0].id;
+    const {createRegister}=await import('../src/services/posRegisters.js');
+    await createRegister(db,{organizationId:org,storeId:store,name:'Finance fixture POS'});
+    const a=(await db.query("INSERT INTO shifts(organization_id,store_id,cashier_id,status,opening_cash,expected_cash,actual_cash,closed_at,register_key) VALUES($1,$2,$3,'closed',0,100000,100000,now(),$4) RETURNING id",[org,store,user,`store:${store}`])).rows[0].id;
+    const b=(await db.query("INSERT INTO shifts(organization_id,store_id,cashier_id,opening_cash,register_key) VALUES($1,$2,$3,100000,$4) RETURNING id",[org,store,user,`store:${store}`])).rows[0].id;
     const sale=(await db.query("INSERT INTO sales(organization_id,store_id,shift_id,seller_id,sale_number,total,returned_amount,business_date,created_at) VALUES($1,$2,$3,$4,'A',100000,40000,'2026-10-08','2026-10-08T18:59:00Z') RETURNING id",[org,store,a,user])).rows[0].id;
     await db.query("INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,line_total,metadata) VALUES($1,$2,'Fixture product',1,100000,100000,'{\"unitCost\":50000}')",[sale,product]);
     await db.query("INSERT INTO sale_payments(sale_id,method,amount) VALUES($1,'cash',100000)",[sale]);

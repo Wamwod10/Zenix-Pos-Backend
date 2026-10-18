@@ -168,6 +168,7 @@ test("schema verification covers all migrations and core backend domains", () =>
     "033_subscription_billing.sql",
     "034_resource_entitlements.sql",
     "035_zenix_ai.sql",
+    "040_financial_write_replays.sql",
   ]);
 
   for (const table of [

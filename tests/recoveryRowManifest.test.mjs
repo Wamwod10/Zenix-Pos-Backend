@@ -5,6 +5,11 @@ const ORG='22222222-2222-4222-8222-222222222222';
 const digest='a'.repeat(64);
 const allTables=()=>Object.fromEntries(RECOVERY_ROW_TABLES.map(t=>[t,{rows:0,fingerprint:digest}]));
 const manifest=tables=>({tenantFingerprint:digest,complete:true,tables});
+test('restore comparisons include completed financial replay outcomes',()=>{
+ const table='financial_write_replays';assert.ok(RECOVERY_ROW_TABLES.includes(table));
+ const before=allTables(),after=allTables();after[table]={rows:1,fingerprint:'b'.repeat(64)};
+ assert.ok(compareRecoveryRowManifests(manifest(before),manifest(after)).differences.some(row=>row.table===table));
+});
 function fakePool(records,{fail=false}={}){
   const calls=[];let released=0;
   return {calls,get released(){return released;},connect:async()=>({query:async(sql,params)=>{
