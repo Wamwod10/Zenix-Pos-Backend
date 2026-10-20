@@ -13,9 +13,19 @@ const payment = {
 
 test("payment review text contains trusted billing details in Uzbek", () => {
   const text = telegram.formatPaymentReviewMessage(payment);
-  for (const expected of ["Zenix POS", "Yangi to'lov", "Zenix Market", "Ali Valiyev", "+998901234567", "Yillik", "12 oy", "2 ta", "3 300 000", "ZX-ABC123", "Tekshiruvda"]) {
+  for (const expected of ["ZENIX POS BOT", "Obuna to‘lovi", "Zenix Market", "Ali Valiyev", "+998901234567", "Yillik", "12 oy", "2 ta", "3 300 000", "ZX-ABC123", "Tekshiruvda"]) {
     assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+});
+
+test('final review preserves every trusted detail, reviewer, time and reason', () => {
+  for (const status of ['APPROVED','REJECTED']) {
+    const text=telegram.formatPaymentReviewMessage({...payment,status,reviewed_at:'2026-10-15T07:02:00Z',reject_reason:'<wrong & receipt>'}, {telegramUsername:'admin'});
+    for(const value of ['Zenix Market','Ali Valiyev','+998901234567','ZX-ABC123','3 300 000','@admin','15.10.2026, 12:02']) assert.ok(text.includes(value),value);
+    assert.ok(text.includes(status==='APPROVED'?'TO‘LOV TASDIQLANDI':'TO‘LOV RAD ETILDI'));
+    if(status==='REJECTED')assert.ok(text.includes('&lt;wrong &amp; receipt&gt;'));
+  }
+  assert.doesNotThrow(()=>telegram.formatPaymentReviewMessage({submitted_at:'bad'}));
 });
 
 test("callback token is opaque, deterministic for retry, and contains no tenant data", () => {

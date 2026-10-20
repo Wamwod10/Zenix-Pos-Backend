@@ -9,6 +9,7 @@ export async function enqueueStockLevelNotification(client, {
   eventBase,
   productId,
   productName,
+  unit = '',
   storeName = "",
   before,
   after,
@@ -23,7 +24,7 @@ export async function enqueueStockLevelNotification(client, {
       storeId,
       eventType: "inventory.out",
       eventId: `${eventBase}:${productId}:out`,
-      payload: { productId, productName, storeName, quantity: current, minStock: threshold },
+      payload: { productId, productName, unit, storeName, quantity: current, minStock: threshold },
     });
     return;
   }
@@ -33,7 +34,7 @@ export async function enqueueStockLevelNotification(client, {
       storeId,
       eventType: "inventory.low",
       eventId: `${eventBase}:${productId}:low`,
-      payload: { productId, productName, storeName, quantity: current, minStock: threshold },
+      payload: { productId, productName, unit, storeName, quantity: current, minStock: threshold },
     });
   }
 }

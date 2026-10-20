@@ -113,6 +113,8 @@ const url=process.env.TEST_DATABASE_URL;
    const found=expectStatus(await request(path,{token:owner}),200);assert.equal(found.state,'confirmed');assert.equal(found.receipt.receiptId,first.receiptId);
    assert.equal(expectStatus(await request(path,{token:users.MANAGER.token}),200).state,'unknown');
    assert.equal(Number((await pool.query('SELECT count(*) FROM stock_movements WHERE reference_id=$1',[first.receiptId])).rows[0].count),1);
+   const events=(await pool.query("SELECT payload FROM notification_outbox WHERE organization_id=$1 AND store_id=$2 AND event_type='inventory.received' AND event_id=$3",[org,storeId,first.receiptId])).rows;
+   assert.equal(events.length,1);assert.equal(events[0].payload.lineCount,1);assert.equal(events[0].payload.total,124000);
   });
   await t.test('CRM debt payment replay and concurrency never double-allocate',async()=>{
    const creditSale=expectStatus(await request('/api/sales',{method:'POST',token:cashier,body:{...saleBody('crm-'+suffix,1,[]),customerId:customer,creditAmount:100,creditDueDate:'2099-01-01'}}),201).sale;

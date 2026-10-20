@@ -21,11 +21,26 @@ const cases = [
 test("all Telegram business notifications produce complete balanced HTML", () => {
   for (const [eventType, title, payload] of cases) {
     const message = formatNotification(eventType, payload);
+    assert.ok(message.startsWith('<b>ZENIX POS BOT</b>'), eventType);
+    assert.ok(message.includes('━━━━━━━━━━━━'), eventType);
     assert.match(message, new RegExp(`<b>${title}</b>`), eventType);
     assert.doesNotMatch(message, /undefined|NaN|\[object Object\]/, eventType);
     assert.equal((message.match(/<b>/g) || []).length, (message.match(/<\/b>/g) || []).length, eventType);
     assert.ok(message.length > title.length + 20, eventType);
+    assert.doesNotThrow(()=>formatNotification(eventType,{}));
+    assert.doesNotThrow(()=>formatNotification(eventType,null));
   }
+});
+
+test('signed cash differences and hostile long Unicode stay valid and bounded', () => {
+  for (const difference of [231000, -231000, 0]) {
+    const text = formatNotification('shift.closed', {difference});
+    assert.ok(text.includes(`${difference > 0 ? '+' : difference < 0 ? '-' : ''}${difference ? '231 000' : '0'} so‘m`));
+  }
+  const text = formatNotification('expense.created', {title:'😀<&'.repeat(5000), amount:'invalid'});
+  assert.ok(text.length <= 4096);
+  assert.doesNotMatch(text, /NaN|<[/]?[^b/]/);
+  assert.equal((text.match(/<b>/g)||[]).length,(text.match(/<\/b>/g)||[]).length);
 });
 
 test("Telegram notification values are escaped before HTML delivery", () => {

@@ -6,6 +6,7 @@ import { writeAudit } from "./audit.js";
 import { assertNoConflictingBillingReview } from "./pendingBillingReview.js";
 import { consumePromoReservation,releasePromoReservation } from "./promoCodes.js";
 import {approveSubscription,previousDay} from './subscriptions.js';
+import { enqueuePaymentReviewUpdate } from './paymentNotifications.js';
 
 // A paid renewal must never silently lift a platform administrator suspension.
 export function reviewLicenseStatus({ currentStatus, decision, expiryDate, timezone }) {
@@ -16,7 +17,7 @@ export function reviewLicenseStatus({ currentStatus, decision, expiryDate, timez
   return currentExpiry && currentExpiry >= today ? "ACTIVE" : "REJECTED";
 }
 
-export async function applyBillingReview(client, { paymentId, decision, reason = "", actor = {} }) {
+export async function applyBillingReview(client, { paymentId, decision, reason = "", actor = {}, telegramMessage = null }) {
   if (!new Set(["APPROVED", "REJECTED"]).has(decision)) throw new HttpError(400, "Noto'g'ri to'lov holati", "INVALID_PAYMENT_DECISION");
   // Every subscription mutation (draft creation/submission, platform override,
   // review) must acquire the organization lock FIRST. Locking billing_payments
@@ -30,8 +31,14 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
     "SELECT id FROM organizations WHERE id=$1 FOR UPDATE", [target.organization_id],
   )).rows[0];
   if (!organization) throw new HttpError(404, "Tashkilot topilmadi", "ORG_NOT_FOUND");
-  const row = (await client.query(`SELECT bp.*,o.name AS organization_name,o.license_status,o.expiry_date,o.store_limit,o.timezone,o.plan_code AS organization_plan_code
+  const row = (await client.query(`SELECT bp.*,o.name AS organization_name,o.license_status,o.expiry_date,o.store_limit,o.timezone,o.plan_code AS organization_plan_code,
+    owner.name AS owner_name,owner.phone AS owner_phone,bd.metadata AS draft_metadata,
+    (SELECT n.payload->'reviewSnapshot' FROM notification_outbox n WHERE n.organization_id=bp.organization_id AND n.event_type='billing.payment_review' AND n.event_id=bp.id::text LIMIT 1) AS telegram_review_snapshot,
+    COALESCE((SELECT (n.payload->>'hasCaption')::boolean FROM notification_outbox n
+      WHERE n.organization_id=bp.organization_id AND n.event_type='billing.payment_review' AND n.event_id=bp.id::text LIMIT 1),bp.receipt_id IS NOT NULL) AS telegram_review_has_caption
     FROM billing_payments bp JOIN organizations o ON o.id=bp.organization_id
+    LEFT JOIN billing_drafts bd ON bd.id=bp.draft_id AND bd.organization_id=bp.organization_id
+    LEFT JOIN LATERAL (SELECT u.name,u.phone FROM users u WHERE u.organization_id=o.id AND u.app_role='OWNER' ORDER BY u.created_at LIMIT 1) owner ON true
     WHERE bp.id=$1 AND bp.organization_id=$2 FOR UPDATE OF bp`, [paymentId, target.organization_id])).rows[0];
   if (!row) throw new HttpError(404, "To'lov topilmadi", "PAYMENT_NOT_FOUND");
   if (row.status !== "REVIEW") return { outcome: "alreadyReviewed", payment: row, organization: null };
@@ -89,7 +96,17 @@ export async function applyBillingReview(client, { paymentId, decision, reason =
     title: decision === "APPROVED" ? "To'lov tasdiqlandi" : "To'lov rad etildi",
     description: `${row.order_id}${reason ? ` - ${reason}` : ""}`, metadata,
   });
-  return { outcome: decision === "APPROVED" ? "approved" : "rejected", payment: { ...reviewed, organization_name: row.organization_name }, organization: { id: row.organization_id, name: row.organization_name } };
+  const payment = { ...row, ...reviewed, ...row.telegram_review_snapshot, status:reviewed.status,reviewed_at:reviewed.reviewed_at,reject_reason:reviewed.reject_reason };
+  const chatId = row.telegram_admin_chat_id || telegramMessage?.chatId;
+  const messageId = row.telegram_admin_message_id || telegramMessage?.messageId;
+  const telegramUpdateQueued = Boolean(chatId && messageId);
+  if (telegramUpdateQueued) {
+    // Commit the display update with the financial decision. A Telegram outage
+    // cannot roll back an approved subscription or lose its retry work.
+    const callbackMatches = telegramMessage && String(telegramMessage.messageId) === String(messageId) && String(telegramMessage.chatId) === String(chatId);
+    await enqueuePaymentReviewUpdate(client,payment,actor,{chatId,messageId,hasCaption:callbackMatches ? Boolean(telegramMessage.hasCaption) : row.telegram_review_has_caption});
+  }
+  return { outcome: decision === "APPROVED" ? "approved" : "rejected", payment, telegramUpdateQueued, organization: { id: row.organization_id, name: row.organization_name } };
 }
 
 export const reviewBillingPayment = (input) => withTransaction((client) => applyBillingReview(client, input));

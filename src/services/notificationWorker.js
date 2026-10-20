@@ -39,7 +39,7 @@ async function claimEvents(){
     WITH candidates AS (
       SELECT id
       FROM notification_outbox
-      WHERE event_type <> 'billing.payment_review' AND ((
+      WHERE event_type NOT IN ('billing.payment_review','billing.payment_review_updated') AND ((
         status IN ('pending','retry') AND next_attempt_at<=now()
       ) OR (
         status='processing' AND next_attempt_at<=now()-interval '10 minutes'
@@ -179,9 +179,7 @@ async function markDeliveryFailed(deliveryId,outboxId,error){
 async function deliver(delivery){
   const context=await deliveryContext(delivery);
   if(!context)return;
-  const tenantMismatch=String(context.organization_id)!==String(context.connection_organization_id);
-  const storeMismatch=context.connection_store_id&&String(context.store_id)!==String(context.connection_store_id);
-  if(tenantMismatch||storeMismatch||!context.enabled||!enabledForEvent(context.event_type,context.settings||{})){
+  if(!canDeliverNotification(context)){
     await markDeliveryCancelled(delivery.id,context.outbox_id);
     return;
   }
@@ -192,6 +190,12 @@ async function deliver(delivery){
   }catch(error){
     await markDeliveryFailed(delivery.id,context.outbox_id,error);
   }
+}
+
+export function canDeliverNotification(context) {
+  const tenantMismatch=String(context.organization_id)!==String(context.connection_organization_id);
+  const storeMismatch=context.connection_store_id&&String(context.store_id)!==String(context.connection_store_id);
+  return !tenantMismatch&&!storeMismatch&&Boolean(context.enabled)&&enabledForEvent(context.event_type,context.settings||{});
 }
 
 
@@ -210,20 +214,10 @@ async function enqueueScheduledDailyReports(){
     const eventId=`scheduled:${target.organization_id}:${storeKey}:${date}`;
     const exists=(await pool.query("SELECT 1 FROM notification_outbox WHERE event_type='daily.report' AND event_id=$1 LIMIT 1",[eventId])).rowCount>0;
     if(exists)continue;
-    const params=[target.organization_id,date];
-    const storeSql=target.store_id?` AND s.store_id=$3`:'';if(target.store_id)params.push(target.store_id);
-    const summary=(await pool.query(`WITH scoped AS (
-        SELECT s.id,s.total,s.returned_amount FROM sales s WHERE s.organization_id=$1 AND s.business_date=$2${storeSql}
-      ), payment_totals AS (
-        SELECT sp.method,sum(sp.amount)::numeric amount FROM sale_payments sp JOIN scoped s ON s.id=sp.sale_id GROUP BY sp.method
-      )
-      SELECT (SELECT count(*)::int FROM scoped) AS sale_count,
-        COALESCE((SELECT sum(total-returned_amount) FROM scoped),0)::numeric AS total,
-        COALESCE((SELECT amount FROM payment_totals WHERE method='cash'),0)::numeric AS cash,
-        COALESCE((SELECT amount FROM payment_totals WHERE method='card'),0)::numeric AS card,
-        COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)::numeric AS transfer` ,params)).rows[0];
+    if(target.store_id && (await pool.query('SELECT 1 FROM business_days WHERE organization_id=$1 AND store_id=$2 AND business_date=$3 LIMIT 1',[target.organization_id,target.store_id,date])).rowCount)continue;
+    const summary=await scheduledDailySummary(pool,{organizationId:target.organization_id,storeId:target.store_id,date});
     const storeName=target.store_id?(await pool.query("SELECT name FROM stores WHERE id=$1 AND organization_id=$2",[target.store_id,target.organization_id])).rows[0]?.name||'Filial':'Barcha filiallar';
-    await pool.query(`INSERT INTO notification_outbox(organization_id,store_id,event_type,event_id,payload) VALUES($1,$2,'daily.report',$3,$4) ON CONFLICT DO NOTHING`,[target.organization_id,target.store_id,eventId,{businessDate:date,storeName,saleCount:Number(summary?.sale_count||0),total:Number(summary?.total||0),cash:Number(summary?.cash||0),card:Number(summary?.card||0),transfer:Number(summary?.transfer||0)}]);
+    await pool.query(`INSERT INTO notification_outbox(organization_id,store_id,event_type,event_id,payload) VALUES($1,$2,'daily.report',$3,$4) ON CONFLICT DO NOTHING`,[target.organization_id,target.store_id,eventId,{businessDate:date,storeName,reportKind:"interim",saleCount:Number(summary?.sale_count||0),total:Number(summary?.total||0),cash:Number(summary?.cash||0),card:Number(summary?.card||0),transfer:Number(summary?.transfer||0)}]);
   }
 }
 
@@ -267,4 +261,28 @@ export function startNotificationWorker(){
     timer,
     async stop(){clearInterval(timer);await Promise.allSettled([...activeRuns])},
   };
+}
+
+export async function scheduledDailySummary(db,{organizationId,storeId=null,date}) {
+    const params=[organizationId,date];
+    const storeSql=storeId?` AND s.store_id=$3`:'';if(storeId)params.push(storeId);
+    return (await db.query(`WITH scoped AS (
+        SELECT s.id,s.total FROM sales s WHERE s.organization_id=$1 AND s.business_date=$2${storeSql}
+      ), payment_totals AS (
+        SELECT sp.method,sum(sp.amount)::numeric amount FROM sale_payments sp JOIN scoped s ON s.id=sp.sale_id GROUP BY sp.method
+      )
+      , day_returns AS (
+        SELECT amount,metadata FROM sale_returns s WHERE s.organization_id=$1 AND s.business_date=$2${storeSql}
+      ), refund_totals AS (
+        SELECT COALESCE(sum(amount),0) total,
+          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'cash')::numeric,0)),0) cash,
+          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'card')::numeric,0)),0) card,
+          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer
+        FROM day_returns
+      )
+      SELECT (SELECT count(*)::int FROM scoped) AS sale_count,
+        COALESCE((SELECT sum(total) FROM scoped),0)-(SELECT total FROM refund_totals) AS total,
+        COALESCE((SELECT amount FROM payment_totals WHERE method='cash'),0)-(SELECT cash FROM refund_totals) AS cash,
+        COALESCE((SELECT amount FROM payment_totals WHERE method='card'),0)-(SELECT card FROM refund_totals) AS card,
+        COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)-(SELECT transfer FROM refund_totals) AS transfer` ,params)).rows[0];
 }
