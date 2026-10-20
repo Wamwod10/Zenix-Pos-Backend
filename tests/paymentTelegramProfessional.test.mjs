@@ -22,7 +22,9 @@ for(const mime of ['image/jpeg','application/pdf'])test(`${mime} oversized initi
     calls.push({method:url.split('/').at(-1),body:options.body instanceof FormData ? options.body : JSON.parse(options.body)});
     return success({message_id:calls.length,chat:{id:-1},...(calls.length===1?{document:{file_id:'receipt'}}:{})});
   }});
-  const result=await client.sendPaymentReview({...payment,status:'REVIEW',organization_name:'&'.repeat(160),owner_name:'<'.repeat(160),receipt_type:mime,receipt_content:Buffer.from('test')},'opaque','-1');
+  const oversized={...payment,status:'REVIEW',organization_name:'&'.repeat(160),owner_name:'<'.repeat(160),order_id:'<&'.repeat(80),receipt_type:mime,receipt_content:Buffer.from('test')};
+  assert.ok(formatPaymentReviewMessage(oversized).length>1024);
+  const result=await client.sendPaymentReview(oversized,'opaque','-1');
   assert.equal(result.message_id,2);assert.equal(calls[0].method,mime==='image/jpeg'?'sendPhoto':'sendDocument');
   assert.ok(calls[0].body.get('caption').length<=1024);assert.equal(calls[0].body.get('reply_markup'),null);
   assert.equal(calls[1].method,'sendMessage');assert.equal(calls[1].body.reply_parameters.message_id,1);

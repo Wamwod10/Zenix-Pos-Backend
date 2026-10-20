@@ -8,6 +8,8 @@ import { telegramText as escapeHtml, telegramMoney as money, telegramTime as sub
 export const derivePaymentReviewToken = (paymentId, secret) => createHmac("sha256", String(secret)).update(`zenix-payment-review:${paymentId}`).digest("base64url").slice(0, 24);
 export const hashPaymentReviewToken = (token) => createHash("sha256").update(String(token)).digest("hex");
 
+const displayText = (value, limit) => escapeHtml(typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : value, '—', limit);
+
 export function formatPaymentReviewMessage(payment, actor = {}) {
   const plan = BILLING_PLANS[payment.plan] || BILLING_PLANS.ANNUAL;
   const isExtra = payment.type === "EXTRA";
@@ -17,25 +19,25 @@ export function formatPaymentReviewMessage(payment, actor = {}) {
     ? Number(payment.store_limit || 0) + Math.max(1, Number(payment.extra_store_count || 1))
     : tier?tier.limits.stores+Number(quote.legacyStoreBonus||0):plan.includedStores + Math.max(0, Number(payment.extra_store_count || 0));
   const lines = [
-    telegramHeader('💳 <b>Obuna to‘lovi</b>').trimEnd(), '',
-    '🏢 Biznes: <b>' + escapeHtml(payment.organization_name) + '</b>',
-    '👤 Egasi: ' + escapeHtml(payment.owner_name),
+    telegramHeader('💳 <b>Obuna to‘lovi</b>').trimEnd(),
+    '🏢 Biznes: <b>' + displayText(payment.organization_name, 64) + '</b>',
+    '👤 Egasi: ' + displayText(payment.owner_name, 48),
   ];
   if (payment.owner_phone) lines.push('📱 Telefon: ' + escapeHtml(payment.owner_phone));
   lines.push('💎 Tarif: <b>' + (isExtra ? 'Qo‘shimcha filial' : escapeHtml(tier ? tier.label + ' / ' + plan.label : plan.label)) + '</b>');
   lines.push('📅 Muddat: ' + (isExtra ? Number(payment.extension_days || 0) + ' kun' : plan.months + ' oy'));
   lines.push('🏪 Filial limiti: ' + branchLimit + ' ta', '💰 Summa: <b>' + money(payment.amount) + '</b>');
   lines.push('🧾 Buyurtma: ' + escapeHtml(payment.order_id), '🕒 Yuborilgan: ' + submittedTime(payment.submitted_at));
-  lines.push('', '━━━━━━━━━━━━', '');
+  lines.push('━━━━━━━━━━━━');
   if (payment.status === 'APPROVED' || payment.status === 'REJECTED') {
     const approved = payment.status === 'APPROVED';
     lines.push(approved ? '✅ <b>TO‘LOV TASDIQLANDI</b>' : '❌ <b>TO‘LOV RAD ETILDI</b>');
     const reviewer = actor.telegramUsername ? '@' + actor.telegramUsername : actor.telegramUserId ? 'Telegram ID ' + actor.telegramUserId : actor.internalUserId ? 'Administrator ' + actor.internalUserId : '—';
     lines.push('👨‍💻 ' + (approved ? 'Tasdiqladi' : 'Rad etdi') + ': ' + escapeHtml(reviewer));
     lines.push('🕒 Vaqt: ' + submittedTime(payment.reviewed_at));
-    if (!approved && payment.reject_reason) lines.push('📝 Sabab: ' + escapeHtml(payment.reject_reason, '—', 500));
+    if (!approved && payment.reject_reason) lines.push('📝 Sabab: ' + displayText(payment.reject_reason, 160));
   } else lines.push('🟡 <b>Tekshiruvda</b>');
-  return lines.join("\n");
+  return lines.join("\n\n");
 }
 
 export function createPaymentTelegramClient({ token, fetchImpl = fetch }) {
@@ -63,7 +65,7 @@ export function createPaymentTelegramClient({ token, fetchImpl = fetch }) {
         const form = new FormData();
         form.set("chat_id", String(chatId));
         form.set(field, new Blob([payment.receipt_content], { type: payment.receipt_type }), payment.receipt_name || "receipt");
-        form.set("caption", text.length <= 1024 ? text : telegramHeader("🧾 <b>To‘lov cheki</b>") + escapeHtml(payment.order_id));
+        form.set("caption", text.length <= 1024 ? text : telegramHeader("🧾 <b>To‘lov cheki</b>") + '🧾 Buyurtma: <b>' + escapeHtml(payment.order_id) + '</b>\n\nTo‘lov tafsilotlari quyidagi xabarda.');
         form.set("parse_mode", "HTML");
         if (text.length <= 1024) form.set("reply_markup", JSON.stringify(replyMarkup));
         const receipt = await call(method, { method: "POST", body: form });

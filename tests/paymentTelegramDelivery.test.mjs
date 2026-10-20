@@ -11,6 +11,16 @@ const payment = {
   receipt_name: "chek.pdf", receipt_type: "application/pdf", receipt_content: Buffer.from("safe-pdf"),
 };
 
+test('payment layout separates fields and bounds long display values without changing source',()=>{
+  const source={...payment,organization_name:'A'.repeat(200),owner_name:'B'.repeat(200),status:'REJECTED',reject_reason:'Sabab '.repeat(100)};
+  const text=telegram.formatPaymentReviewMessage(source,{telegramUsername:'admin'});
+  assert.match(text,/<\/b>\n\n👤 Egasi:/);
+  assert.ok(!text.includes('A'.repeat(65)));
+  assert.ok(!text.includes('B'.repeat(49)));
+  assert.ok(text.split('📝 Sabab: ')[1].length<=160);
+  assert.equal(source.organization_name.length,200);
+});
+
 test("payment review text contains trusted billing details in Uzbek", () => {
   const text = telegram.formatPaymentReviewMessage(payment);
   for (const expected of ["ZENIX POS BOT", "Obuna to‘lovi", "Zenix Market", "Ali Valiyev", "+998901234567", "Yillik", "12 oy", "2 ta", "3 300 000", "ZX-ABC123", "Tekshiruvda"]) {
