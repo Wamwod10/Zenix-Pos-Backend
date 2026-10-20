@@ -2,6 +2,8 @@
 
 Base: backend `622787695f533f866eb7ff698011d0b33213ffef`, frontend `c5db7c6` (fresh GitHub main fetch). Branch in each repo: `phase1/professional-finish`.
 
+Readiness follow-up: see [PHASE1_READINESS.md](PHASE1_READINESS.md) for the subsequent real-environment inspection, corrected fixture/AI regression results, current blockers and the concrete three-stage worker rollout. That report supersedes the original baseline-failure and release notes below where they differ.
+
 ## Changes
 
 - All 13 business Telegram templates share `ZENIX POS BOT`, separator, escaped/bounded Unicode fields and grouped UZS amounts. Cash differences include an explicit positive sign. Sale line count and sold quantities by actual unit are separate; legacy queued payloads still render.

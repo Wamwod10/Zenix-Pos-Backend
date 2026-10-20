@@ -2,7 +2,7 @@ import {z} from 'zod';
 import {sha256} from '../lib/crypto.js';
 import {HttpError} from '../lib/http.js';
 import {tokenCostMicros} from '../config/ai.js';
-import {scopedStoreId} from '../lib/storeScope.js';
+import {scopedStoreId,assertOrganizationStore} from '../lib/storeScope.js';
 import {withTransaction} from '../db/tx.js';
 import {recheckAgentActor} from './aiAgentActor.js';
 import {authorizationKey} from './aiPolicy.js';
@@ -22,12 +22,16 @@ const safeAgentFallback=(...args)=>measurePerformance('ai.fallback',()=>fallback
 
 const schema=z.object({requestId:z.string().uuid(),question:z.string().trim().min(1).max(1000),storeId:z.string().uuid().nullable().optional(),conversationId:z.string().uuid().nullable().optional()}).strict();
 const MAX_STEPS=6;
-const recheckAiActor=(user,key)=>withTransaction(db=>recheckAgentActor(db,user,key));
+const recheckAiActor=(user,key,storeId=null)=>withTransaction(async db=>{
+ const actor=await recheckAgentActor(db,user,key);
+ if(storeId)await assertOrganizationStore(db,user.organizationId,storeId,{activeOnly:false});
+ return actor;
+});
 export async function aiAgentChat(user,body,{settings,provider,toolRunner=executeAgentTool,clock=Date.now}){
  const timedProvider=(...args)=>measurePerformance('ai.provider',()=>provider(...args));
  if(!settings.enabled)throw new HttpError(503,'AI faollashtirilmagan','AI_UNAVAILABLE');
  const input=schema.parse(body),question=assertAgentQuestion(input.question),storeId=scopedStoreId(user,input.storeId),key=authorizationKey(user);
- await recheckAiActor(user,key);
+ await recheckAiActor(user,key,storeId);
  const admission=await reserveAi(user,input.requestId,sha256(JSON.stringify([question,storeId,input.conversationId||null])),key,settings);
  if(admission.replay){await recheckAiActor(user,key);return admission.replay}
  const progress=phase=>recordAgentProgress(user,input.requestId,phase);progress('understanding');

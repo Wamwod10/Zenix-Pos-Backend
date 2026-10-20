@@ -9,7 +9,8 @@ test('authenticated agent HTTP enforces explicit immutable confirmation and keep
   import('express'),import('cookie-parser'),import('../src/db/pool.js'),import('../src/routes/ai.js'),import('../src/routes/products.js'),import('../src/middleware/clientGuard.js'),import('../src/middleware/error.js'),import('../src/lib/crypto.js'),import('../src/config/ai.js')]);
  const settings={...aiSettings(),enabled:true,writesEnabled:true,userPerMinute:10,businessPerMinute:30};
  let response;
- const provider=async(_history,{onDispatch})=>{await onDispatch();if(response instanceof Error)throw response;return response};provider.agent=true;
+ let dispatches=0;
+ const provider=async(_history,{onDispatch})=>{await onDispatch();dispatches++;if(response instanceof Error)throw response;return response};provider.agent=true;
  const app=express();app.use(express.json(),cookieParser(),requireTrustedClient);
  app.use('/api/ai',createAiRouter({settings,provider}));app.use('/api/products',products);app.use(errorHandler);
  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));const base=`http://127.0.0.1:${server.address().port}`;
@@ -28,6 +29,13 @@ test('authenticated agent HTTP enforces explicit immutable confirmation and keep
  }
  try{
   const a=await fixture(),b=await fixture();
+  for(const storeId of [b.store,randomUUID()]){
+   const requestId=randomUUID(),before=dispatches;
+   const denied=await request('/api/ai/chat',{cookie:a.cookie,method:'POST',body:{requestId,question:'Bugun qancha savdo bo‘ldi?',storeId}});
+   assert.equal(denied.status,404,JSON.stringify(denied.data));assert.equal(denied.data.error.code,'STORE_NOT_FOUND');
+   assert.equal(dispatches,before);
+   assert.equal((await pool.query('SELECT count(*)::int n FROM ai_requests WHERE organization_id=$1 AND request_id=$2',[a.org,requestId])).rows[0].n,0);
+  }
   assert.equal((await request('/api/ai/status')).status,401);
   assert.equal((await request('/api/ai/chat',{cookie:a.cookie,method:'POST',trusted:false,body:{}})).status,403);
   assert.equal((await request('/api/ai/chat',{cookie:a.cookie,method:'POST',body:{requestId:randomUUID(),question:'salom',organizationId:b.org}})).status,400);
