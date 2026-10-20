@@ -2,22 +2,32 @@
 
 Continuation of existing frontend PR #23 and backend PR #15, both on `phase1/professional-finish`. No merge, production deploy, production migration, webhook change, real-business write or real-customer payment decision was performed.
 
-## Real Telegram result: NOT RUN
+## Real Telegram API result: PASS; delivered callbacks still unverified
 
 The one existing enabled database connection is **Zenix pos payment**. No group was created or requested. Production was queried read-only for its connection metadata, not customer payment/sale contents. The schema stores the chat/tenant/branch association; it does not store bot tokens or webhook secrets. Application code loads both bot tokens and the admin allowlist from environment variables.
 
-No local bot credentials were present. The Render connector provides no environment-secret getter; no Render/Neon CLI authentication was available. The owner confirmed that credentials cannot currently be provided and instructed us to finish the other checks. Therefore:
+Initially no local credentials were available. The owner subsequently supplied them in `.env.example`. The exact supplied file was preserved in ignored `.env.provided-phase1.local`, the tracked example was restored, and an ignored `.env.telegram-acceptance.local` was created with only the required tokens/admin allowlist, the existing single chat, new local callback secrets and an explicit loopback test database. The supplied production database URL was not used. No secret values were printed, committed or sent to any destination except normal authentication to the Telegram API.
+
+Read-only `getMe`, `getChat`, `getChatMember` and `getWebhookInfo` verified **zenixposbot** and **zenixpaymentbot** as administrators in **Zenix pos payment**. Both bot webhooks point to the production API. They were not modified or polled.
+
+Controlled live API run `TEST-1792508218891`: **28 successful send/edit requests, zero API failures**. Only synthetic data from a newly created local test organization was sent. Evidence: workspace `artifacts/phase1-real-telegram.json`; the local harness is ignored under `.cache/phase1-real-telegram.mjs` and is not a production worker.
 
 | Acceptance item | Result |
 | --- | --- |
-| Real Telegram delivery for each of the 13 business event types | NOT RUN — credentials unavailable |
-| Both bots' membership/send permission in the existing group | NOT VERIFIED — credentials unavailable |
-| Live photo/PDF approval and rejection | NOT RUN — no isolated live callback route/credentials |
-| Live callback double-click and concurrent administrators | NOT RUN |
-| Live Telegram edit retry, mobile Telegram rendering | NOT RUN |
-| Local templates, media/caption API contract, callback concurrency/retry and accounting | Automated local/API-mock and isolated PostgreSQL coverage; see test evidence |
+| Real Telegram delivery for each of the 13 business event types | PASS — all 13 formatted templates accepted by the real API in the existing group |
+| Both bots' membership/send permission in the existing group | PASS — both administrator members and actual sends succeeded |
+| Cash differences / report variants | PASS — positive, negative, zero; interim and final; 16 business messages total |
+| Real photo/PDF send and final decision edit | PASS — 5 synthetic payments: PNG approval/rejection, PDF approval/rejection, long initial details and long rejection reason |
+| Media and keyboard preservation | PASS — actual edit responses retained photo/document and had no decision buttons; long initial text and final caption overflow used text replies |
+| Concurrent/repeated financial callbacks | PASS locally with real PostgreSQL — two synthetic concurrent handler calls and a later repeat for each case yielded one financial decision/audit each |
+| Telegram-delivered button callback and simultaneous human admins | NOT RUN — existing webhooks remain production-bound; callbacks above were explicitly synthetic local handler invocations |
+| Edit retry | PASS for locally injected transport interruption before a real edit request; retry completed through real API with finance unchanged. An actual Telegram outage/ambiguous remote acceptance was not induced |
+| Mobile Telegram rendering / human visual acceptance | NOT VERIFIED — successful Telegram API/entity parsing does not certify phone layout |
+| Business-event-to-outbox wiring during this live run | Not exercised by live business sends, which called the formatter/API directly; separate isolated integration tests cover event/outbox wiring |
 
-These items are not mock-derived live PASS claims. Actual test payments must exist only in an isolated test database. A production bot's webhook must never be repointed, deleted or polled via `getUpdates` to steal its updates for a test. Even with outbound credentials, full button acceptance requires an already isolated callback route/bot configuration in the same existing group.
+The financial decisions used the actual review service and outbox final-edit service against local PostgreSQL, but the callback delivery boundary was simulated and `answerCallbackQuery` was not called with fabricated Telegram IDs. Actual test payments exist only in the isolated test database. A production bot's webhook must never be repointed, deleted or polled via `getUpdates` to steal its updates for a test. Full human-button acceptance still requires an isolated callback route/bot configuration in the same existing group.
+
+The live accounting fixture had cash/card/mixed/credit sales totaling 380,000 and a 25,000 cash refund. Real scheduled-summary SQL returned net sales **355,000**, cash **95,000**, card **130,000**, transfer **0**, net receipts **225,000** and credit **130,000**. Those exact values were rendered into the real interim/final Telegram messages. No production financial records were read for this test or changed.
 
 When available, put test credentials in ignored `backend/.env.telegram-acceptance.local`, not chat, logs or Git. Required names: `TELEGRAM_BOT_TOKEN`, `ZENIX_PAYMENT_BOT_TOKEN`, `ZENIX_PAYMENT_ADMIN_USER_IDS`; resolve the one existing chat ID from the verified connection. Keep `NODE_ENV=test`, `RUN_NOTIFICATION_WORKERS=false`, and an explicit loopback database whose name contains `test`. Use a separate local callback secret. Test tooling must explicitly allowlist that one chat and synthetic records; do not load the production database URL or start `src/server.js`, which configures webhooks at startup.
 
@@ -96,10 +106,10 @@ Rollback: frontend can return to its captured prior artifact independently. For 
 
 ## Residual risks and next owner action
 
-- Real Telegram: unverified until the credentials/isolated callback path are available; all tests must use the existing one group.
+- Real Telegram send/media/edit API behavior passed in the one existing group. Human button delivery through an isolated callback path and phone visual acceptance remain unverified.
 - Telegram has no send idempotency key. If a remote send succeeds but its response/checkpoint is lost, retry can duplicate a message. Database finance remains once-only; checkpointed successful replies avoid ordinary edit-retry duplication.
-- Caption/text API behavior is locally covered but has not been accepted against actual Telegram here. Deleted/uneditable messages can exhaust retries and require display-only repair; never replay the financial decision.
+- Caption/text overflow, HTML special characters and media retention passed against actual Telegram. Deleted/uneditable messages can still exhaust retries and require display-only repair; never replay the financial decision.
 - Five historical migration tests remain FAIL; environment-gated tests must retain their explicit SKIP status in broad-suite results.
 - Production snapshot/restore freshness and runtime env flag need operator verification.
 
-Next owner action: provide the two bot credentials/admin allowlist through the ignored local test file when available, then authorize a single-group isolated live acceptance session. Production merge, snapshot creation, configuration changes and the staged rollout remain separate approvals. No new group is required.
+Next owner action: visually review the TEST messages/receipts in the existing group and confirm the phone layout. If human-button end-to-end acceptance is required, authorize an isolated callback arrangement in that same group without changing the current production webhooks. Production merge, snapshot creation, configuration changes and the staged rollout remain separate approvals. No new group is required.
