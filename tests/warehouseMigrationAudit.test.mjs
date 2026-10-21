@@ -6,8 +6,11 @@ import pg from 'pg';
 import { assertWarehouseAuditDatabaseUrl } from '../scripts/neonWarehouseAudit.mjs';
 import { loadMigrationCatalog } from '../src/db/migrationCatalog.js';
 import { executeMigration } from '../src/db/migrationExecution.js';
-import { verifyDatabaseSchema } from '../src/db/verifySchema.js';
-import { auditWarehouseMigration } from '../scripts/warehouseAudit.mjs';
+import { verifyWarehouse032Schema as verifyDatabaseSchema, historicalWarehouseAudit } from './fixtures/warehouse032Audit.mjs';
+import { auditWarehouseMigration as currentWarehouseAudit } from '../scripts/warehouseAudit.mjs';
+const historical=await historicalWarehouseAudit();
+test.after(()=>historical.close());
+const auditWarehouseMigration=historical.audit;
 
 const integration = process.env.TEST_DATABASE_URL ? test : test.skip;
 const directory = fileURLToPath(new URL('../migrations/', import.meta.url));
@@ -51,7 +54,7 @@ async function fixture(run) {
       return result;
     };
     const auditor=await pool.connect();
-    try{assert.equal((await auditWarehouseMigration(auditor,{phase:'before'})).ok,true);}finally{auditor.release();}
+    try{await assert.rejects(()=>currentWarehouseAudit(auditor,{phase:'before'}),/Migration catalog failed/);assert.equal((await auditWarehouseMigration(auditor,{phase:'before'})).ok,true);}finally{auditor.release();}
     await run({ pool, migration, presenceMigration:catalog.find(m=>m.prefix==='032'), org, store, products, snapshot });
   } finally {
     if (pool) await pool.end();
