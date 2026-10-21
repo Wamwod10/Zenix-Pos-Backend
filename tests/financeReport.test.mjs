@@ -51,6 +51,17 @@ test('finance report keeps revenue date separate from refund cashflow and pagina
     const captures=await financeReport(db,{organizationId:org,from:'2026-10-10',to:'2026-10-10'});
     assert.equal(captures.aggregate.netRevenue,280000);
     assert.deepEqual(captures.aggregate.cashflow,{cash:20000,card:130000,transfer:0});
+    const {scheduledDailySummary}=await import('../src/services/notificationWorker.js');
+    const scheduled=await scheduledDailySummary(db,{organizationId:org,storeId:store,date:'2026-10-10'});
+    assert.equal(Number(scheduled.total),280000);
+    assert.deepEqual([scheduled.cash,scheduled.card,scheduled.transfer].map(Number),[20000,130000,0]);
+    const scheduledRefund=await scheduledDailySummary(db,{organizationId:org,storeId:store,date:'2026-10-11'});
+    assert.equal(Number(scheduledRefund.total),-75000);
+    assert.deepEqual([scheduledRefund.cash,scheduledRefund.card,scheduledRefund.transfer].map(Number),[-35000,-10000,0]);
+    const otherStore=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Other branch') RETURNING id",[org])).rows[0].id;
+    assert.equal(Number((await scheduledDailySummary(db,{organizationId:org,storeId:otherStore,date:'2026-10-10'})).total),0);
+    const foreignOrg=(await db.query("INSERT INTO organizations(name) VALUES('Foreign tenant') RETURNING id")).rows[0].id;
+    assert.equal(Number((await scheduledDailySummary(db,{organizationId:foreignOrg,date:'2026-10-10'})).total),0);
     const refundMethods=await financeReport(db,{organizationId:org,from:'2026-10-11',to:'2026-10-11'});
     assert.equal(refundMethods.aggregate.netRevenue,-75000);
     assert.deepEqual(refundMethods.aggregate.cashflow,{cash:-35000,card:-10000,transfer:0});

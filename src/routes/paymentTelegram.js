@@ -4,10 +4,9 @@ import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { reviewBillingPayment } from "../services/billingReview.js";
-import { answerPaymentCallback, editPaymentReviewMessage, hashPaymentReviewToken } from "../services/paymentTelegram.js";
+import { answerPaymentCallback, editPaymentReviewMessage, hashPaymentReviewToken, formatPaymentReviewMessage } from "../services/paymentTelegram.js";
 
 const router = Router();
-const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 const secretMatches = (received, expected) => {
   const left = Buffer.from(String(received || ""));
@@ -23,18 +22,6 @@ export const parsePaymentCallbackData = (data) => {
   const match = String(data || "").match(/^p([ar]):([A-Za-z0-9_-]{24})$/);
   if (!match) return null;
   return { decision: match[1] === "a" ? "APPROVED" : "REJECTED", token: match[2] };
-};
-
-const finalMessage = ({ decision, admin, orderId }) => {
-  const approved = decision === "APPROVED";
-  const reviewer = admin.username ? `@${admin.username}` : `Telegram ID ${admin.id}`;
-  const time = new Intl.DateTimeFormat("uz-UZ", { timeZone: "Asia/Tashkent", dateStyle: "short", timeStyle: "short" }).format(new Date());
-  return [
-    approved ? "<b>✅ TASDIQLANDI</b>" : "<b>❌ RAD ETILDI</b>", "",
-    `<b>Kim:</b> ${escapeHtml(reviewer)}`,
-    `<b>Vaqt:</b> ${escapeHtml(time)}`,
-    `<b>Buyurtma:</b> ${escapeHtml(orderId)}`,
-  ].join("\n");
 };
 
 export async function handlePaymentCallback(update, {
@@ -70,15 +57,17 @@ export async function handlePaymentCallback(update, {
   const actor = {
     source: "telegram", telegramUserId: userId, telegramUsername: String(callback.from?.username || ""), telegramChatId: chatId,
   };
-  const result = await reviewPayment({ paymentId: payment.id, decision: parsed.decision, reason: parsed.decision === "REJECTED" ? "Telegram admin tomonidan rad etildi" : "", actor });
+  const result = await reviewPayment({ paymentId: payment.id, decision: parsed.decision, reason: parsed.decision === "REJECTED" ? "Telegram admin tomonidan rad etildi" : "", actor,
+    telegramMessage:{chatId,messageId:callback.message.message_id,hasCaption:Boolean(callback.message.photo || callback.message.document || callback.message.caption)} });
   if (result.outcome === "alreadyReviewed") {
     await answerCallback(callback.id, "Bu to'lov allaqachon ko'rib chiqilgan.").catch(() => {});
     return "alreadyReviewed";
   }
   await answerCallback(callback.id, parsed.decision === "APPROVED" ? "To'lov tasdiqlandi." : "To'lov rad etildi.").catch(() => {});
-  const text = finalMessage({ decision: parsed.decision, admin: callback.from, orderId: result.payment?.order_id || payment.order_id });
+  if (result.telegramUpdateQueued) return result.outcome;
+  const text = formatPaymentReviewMessage({...result.payment,status:parsed.decision},actor);
   await editMessage(chatId, callback.message.message_id, text, { hasCaption: Boolean(callback.message?.caption) })
-    .catch((error) => console.error("[payment-telegram-webhook] message edit failed", String(error?.message || error).slice(0, 200)));
+    .catch((error) => console.error("[payment-telegram-webhook] message edit failed", "Telegram edit failed; payment decision committed"));
   return result.outcome;
 }
 

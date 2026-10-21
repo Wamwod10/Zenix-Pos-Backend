@@ -3,16 +3,14 @@ import { env } from "../config/env.js";
 import { BILLING_PLANS } from "../config/billing.js";
 import {subscriptionPlan} from '../config/subscriptions.js';
 
-const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-const money = (value) => Number(value || 0).toLocaleString("ru-RU",{maximumFractionDigits:2}).replaceAll("\u00a0", " ");
-const submittedTime = (value) => new Intl.DateTimeFormat("uz-UZ", {
-  timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
-}).format(new Date(value));
+import { telegramText as escapeHtml, telegramMoney as money, telegramTime as submittedTime, telegramHeader } from './telegramFormat.js';
 
 export const derivePaymentReviewToken = (paymentId, secret) => createHmac("sha256", String(secret)).update(`zenix-payment-review:${paymentId}`).digest("base64url").slice(0, 24);
 export const hashPaymentReviewToken = (token) => createHash("sha256").update(String(token)).digest("hex");
 
-export function formatPaymentReviewMessage(payment) {
+const displayText = (value, limit) => escapeHtml(typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : value, '—', limit);
+
+export function formatPaymentReviewMessage(payment, actor = {}) {
   const plan = BILLING_PLANS[payment.plan] || BILLING_PLANS.ANNUAL;
   const isExtra = payment.type === "EXTRA";
   const quote=payment.draft_metadata?.subscription;
@@ -21,25 +19,34 @@ export function formatPaymentReviewMessage(payment) {
     ? Number(payment.store_limit || 0) + Math.max(1, Number(payment.extra_store_count || 1))
     : tier?tier.limits.stores+Number(quote.legacyStoreBonus||0):plan.includedStores + Math.max(0, Number(payment.extra_store_count || 0));
   const lines = [
-    "<b>💳 Zenix POS - Yangi to'lov</b>", "",
-    `<b>Tashkilot:</b> ${escapeHtml(payment.organization_name)}`,
-    `<b>Egasi:</b> ${escapeHtml(payment.owner_name || "Ko'rsatilmagan")}`,
+    telegramHeader('💳 <b>Obuna to‘lovi</b>').trimEnd(),
+    '🏢 Biznes: <b>' + displayText(payment.organization_name, 64) + '</b>',
+    '👤 Egasi: ' + displayText(payment.owner_name, 48),
   ];
-  if (payment.owner_phone) lines.push(`<b>Telefon:</b> ${escapeHtml(payment.owner_phone)}`);
-  lines.push("", `<b>Tarif:</b> ${isExtra ? "Qo'shimcha filial" : escapeHtml(tier?`${tier.label} / ${plan.label}`:plan.label)}`);
-  lines.push(`<b>Davr:</b> ${isExtra ? `${Number(payment.extension_days || 0)} kun` : `${plan.months} oy`}`);
-  lines.push(`<b>Filial limiti:</b> ${branchLimit} ta`, "");
-  lines.push(`<b>Summa:</b> ${money(payment.amount)} so'm`, `<b>Buyurtma:</b> ${escapeHtml(payment.order_id)}`, "");
-  lines.push("<b>Yuborilgan vaqt:</b>", escapeHtml(submittedTime(payment.submitted_at)), "", "<b>Holat:</b>", "🟡 Tekshiruvda");
-  return lines.join("\n");
+  if (payment.owner_phone) lines.push('📱 Telefon: ' + escapeHtml(payment.owner_phone));
+  lines.push('💎 Tarif: <b>' + (isExtra ? 'Qo‘shimcha filial' : escapeHtml(tier ? tier.label + ' / ' + plan.label : plan.label)) + '</b>');
+  lines.push('📅 Muddat: ' + (isExtra ? Number(payment.extension_days || 0) + ' kun' : plan.months + ' oy'));
+  lines.push('🏪 Filial limiti: ' + branchLimit + ' ta', '💰 Summa: <b>' + money(payment.amount) + '</b>');
+  lines.push('🧾 Buyurtma: ' + escapeHtml(payment.order_id), '🕒 Yuborilgan: ' + submittedTime(payment.submitted_at));
+  lines.push('━━━━━━━━━━━━');
+  if (payment.status === 'APPROVED' || payment.status === 'REJECTED') {
+    const approved = payment.status === 'APPROVED';
+    lines.push(approved ? '✅ <b>TO‘LOV TASDIQLANDI</b>' : '❌ <b>TO‘LOV RAD ETILDI</b>');
+    const reviewer = actor.telegramUsername ? '@' + actor.telegramUsername : actor.telegramUserId ? 'Telegram ID ' + actor.telegramUserId : actor.internalUserId ? 'Administrator ' + actor.internalUserId : '—';
+    lines.push('👨‍💻 ' + (approved ? 'Tasdiqladi' : 'Rad etdi') + ': ' + escapeHtml(reviewer));
+    lines.push('🕒 Vaqt: ' + submittedTime(payment.reviewed_at));
+    if (!approved && payment.reject_reason) lines.push('📝 Sabab: ' + displayText(payment.reject_reason, 160));
+  } else lines.push('🟡 <b>Tekshiruvda</b>');
+  return lines.join("\n\n");
 }
 
 export function createPaymentTelegramClient({ token, fetchImpl = fetch }) {
   const call = async (method, options) => {
     if (!token) throw new Error("Payment Telegram bot sozlanmagan");
-    const response = await fetchImpl(`https://api.telegram.org/bot${token}/${method}`, { signal: AbortSignal.timeout(15000), ...options });
+    const response = await fetchImpl(`https://api.telegram.org/bot${token}/${method}`, { signal: AbortSignal.timeout(15000), ...options }).catch(() => { throw new Error(`Payment Telegram ${method}: transport xatosi`); });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok) throw new Error(`Payment Telegram ${method} xatosi: ${String(payload.description || response.status).slice(0, 300)}`);
+    if (payload.description?.includes("message is not modified")) return null;
+    if (!response.ok || !payload.ok) throw new Error(`Payment Telegram ${method} xatosi: ${response.status || "API"}`);
     return payload.result;
   };
   const json = (method, body) => call(method, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -58,18 +65,31 @@ export function createPaymentTelegramClient({ token, fetchImpl = fetch }) {
         const form = new FormData();
         form.set("chat_id", String(chatId));
         form.set(field, new Blob([payment.receipt_content], { type: payment.receipt_type }), payment.receipt_name || "receipt");
-        form.set("caption", text);
+        form.set("caption", text.length <= 1024 ? text : telegramHeader("🧾 <b>To‘lov cheki</b>") + '🧾 Buyurtma: <b>' + escapeHtml(payment.order_id) + '</b>\n\nTo‘lov tafsilotlari quyidagi xabarda.');
         form.set("parse_mode", "HTML");
-        form.set("reply_markup", JSON.stringify(replyMarkup));
-        return call(method, { method: "POST", body: form });
+        if (text.length <= 1024) form.set("reply_markup", JSON.stringify(replyMarkup));
+        const receipt = await call(method, { method: "POST", body: form });
+        if (text.length <= 1024) return receipt;
+        return json("sendMessage", {chat_id:String(chatId),text,parse_mode:"HTML",reply_markup:replyMarkup,reply_parameters:{message_id:receipt.message_id}});
       }
       return json("sendMessage", { chat_id: String(chatId), text, parse_mode: "HTML", reply_markup: replyMarkup });
     },
     answerPaymentCallback(callbackQueryId, text, showAlert = false) {
       return json("answerCallbackQuery", { callback_query_id: callbackQueryId, text, show_alert: showAlert });
     },
-    editPaymentReviewMessage(chatId, messageId, text, { hasCaption = false } = {}) {
+    async editPaymentReviewMessage(chatId, messageId, text, { hasCaption = false, detailsMessageId = null, onDetailsMessage = async () => {} } = {}) {
       const content = { chat_id: String(chatId), message_id: Number(messageId), parse_mode: "HTML", reply_markup: { inline_keyboard: [] } };
+      if (hasCaption && text.length > 1024) {
+        // Checkpoint the reply before editing the receipt. Retrying a failed
+        // caption edit reuses this reply and preserves the photo/PDF.
+        if (detailsMessageId) await json('editMessageText',{...content,message_id:Number(detailsMessageId),text});
+        else {
+          const details = await json('sendMessage',{chat_id:String(chatId),text,parse_mode:'HTML',reply_parameters:{message_id:Number(messageId)}});
+          await onDetailsMessage(details.message_id);
+        }
+        const summary=text.split('\n').filter(line=>line.startsWith('🧾 Buyurtma:') || line.includes('<b>TO‘LOV ')).join('\n\n');
+        return json('editMessageCaption', {...content,caption:telegramHeader('💳 <b>Obuna to‘lovi</b>') + summary + '\n\nTo‘liq qaror quyidagi xabarda.'});
+      }
       content[hasCaption ? "caption" : "text"] = text;
       return json(hasCaption ? "editMessageCaption" : "editMessageText", content);
     },

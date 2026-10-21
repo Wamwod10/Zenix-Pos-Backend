@@ -14,8 +14,11 @@ test('PostgreSQL: free payment, redemption, trial conversion and one-use reset a
     await assertDatabaseReady(db);
     const [{activateFreePromo},{issuePasswordReset,consumePasswordReset}]=await Promise.all([import('../src/routes/billing.js'),import('../src/services/passwordReset.js')]);
     await client.query('BEGIN');
-    const org=(await client.query("INSERT INTO organizations(name,license_status,expiry_date,settings) VALUES('Disposable SaaS test','ACTIVE',CURRENT_DATE+14,$1) RETURNING *",[{trialUsed:true,trialEndsAt:new Date(Date.now()+14*86400000).toISOString(),billingHold:true}])).rows[0];
+    const org=(await client.query("INSERT INTO organizations(name,license_status,expiry_date,settings) VALUES('Disposable SaaS test','ACTIVE',CURRENT_DATE+14,$1) RETURNING *",[{trialUsed:true,trialEndsAt:new Date(Date.now()+14*86400000).toISOString(),billingHold:false}])).rows[0];
     const user=(await client.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Test Owner',$2,'unused-test-hash','OWNER') RETURNING *",[org.id,`saas_${randomUUID()}`])).rows[0];
+    // Establish the owner before putting the business on billing hold, as the
+    // real registration flow does. Keep the hold active for the redemption.
+    await client.query("UPDATE organizations SET settings=jsonb_set(settings,'{billingHold}','true') WHERE id=$1",[org.id]);
     const code=`TEST-${randomUUID().slice(0,12).toUpperCase()}`;
     await client.query("INSERT INTO platform_promos(code,discount_percent,max_uses,max_uses_per_org) VALUES($1,100,1,1)",[code]);
     const input={code,plan:'MONTHLY',requestId:randomUUID()},actor={id:user.id,organizationId:org.id};

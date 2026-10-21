@@ -8,6 +8,7 @@ import { asyncRoute, HttpError, ok } from "../lib/http.js";
 import { requireAuth, requireOrganization, requirePermission, requireActiveLicense } from "../middleware/auth.js";
 import { isBranchLocked, scopedStoreId } from "../lib/storeScope.js";
 import { sendTelegramMessage } from "../services/telegram.js";
+import { telegramHeader } from '../services/telegramFormat.js';
 import { assertTelegramWebhookReady, normalizeTelegramWebhookSecret } from "../services/telegramWebhook.js";
 
 const router=Router();
@@ -81,7 +82,7 @@ protectedRouter.post("/connections/:id/test",requirePermission("settingsWrite"),
   const params=[req.params.id,req.user.organizationId,...connectionScopeParams(req)];
   const row=(await pool.query(`SELECT * FROM telegram_connections WHERE id=$1 AND organization_id=$2 AND enabled=true${connectionScopeSql(req,3)}`,params)).rows[0];
   if(!row)throw new HttpError(404,"Telegram guruh topilmadi");
-  await sendTelegramMessage(row.chat_id,"✅ <b>Zenix POS ulandi</b>\n\nTest bildirishnomasi muvaffaqiyatli yuborildi.");
+  await sendTelegramMessage(row.chat_id,telegramHeader('✅ <b>Ulanish tekshiruvi</b>')+'Test bildirishnomasi muvaffaqiyatli yuborildi.');
   ok(res,{sent:true});
 }));
 router.post("/webhook",asyncRoute(async(req,res)=>{

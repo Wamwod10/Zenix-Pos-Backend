@@ -44,6 +44,38 @@ const testPool = (max) => new Pool({
   options: "-c lock_timeout=5s -c statement_timeout=30s",
 });
 
+integration('parallel Telegram payment reviews commit one decision, audit and final card; send/review race reconciles',async()=>{
+  assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV});
+  const db=testPool(3);
+  const {applyBillingReview}=await import('../src/services/billingReview.js');
+  const {deliverPaymentEvent}=await import('../src/services/paymentNotificationWorker.js');
+  const {enqueuePaymentReviewNotification}=await import('../src/services/paymentNotifications.js');
+  try {
+    await runMigrations({pool:db,directory:migrationsDirectory});
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Telegram race','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
+    await db.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Original owner',gen_random_uuid()::text,'unused','OWNER')",[org]);
+    const payment=(await db.query("INSERT INTO billing_payments(organization_id,order_id,type,plan,amount,telegram_admin_chat_id,telegram_admin_message_id,service_period_to) VALUES($1,gen_random_uuid()::text,'EXTRA','MONTHLY',120000,-1,77,CURRENT_DATE+30) RETURNING *",[org])).rows[0];
+    const results=await Promise.all(['APPROVED','REJECTED'].map(decision=>runTransaction(db,c=>applyBillingReview(c,{paymentId:payment.id,decision,actor:{telegramUserId:decision}}))));
+    assert.equal(results.filter(r=>r.outcome==='alreadyReviewed').length,1);
+    assert.equal((await db.query("SELECT count(*) FROM audit_logs WHERE organization_id=$1 AND entity_id=$2 AND action IN ('approve','reject')",[org,payment.id])).rows[0].count,'1');
+    assert.equal((await db.query("SELECT count(*) FROM notification_outbox WHERE organization_id=$1 AND event_type='billing.payment_review_updated' AND event_id=$2",[org,payment.id])).rows[0].count,'1');
+    const pending=(await db.query("INSERT INTO billing_payments(organization_id,order_id,type,plan,amount) VALUES($1,gen_random_uuid()::text,'LICENSE','MONTHLY',350000) RETURNING *",[org])).rows[0];
+    await enqueuePaymentReviewNotification(db,pending);
+    const event=(await db.query("SELECT * FROM notification_outbox WHERE event_type='billing.payment_review' AND event_id=$1",[pending.id])).rows[0];
+    let releaseSend,started;
+    const startedPromise=new Promise(resolve=>{started=resolve});
+    const releasePromise=new Promise(resolve=>{releaseSend=resolve});
+    const sending=deliverPaymentEvent(db,event,async()=>{started();await releasePromise;return {message_id:99,chat:{id:-1}};});
+    await startedPromise;
+    await runTransaction(db,c=>applyBillingReview(c,{paymentId:pending.id,decision:'REJECTED',reason:'Test reason',actor:{internalUserId:null,telegramUsername:'reviewer'}}));
+    releaseSend();await sending;
+    const final=(await db.query("SELECT payload FROM notification_outbox WHERE event_type='billing.payment_review_updated' AND event_id=$1",[pending.id])).rows[0].payload;
+    assert.equal(final.messageId,'99');assert.equal(final.hasCaption,false);
+    assert.equal(final.payment.owner_name,'Original owner');assert.equal(final.payment.status,'REJECTED');
+    assert.equal(final.actor.telegramUsername,'reviewer');
+  } finally {await db.end();}
+});
+
 function registerDirectoryIntegration(){
 integration('complete customer directory and platform metadata through authenticated HTTP', {timeout:30_000}, async()=>{
   assertSafeTestDatabaseUrl(integrationUrl,{nodeEnv:process.env.NODE_ENV||'test'});

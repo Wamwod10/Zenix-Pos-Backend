@@ -16,7 +16,7 @@ test("pending payment creates one tenant-scoped durable review event", async () 
 
 test("customer POS worker excludes platform payment review events", () => {
   const worker = fs.readFileSync(new URL("../src/services/notificationWorker.js", import.meta.url), "utf8");
-  assert.match(worker, /event_type\s*<>\s*'billing\.payment_review'/);
+  assert.match(worker, /event_type NOT IN \('billing\.payment_review','billing\.payment_review_updated'\)/);
 });
 
 test("billing submission enqueues review before its transaction returns", () => {

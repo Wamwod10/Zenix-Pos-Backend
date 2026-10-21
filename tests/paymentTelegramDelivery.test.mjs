@@ -11,11 +11,31 @@ const payment = {
   receipt_name: "chek.pdf", receipt_type: "application/pdf", receipt_content: Buffer.from("safe-pdf"),
 };
 
+test('payment layout separates fields and bounds long display values without changing source',()=>{
+  const source={...payment,organization_name:'A'.repeat(200),owner_name:'B'.repeat(200),status:'REJECTED',reject_reason:'Sabab '.repeat(100)};
+  const text=telegram.formatPaymentReviewMessage(source,{telegramUsername:'admin'});
+  assert.match(text,/<\/b>\n\n👤 Egasi:/);
+  assert.ok(!text.includes('A'.repeat(65)));
+  assert.ok(!text.includes('B'.repeat(49)));
+  assert.ok(text.split('📝 Sabab: ')[1].length<=160);
+  assert.equal(source.organization_name.length,200);
+});
+
 test("payment review text contains trusted billing details in Uzbek", () => {
   const text = telegram.formatPaymentReviewMessage(payment);
-  for (const expected of ["Zenix POS", "Yangi to'lov", "Zenix Market", "Ali Valiyev", "+998901234567", "Yillik", "12 oy", "2 ta", "3 300 000", "ZX-ABC123", "Tekshiruvda"]) {
+  for (const expected of ["ZENIX POS BOT", "Obuna to‘lovi", "Zenix Market", "Ali Valiyev", "+998901234567", "Yillik", "12 oy", "2 ta", "3 300 000", "ZX-ABC123", "Tekshiruvda"]) {
     assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+});
+
+test('final review preserves every trusted detail, reviewer, time and reason', () => {
+  for (const status of ['APPROVED','REJECTED']) {
+    const text=telegram.formatPaymentReviewMessage({...payment,status,reviewed_at:'2026-10-15T07:02:00Z',reject_reason:'<wrong & receipt>'}, {telegramUsername:'admin'});
+    for(const value of ['Zenix Market','Ali Valiyev','+998901234567','ZX-ABC123','3 300 000','@admin','15.10.2026, 12:02']) assert.ok(text.includes(value),value);
+    assert.ok(text.includes(status==='APPROVED'?'TO‘LOV TASDIQLANDI':'TO‘LOV RAD ETILDI'));
+    if(status==='REJECTED')assert.ok(text.includes('&lt;wrong &amp; receipt&gt;'));
+  }
+  assert.doesNotThrow(()=>telegram.formatPaymentReviewMessage({submitted_at:'bad'}));
 });
 
 test("callback token is opaque, deterministic for retry, and contains no tenant data", () => {

@@ -54,7 +54,7 @@ test('PostgreSQL consumes only selected units and rejects stale or cross-store s
  try{
   await runMigrations({pool,directory:fileURLToPath(new URL('../migrations/',import.meta.url)),logger:{log(){},info(){}},lockTimeoutMs:5000});
   client=await pool.connect();await client.query('BEGIN');
-  const organizationId=(await client.query("INSERT INTO organizations(name) VALUES('Task 7 tracking test') RETURNING id")).rows[0].id;
+  const organizationId=(await client.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Task 7 tracking test','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
   const storeId=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Selected units') RETURNING id",[organizationId])).rows[0].id;
   const otherStoreId=(await client.query("INSERT INTO stores(organization_id,name) VALUES($1,'Outside scope') RETURNING id",[organizationId])).rows[0].id;
   const productId=(await client.query("INSERT INTO products(organization_id,name) VALUES($1,'Tracked product') RETURNING id",[organizationId])).rows[0].id;

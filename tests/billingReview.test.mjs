@@ -35,6 +35,7 @@ const createClient = (overrides = {}) => {
       }
       if (/UPDATE organizations SET/.test(sql)) { state.organizationUpdate = { sql, params }; return { rows: [] }; }
       if (/INSERT INTO audit_logs/.test(sql)) { state.audit = params; return { rows: [] }; }
+      if (/INSERT INTO notification_outbox/.test(sql)) { state.notification = params; return { rows: [] }; }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
@@ -66,6 +67,25 @@ test("a second decision is idempotent and cannot update the organization", async
   assert.equal(result.outcome, "alreadyReviewed");
   assert.equal(client.state.organizationUpdate, null);
   assert.equal(client.state.audit, null);
+});
+
+test('decision queues a complete immutable display update inside the financial transaction',async()=>{
+  const client=createClient({telegram_admin_chat_id:'-1001',telegram_admin_message_id:'77',telegram_review_has_caption:true,owner_name:'Ali',owner_phone:'+99890',amount:350000,telegram_review_token_hash:'secret-hash'});
+  const result=await applyBillingReview(client,{paymentId:'payment-1',decision:'REJECTED',reason:'Chek xato',actor:{telegramUsername:'admin'}});
+  assert.equal(result.telegramUpdateQueued,true);
+  const [, , type, id, payload]=client.state.notification;
+  assert.equal(type,'billing.payment_review_updated');assert.equal(id,'payment-1');
+  assert.equal(payload.payment.owner_name,'Ali');assert.equal(payload.payment.status,'REJECTED');
+  assert.equal(payload.payment.reject_reason,'Chek xato');assert.equal(payload.hasCaption,true);
+  assert.ok(!JSON.stringify(payload).includes('secret-hash'));
+});
+
+test('signed callback message kind takes precedence over a stale outbox snapshot',async()=>{
+  const client=createClient({telegram_admin_chat_id:'-1',telegram_admin_message_id:'77',telegram_review_has_caption:true,telegram_review_snapshot:{organization_name:'Original business',owner_name:'Original owner'}});
+  await applyBillingReview(client,{paymentId:'payment-1',decision:'REJECTED',telegramMessage:{chatId:'-1',messageId:77,hasCaption:false}});
+  assert.equal(client.state.notification[4].hasCaption,false);
+  assert.equal(client.state.notification[4].payment.organization_name,'Original business');
+  assert.equal(client.state.notification[4].payment.status,'REJECTED');
 });
 
 test('missing payment is rejected before obtaining any organization lock', async () => {
