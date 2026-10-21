@@ -35,5 +35,5 @@ export function formatNotification(eventType, payload = {}) {
   const body = notificationBody(eventType, payload);
   const [title, ...lines] = body.split('\n\n');
   const reportStatus = eventType === 'daily.report' && payload.reportKind ? (payload.reportKind === 'final' ? '✅ <b>Yakuniy kun yopilishi</b>\n\n' : '🕒 <b>Oraliq hisobot</b>\n\n') : '';
-  return telegramHeader(title) + reportStatus + lines.join('\n\n');
+  return telegramHeader(title) + reportStatus + lines.join('\n\n').split(/\n+/u).join('\n\n');
 }

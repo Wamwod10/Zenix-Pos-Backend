@@ -23,6 +23,7 @@ test("all Telegram business notifications produce complete balanced HTML", () =>
     const message = formatNotification(eventType, payload);
     assert.ok(message.startsWith('<b>ZENIX POS BOT</b>'), eventType);
     assert.ok(message.includes('━━━━━━━━━━━━'), eventType);
+    assert.doesNotMatch(message, /[^\n]\n[^\n]/, `${eventType}: separate each field with a blank line`);
     assert.match(message, new RegExp(`<b>${title}</b>`), eventType);
     assert.doesNotMatch(message, /undefined|NaN|\[object Object\]/, eventType);
     assert.equal((message.match(/<b>/g) || []).length, (message.match(/<\/b>/g) || []).length, eventType);
