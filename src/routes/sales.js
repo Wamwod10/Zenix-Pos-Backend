@@ -16,6 +16,7 @@ import {lineAmount,refundAmount,sumMoney,roundMoney} from '../lib/posMoney.js';
 import {holdSchema,holdView,holdIntent,validateHoldCatalog} from '../services/saleHolds.js';
 import {requestFingerprint,assertSaleReplay,assertRefundReplay} from '../services/posReplay.js';
 import {salesPage} from '../services/salesDirectory.js';
+import {readPosProSummary,validatePosProPayment} from '../services/posPro.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -139,6 +140,10 @@ router.get('/page',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
   ok(res,page);
 }));
 
+router.get('/pos-pro/summary',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
+  ok(res,await readPosProSummary(pool,req.user,req.query));
+}));
+
 router.get("/holds",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
   const storeId=z.string().uuid('Filial ID noto‘g‘ri').parse(req.query.storeId);
   if(!storeId)throw new HttpError(400,"Filial topilmadi");
@@ -226,6 +231,7 @@ router.post("/business-days/close",requirePermission("closeBusinessDay"),asyncRo
 
 router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
   const input=saleSchema.parse(req.body);assertStoreScope(req.user,input.storeId);
+  validatePosProPayment(input);
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;const store=await assertOrganizationStore(client,orgId,input.storeId);
     const organization=await lockStoreTradingAuthorization(client,{organizationId:orgId,storeId:input.storeId});
@@ -249,6 +255,8 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
     for(const line of [...input.items].sort((a,b)=>a.productId.localeCompare(b.productId))){
       const product=(await client.query("SELECT * FROM products WHERE id=$1 AND organization_id=$2 AND archived=false",[line.productId,orgId])).rows[0];
       if(!product)throw new HttpError(404,"Mahsulot topilmadi");
+      if(input.metadata.source==='pos-pro'&&!line.metadata.packUnit&&Number(line.metadata.originalUnitPrice)!==Number(product.sell_price))throw new HttpError(409,'Mahsulot narxi o‘zgargan. Savatni yangilang.','POS_PRICE_CHANGED');
+      if(input.metadata.source==='pos-pro'&&!line.metadata.packUnit&&Number(line.unitPrice)>Number(product.sell_price))throw new HttpError(403,'POS Pro narxni qo‘lda oshirishga ruxsat bermaydi','PRICE_OVERRIDE_FORBIDDEN');
       await client.query(`INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,0,0) ON CONFLICT(store_id,product_id) DO NOTHING`,[orgId,input.storeId,line.productId]);
       const balance=(await client.query("SELECT * FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 FOR UPDATE",[orgId,input.storeId,line.productId])).rows[0];
       const quantity=Number(line.quantity),before=Number(balance.quantity),after=before-quantity;
@@ -260,6 +268,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
     }
     const paymentTotal=sumMoney(input.payments.map(p=>p.amount));
     const creditAmount=Number(input.creditAmount||0);
+    if(creditAmount>0&&posRules.paymentMethods?.credit===false)throw new HttpError(403,'Nasiya ushbu filialda o‘chirilgan','CREDIT_PAYMENT_DISABLED');
     if(sumMoney([paymentTotal,creditAmount,-total])!==0)throw new HttpError(409,"To‘lov va nasiya summasi savdo jami bilan mos emas","PAYMENT_MISMATCH");
     let creditCustomer=null;
     if(creditAmount>0){
