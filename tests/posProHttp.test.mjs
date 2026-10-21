@@ -56,5 +56,17 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    status(await request(`/api/sales/${first.id}/returns`,{productId:product,quantity:.25,reason:'Test refund',refundMethod:'original',refundShiftId:shiftId,clientReference:'return-'+suffix},token),201);
    const after=status(await request(`/api/sales/pos-pro/summary?storeId=${storeId}`,null,token),200);assert.equal(after.total,100800);assert.equal(after.cash,94000);
   });
+  await t.test('normal checkout and replay/reconciliation retain measured-unit receipt data and cash change',async()=>{
+   const milk=(await pool.query("INSERT INTO products(organization_id,name,unit,sell_price) VALUES($1,'Receipt milk','l',6000) RETURNING id",[org])).rows[0].id;
+   await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,10)',[org,storeId,milk]);
+   const packet={storeId,shiftId,clientReference:'receipt-'+suffix,items:[{productId:product,quantity:.25,unitPrice:12000,metadata:{originalUnitPrice:12000}},{productId:milk,quantity:1.5,unitPrice:6000,metadata:{originalUnitPrice:6000}}],payments:[{method:'cash',amount:7000},{method:'card',amount:5000}],metadata:{source:'pos-pro',cashTendered:10000,change:3000,externalPaymentConfirmation:'manual-confirmed'}};
+   const saved=status(await request('/api/sales',packet,token),201).sale;
+   assert.deepEqual(saved.items.map(p=>[p.metadata.unit,p.quantity]).sort(),[['kg',.25],['l',1.5]]);assert.deepEqual(saved.payments,packet.payments.map(p=>({...p,metadata:{}})));
+   const replay=status(await request('/api/sales',packet,token),201).sale;
+   const recovered=status(await request(`/api/sales/reconciliation?storeId=${storeId}&clientReference=${packet.clientReference}`,null,token),200).sale;
+   for(const record of [saved,replay,recovered]){assert.equal(record.id,saved.id);assert.equal(record.metadata.cashTendered,10000);assert.equal(record.metadata.change,3000);assert.equal(Number(record.total),12000)}
+   const page=status(await request(`/api/sales/page?storeId=${storeId}`,null,token),200).items.find(s=>s.id===saved.id);assert.deepEqual(page.items.map(p=>p.unit).sort(),['kg','l']);
+   const paid=(await pool.query('SELECT method,amount FROM sale_payments WHERE sale_id=$1 ORDER BY method',[saved.id])).rows;assert.deepEqual(paid.map(p=>[p.method,Number(p.amount)]),[['card',5000],['cash',7000]]);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[milk])).rows[0].quantity),8.5);
+  });
  }finally{await new Promise(r=>server.close(r));await pool.end()}
 });
