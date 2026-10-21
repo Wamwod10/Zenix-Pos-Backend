@@ -5,7 +5,7 @@ const quantity=z.coerce.number().positive().max(999999999).refine(value=>Math.ab
 const line=z.object({id:z.string().uuid('Mahsulot ID noto‘g‘ri'),cartQty:quantity,sellPrice:z.coerce.number().min(0).max(9000000000000).default(0),discountPercent:z.coerce.number().min(0).max(100).default(0),name:z.string().max(300).optional(),packUnit:z.string().max(40).nullable().optional(),tracking:z.record(z.string(),z.any()).optional()});
 export const holdSchema=z.object({
  storeId:z.string().uuid('Filial ID noto‘g‘ri'),shiftId:z.preprocess(value=>value===''?null:value,z.string().uuid('Smena ID noto‘g‘ri').nullable().optional()),
- name:z.string().trim().min(1).max(120),cart:z.array(line).min(1).max(250).refine(lines=>new Set(lines.map(item=>item.id)).size===lines.length,'Takroriy mahsulot'),
+ name:z.string().trim().min(1).max(120),cart:z.array(line).min(1).max(500).refine(lines=>new Set(lines.map(item=>item.id)).size===lines.length,'Takroriy mahsulot'),
  customer:z.string().max(300).default(''),customerId:z.preprocess(value=>value===''?null:value,z.string().uuid().nullable().optional()),note:z.string().max(1000).default(''),
  cartDiscountPct:z.coerce.number().min(0).max(100).default(0),total:z.coerce.number().min(0).default(0),clientReference:z.string().trim().max(120).default(''),
 });
