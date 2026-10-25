@@ -7,6 +7,7 @@ import { requireAuth, requireOrganization, requirePermission } from "../middlewa
 import { ORGANIZATION_CONFIGURABLE_ROLES, ROLES, isOrganizationPermissionKey } from "../lib/permissions.js";
 import { writeAudit } from "../services/audit.js";
 import { isBranchLocked } from "../lib/storeScope.js";
+import {validateWorkspaceTimeSettings} from '../lib/workspaceTimeSettings.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -35,6 +36,7 @@ const workspaceSchema=z.object({
 });
 router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
   const input=workspaceSchema.parse(req.body);
+  if(input.workspaceSettings)validateWorkspaceTimeSettings(input.workspaceSettings);
   if(input.rolePermissions){
     if(req.user.appRole!==ROLES.OWNER)throw new HttpError(403,"Rol ruxsatlarini faqat tashkilot egasi o‘zgartira oladi","PERMISSION_ADMIN_REQUIRED");
     const configurable=new Set(ORGANIZATION_CONFIGURABLE_ROLES);

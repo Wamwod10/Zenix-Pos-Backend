@@ -10,6 +10,7 @@ import { catalogPageQuerySchema, decodeCatalogCursor, encodeCatalogCursor } from
 import { addCatalogSearchFilter } from "../lib/catalogSearch.js";
 import { assertNoLiveProductInventory } from "../services/productDeletionGuard.js";
 import {validateProductMetadata} from '../lib/productOptions.js';
+import {assertFileAssetBinding} from '../services/fileAssets.js';
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -103,6 +104,7 @@ router.get("/barcode/generate", requirePermission("productWrite"), asyncRoute(as
 router.post("/", requirePermission("productWrite"), asyncRoute(async (req, res) => {
   const input = productSchema.parse(req.body);
   const product = await withTransaction(async (client) => {
+    await assertFileAssetBinding(client,{user:req.user,id:input.metadata?.imageKey,purpose:'product'});
     const row = (await client.query(`
       INSERT INTO products(organization_id,name,sku,barcode,category,brand,unit,cost_price,sell_price,wholesale_price,min_stock,metadata)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
@@ -143,6 +145,7 @@ router.patch("/:id", requirePermission("productWrite"), asyncRoute(async (req, r
       minStock: input.minStock ?? Number(current.min_stock),
       metadata: input.metadata ?? current.metadata,
     };
+    if(input.metadata!==undefined)await assertFileAssetBinding(client,{user:req.user,id:value.metadata?.imageKey,purpose:'product',existingId:current.metadata?.imageKey});
     const row = (await client.query(`
       UPDATE products SET name=$3,sku=$4,barcode=$5,category=$6,brand=$7,unit=$8,cost_price=$9,sell_price=$10,
         wholesale_price=$11,min_stock=$12,metadata=$13,updated_at=now()

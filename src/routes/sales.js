@@ -106,14 +106,14 @@ async function restoreInventoryBatches(client,{organizationId,storeId,productId,
   return restored;
 }
 
-async function nextSaleIdentity(client,orgId){
+async function nextSaleIdentity(client,orgId,storeId){
   // Serialize number allocation per organization so concurrent terminals cannot
   // generate the same receipt number inside separate transactions. The same
   // locked organization row is also the authoritative timezone/business-day source.
   const organization=(await client.query("SELECT id,timezone,settings FROM organizations WHERE id=$1 FOR UPDATE",[orgId])).rows[0];
   if(!organization)throw new HttpError(404,"Tashkilot topilmadi","ORGANIZATION_NOT_FOUND");
   const {rows}=await client.query("SELECT count(*)::bigint+1 n FROM sales WHERE organization_id=$1",[orgId]);
-  return {saleNumber:`S-${String(rows[0].n).padStart(6,"0")}`,businessDate:organizationBusinessDateISO(organization)};
+  return {saleNumber:`S-${String(rows[0].n).padStart(6,"0")}`,businessDate:organizationBusinessDateISO(organization,new Date(),storeId)};
 }
 
 async function lockBusinessDay(client,{organizationId,storeId,businessDate,allowClosed=false}){
@@ -136,7 +136,7 @@ router.get('/page',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
   const query=z.object({storeId:z.string().uuid(),limit:z.coerce.number().int().min(1).max(100).default(30),offset:z.coerce.number().int().min(0).max(1000000).default(0)}).parse(req.query);
   assertStoreScope(req.user,query.storeId);
   const organization=(await pool.query('SELECT timezone,settings FROM organizations WHERE id=$1',[req.user.organizationId])).rows[0];
-  const page=await salesPage(pool,{...query,organizationId:req.user.organizationId,businessDate:organizationBusinessDateISO(organization),timeZone:organization?.timezone});
+  const page=await salesPage(pool,{...query,organizationId:req.user.organizationId,businessDate:organizationBusinessDateISO(organization,new Date(),query.storeId),timeZone:organization?.timezone});
   ok(res,page);
 }));
 
@@ -280,7 +280,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       const limit=Number(creditCustomer.credit_limit||0);
       if(limit>0&&currentDebt+creditAmount>limit+0.001)throw new HttpError(409,"Mijoz kredit limiti yetarli emas","CREDIT_LIMIT_EXCEEDED",{currentDebt,creditAmount,creditLimit:limit});
     }
-    const {saleNumber,businessDate}=await nextSaleIdentity(client,orgId);
+    const {saleNumber,businessDate}=await nextSaleIdentity(client,orgId,input.storeId);
     await lockBusinessDay(client,{organizationId:orgId,storeId:input.storeId,businessDate});
     const saleMetadata={...input.metadata,requestFingerprint:requestFingerprint(input),clientBusinessDate:input.businessDate||null};
     const sale=(await client.query(`INSERT INTO sales(organization_id,store_id,shift_id,seller_id,sale_number,client_reference,subtotal,discount_amount,total,customer,business_date,metadata,customer_id)
@@ -288,11 +288,11 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
     for(const line of normalized){
       await consumeSaleTracking(client,{organizationId:orgId,storeId:input.storeId,productId:line.product.id,saleId:sale.id,tracking:line.tracking});
       const authoritativeTracking=line.tracking;
-      const itemMetadata={...line.metadata,unit:line.product.unit,unitCost:Number(line.balance.avg_cost||line.product.cost_price||0),tracking:authoritativeTracking};
+      const itemMetadata={...line.metadata,unit:line.product.unit,unitCost:Number(line.balance.avg_cost??line.product.cost_price??0),tracking:authoritativeTracking};
       await client.query(`INSERT INTO sale_items(sale_id,product_id,product_name,sku,barcode,quantity,unit_price,discount_percent,line_total,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[sale.id,line.product.id,line.product.name,line.product.sku,line.product.barcode,line.quantity,line.unitPrice,line.discountPercent,line.lineTotal,itemMetadata]);
       await client.query("UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3",[orgId,input.storeId,line.product.id,line.after]);
       await enqueueStockLevelNotification(client,{organizationId:orgId,storeId:input.storeId,eventBase:sale.id,productId:line.product.id,productName:line.product.name,unit:line.product.unit,storeName:store.name,before:line.before,after:line.after,minStock:Number(line.product.min_stock||0)});
-      await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,unit_cost,reference_type,reference_id,created_by,metadata) VALUES($1,$2,$3,'sale',$4,$5,$6,$7,'sale',$8,$9,$10::jsonb)`,[orgId,input.storeId,line.product.id,-line.quantity,line.before,line.after,Number(line.balance.avg_cost||line.product.cost_price||0),sale.id,req.user.id,JSON.stringify({tracking:authoritativeTracking})]);
+      await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,unit_cost,reference_type,reference_id,created_by,metadata) VALUES($1,$2,$3,'sale',$4,$5,$6,$7,'sale',$8,$9,$10::jsonb)`,[orgId,input.storeId,line.product.id,-line.quantity,line.before,line.after,Number(line.balance.avg_cost??line.product.cost_price??0),sale.id,req.user.id,JSON.stringify({tracking:authoritativeTracking})]);
     }
     for(const payment of input.payments)await client.query("INSERT INTO sale_payments(sale_id,method,amount,metadata) VALUES($1,$2,$3,$4)",[sale.id,payment.method,payment.amount,payment.metadata||{}]);
     if(creditAmount>0)await client.query(`INSERT INTO customer_ledger(organization_id,customer_id,store_id,sale_id,entry_type,amount,due_date,reference,note,created_by) VALUES($1,$2,$3,$4,'CREDIT_SALE',$5,$6,$7,$8,$9)`,[orgId,input.customerId,input.storeId,sale.id,creditAmount,input.creditDueDate,saleNumber,String(input.metadata?.note||""),req.user.id]);
@@ -320,7 +320,7 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     const sale=(await client.query("SELECT * FROM sales WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,orgId])).rows[0];
     if(!sale)throw new HttpError(404,"Savdo topilmadi");assertStoreScope(req.user,sale.store_id);await assertOrganizationStore(client,orgId,sale.store_id);
     const organization=await lockStoreTradingAuthorization(client,{organizationId:orgId,storeId:sale.store_id});
-    const returnBusinessDate=organizationBusinessDateISO(organization);
+    const returnBusinessDate=organizationBusinessDateISO(organization,new Date(),sale.store_id);
     await lockBusinessDay(client,{organizationId:orgId,storeId:sale.store_id,businessDate:returnBusinessDate});
     const item=(await client.query("SELECT si.*,COALESCE((SELECT sm.unit_cost FROM stock_movements sm WHERE sm.reference_type='sale' AND sm.reference_id=si.sale_id::text AND sm.product_id=si.product_id ORDER BY sm.created_at LIMIT 1),0) unit_cost FROM sale_items si WHERE si.sale_id=$1 AND si.product_id=$2",[sale.id,input.productId])).rows[0];if(!item)throw new HttpError(404,"Savdoda bu mahsulot topilmadi");
     const priorReturns=(await client.query("SELECT COALESCE(sum(quantity),0) qty,COALESCE(sum(amount),0) amount FROM sale_returns WHERE sale_id=$1 AND product_id=$2",[sale.id,input.productId])).rows[0];

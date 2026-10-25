@@ -1,3 +1,4 @@
+import {financeExpenseAccess} from '../services/financeReportAccess.js';
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { asyncRoute, ok, HttpError } from '../lib/http.js';
@@ -16,7 +17,7 @@ router.get('/',requireAuth,requireOrganization,requireActiveLicense,asyncRoute(a
   const client=await pool.connect();
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    const report=await financeReport(client,{organizationId:req.user.organizationId,storeId,sellerId,from:req.query.from,to:req.query.to,limit:req.query.limit,offset:req.query.offset,search:req.query.search,paymentMethod:req.query.paymentMethod,shiftId:req.query.shiftId});
+    const report=await financeReport(client,{organizationId:req.user.organizationId,storeId,sellerId,from:req.query.from,to:req.query.to,limit:req.query.limit,offset:req.query.offset,search:req.query.search,paymentMethod:req.query.paymentMethod,shiftId:req.query.shiftId,expenseAccess:financeExpenseAccess(req.user)});
     await client.query('COMMIT');
     ok(res,report);
   } catch(error){await client.query('ROLLBACK');throw error;} finally{client.release();}

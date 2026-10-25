@@ -46,10 +46,10 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
 
   const [storesResult,productsResult,salesResult,returnsResult,suppliersResult,invoicesResult,invoiceItemsResult,supplierPaymentsResult,expensesResult,shiftsResult,shiftMovementsResult,logsResult,movementsResult,transfersResult,countsResult,businessDaysResult,billingResult,telegramResult,usersResult,serialsResult,batchesResult]=await Promise.all([
     pool.query(`SELECT * FROM stores WHERE organization_id=$1${branchStoreId?" AND id=$2":""} ORDER BY created_at`,storeArg),
-    core?Promise.resolve({rows:[]}):pool.query(`SELECT p.*,COALESCE(ib.stock_by_store,'{}'::jsonb) AS stock_by_store,ls.last_sale_at
+    core?Promise.resolve({rows:[]}):pool.query(`SELECT p.*,COALESCE(ib.stock_by_store,'{}'::jsonb) AS stock_by_store,COALESCE(ib.cost_by_store,'{}'::jsonb) AS cost_by_store,ls.last_sale_at
       FROM products p
       LEFT JOIN (
-        SELECT product_id,jsonb_object_agg(store_id,quantity) AS stock_by_store
+        SELECT product_id,jsonb_object_agg(store_id,quantity) AS stock_by_store,jsonb_object_agg(store_id,avg_cost) AS cost_by_store
         FROM inventory_balances WHERE organization_id=$1 ${branchStoreId?"AND store_id=$2":""}
         GROUP BY product_id
       ) ib ON ib.product_id=p.id

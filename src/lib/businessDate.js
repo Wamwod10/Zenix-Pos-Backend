@@ -1,3 +1,4 @@
+import {parseBusinessStartTime} from './workspaceTimeSettings.js';
 const partsInZone=(value,timeZone)=>Object.fromEntries(new Intl.DateTimeFormat("en-CA",{
   timeZone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23",
 }).formatToParts(value).map((part)=>[part.type,part.value]));
@@ -25,12 +26,11 @@ export function organizationCalendarDateISO(organization,now=new Date()){
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
-export function organizationBusinessDateISO(organization,now=new Date()){
+export function organizationBusinessDateISO(organization,now=new Date(),storeId=null){
   const timeZone=organization?.timezone||"Asia/Tashkent";
-  const startTime=organization?.settings?.workspaceSettings?.businessDay?.startTime||"00:00";
-  const [hourRaw,minuteRaw]=String(startTime).split(":");
-  const startHour=Math.max(0,Math.min(23,Number(hourRaw||0)));
-  const startMinute=Math.max(0,Math.min(59,Number(minuteRaw||0)));
+  const workspace=organization?.settings?.workspaceSettings;
+  const startTime=workspace?.storeOverrides?.[storeId]?.businessDay?.startTime??workspace?.businessDay?.startTime??"00:00";
+  const [startHour,startMinute]=parseBusinessStartTime(startTime);
   const parts=partsInZone(now,timeZone);
   const calendarDate=`${parts.year}-${parts.month}-${parts.day}`;
   const currentMinutes=Number(parts.hour||0)*60+Number(parts.minute||0);

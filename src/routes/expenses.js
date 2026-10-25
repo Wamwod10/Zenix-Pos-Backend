@@ -9,6 +9,7 @@ import { enqueueNotification } from "../services/notifications.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { hasPermission } from "../lib/permissions.js";
 import {financialWriteReplay,lockFinancialOrganization} from '../services/financialWriteReplay.js';
+import {assertFileAssetBinding} from '../services/fileAssets.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
@@ -49,6 +50,7 @@ router.post("/",requirePermission("expensesWrite"),asyncRoute(async(req,res)=>{
       await assertShiftCashAvailable(client,cashShift,input.amount);
     }
     const metadata={...(input.metadata||{}),employeeId:req.user.id,employee:req.user.name};
+    await assertFileAssetBinding(client,{user:req.user,id:metadata.receiptKey,purpose:'expense'});
     const row=(await client.query(`INSERT INTO expenses(organization_id,store_id,shift_id,title,category,amount,payment_method,note,metadata,created_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[req.user.organizationId,input.storeId,input.shiftId||null,input.title,input.category,input.amount,input.paymentMethod,input.note,metadata,req.user.id])).rows[0];
     if(input.paymentMethod==="cash")await client.query(`INSERT INTO shift_movements(organization_id,shift_id,type,amount,reason,source,reference_id,created_by)
@@ -73,6 +75,7 @@ router.patch("/:id",requirePermission("expensesWrite"),asyncRoute(async(req,res)
       category:input.category??old.category,amount:input.amount??Number(old.amount),paymentMethod:input.paymentMethod??old.payment_method,
       note:input.note??old.note,metadata:{...(old.metadata||{}),...(input.metadata||{})},
     };
+    if(input.metadata!==undefined)await assertFileAssetBinding(client,{user:req.user,id:next.metadata.receiptKey,purpose:'expense',existingId:old.metadata?.receiptKey});
     assertStoreScope(req.user,next.storeId);await assertOrganizationStore(client,req.user.organizationId,next.storeId);
     const cashShift=await requireCashShift(client,{organizationId:req.user.organizationId,storeId:next.storeId,shiftId:next.shiftId,paymentMethod:next.paymentMethod});
     // Remove the previous ledger entry before validating the replacement so an

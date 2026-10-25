@@ -61,14 +61,14 @@ integration('authenticated tenant HTTP smoke: login, product isolation, permissi
     // sufficient, even if sent by an authenticated shop owner.
     const wrongContent=await fetch(`${base}/api/files`,{
       method:'POST',headers:{origin:'http://localhost:5173','x-zenix-client':'web',
-        cookie:a.cookie,'content-type':'image/png','x-file-name':'fake.png'},
+        cookie:a.cookie,'content-type':'image/png','x-file-name':'fake.png','x-file-purpose':'product'},
       body:Buffer.from('<script>wrong format</script>'),
     });
     assert.equal(wrongContent.status,415,'forged PNG must be rejected before storage');
     assert.equal((await wrongContent.json()).error.code,'FILE_CONTENT_MISMATCH');
     const goodContent=await fetch(`${base}/api/files`,{
       method:'POST',headers:{origin:'http://localhost:5173','x-zenix-client':'web',
-        cookie:a.cookie,'content-type':'image/png','x-file-name':'proof.png'},
+        cookie:a.cookie,'content-type':'image/png','x-file-name':'proof.png','x-file-purpose':'product'},
       body:Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(12)]),
     });
     assert.equal(goodContent.status,201,'valid PNG remains supported');

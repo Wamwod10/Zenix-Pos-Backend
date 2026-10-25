@@ -1,3 +1,4 @@
+import { sumMoney } from "../lib/posMoney.js";
 import {resolveShiftRegister} from '../services/posRegisters.js';
 import { Router } from "express";
 import { z } from "zod";
@@ -9,7 +10,7 @@ import { writeAudit } from "../services/audit.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js";
 import { hasPermission } from "../lib/permissions.js";
-import { assertShiftCashAvailable, shiftExpectedCash } from "../lib/shiftCash.js";
+import { assertShiftCashAvailable, shiftExpectedCash, shiftCashSummary } from "../lib/shiftCash.js";
 import { assertEmployeeShiftAvailableWithLock, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
 
 const router = Router();
@@ -22,6 +23,22 @@ function assertShiftControl(user, shift) {
     throw new HttpError(403, "Boshqa kassir smenasini boshqarishga ruxsat yo‘q", "SHIFT_FORBIDDEN");
   }
 }
+
+router.get("/:id/summary", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
+  z.string().uuid().parse(req.params.id);
+  const summary = await withTransaction(async (client) => {
+    const shift = (await client.query(
+      "SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 FOR SHARE",
+      [req.params.id, req.user.organizationId],
+    )).rows[0];
+    if (!shift) throw new HttpError(404, "Smena topilmadi");
+    assertStoreScope(req.user, shift.store_id);
+    assertShiftControl(req.user, shift);
+    return {shiftId:shift.id,status:shift.status,...await shiftCashSummary(client,shift)};
+  });
+  res.set("Cache-Control", "no-store");
+  ok(res, {summary});
+}));
 
 router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
   const input = z.object({
@@ -118,6 +135,7 @@ router.post("/:id/movements", requirePermission("moduleShifts"), asyncRoute(asyn
 router.post("/:id/close", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
   const input = z.object({
     actualCash: z.coerce.number().min(0),
+    expectedCash: z.coerce.number().min(-Number.MAX_SAFE_INTEGER/100).max(Number.MAX_SAFE_INTEGER/100).multipleOf(0.01).optional(),
     metadata: z.record(z.string(), z.any()).default({}),
   }).parse(req.body);
 
@@ -133,7 +151,10 @@ router.post("/:id/close", requirePermission("moduleShifts"), asyncRoute(async (r
     assertShiftControl(req.user, current);
 
     const expectedCash = await shiftExpectedCash(client,current);
-    const difference = input.actualCash - expectedCash;
+    if (input.expectedCash !== undefined && sumMoney([input.expectedCash]) !== expectedCash) {
+      throw new HttpError(409, "Kassa summasi o'zgardi. Qayta tekshiring.", "SHIFT_CASH_CHANGED", {expectedCash});
+    }
+    const difference = sumMoney([input.actualCash, -expectedCash]);
     const closed = (await client.query(`
       UPDATE shifts
       SET status='closed',expected_cash=$2,actual_cash=$3,difference=$4,metadata=metadata||$5::jsonb,closed_at=now()

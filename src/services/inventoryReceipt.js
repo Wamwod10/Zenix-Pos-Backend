@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import {assertFileAssetBinding} from './fileAssets.js';
 import {z} from 'zod';
 import {requestFingerprint} from './posReplay.js';
 import {lineAmount,sumMoney} from '../lib/posMoney.js';
@@ -56,6 +57,7 @@ export async function receiveInventory(client,user,input){
         product=(await client.query('SELECT * FROM products WHERE organization_id=$1 AND barcode=$2 FOR UPDATE',[orgId,line.barcode])).rows[0];
         if(product?.archived)throw new HttpError(409,'Mahsulot arxivlangan. Avval tiklang','PRODUCT_ARCHIVED');
       }
+      if(Object.prototype.hasOwnProperty.call(line.metadata||{},'imageKey'))await assertFileAssetBinding(client,{user,id:line.metadata.imageKey,purpose:'product',existingId:product?.metadata?.imageKey});
       if(!product){
         if(!line.name)throw new HttpError(400,"Yangi mahsulot nomini kiriting","PRODUCT_NAME_REQUIRED");
         const generatedSku=line.sku||(line.barcode?`BC-${line.barcode}`:`SKU-${crypto.randomUUID().slice(0,8).toUpperCase()}`);
@@ -74,7 +76,7 @@ export async function receiveInventory(client,user,input){
         if(duplicate)throw new HttpError(409,`Serial/IMEI ${duplicate.serial} allaqachon mavjud`,`SERIAL_EXISTS`);
       }
       const balance=await lockBalance(client,{orgId,storeId:input.storeId,productId:product.id});
-      const before=Number(balance.quantity),incomingQty=Number(line.quantity),after=before+incomingQty,oldCost=Number(balance.avg_cost||product.cost_price||0),incomingCost=Number(line.costPrice||0);
+      const before=Number(balance.quantity),incomingQty=Number(line.quantity),after=before+incomingQty,oldCost=Number(balance.avg_cost??product.cost_price??0),incomingCost=Number(line.costPrice||0);
       const avg=after>0?((before*oldCost)+(incomingQty*incomingCost))/after:incomingCost;
       await client.query(`UPDATE inventory_balances SET quantity=$4,avg_cost=$5,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,input.storeId,product.id,after,avg]);
       await client.query(`UPDATE products SET cost_price=$3,sell_price=CASE WHEN $4>0 THEN $4 ELSE sell_price END,metadata=metadata||$5::jsonb,updated_at=now() WHERE id=$1 AND organization_id=$2`,[product.id,orgId,avg,Number(line.sellPrice||0),JSON.stringify({...line.metadata,supplierId:supplier?.id||undefined,supplier:supplier?.name||undefined})]);

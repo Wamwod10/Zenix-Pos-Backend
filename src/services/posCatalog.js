@@ -22,6 +22,7 @@ export async function readPosCatalog(client,user,query){
   FROM products p WHERE ${filters.join(' AND ')} ORDER BY p.created_at DESC,p.id DESC LIMIT $${params.length}
  ) SELECT p.*,
  jsonb_build_object(($2::uuid)::text,COALESCE((SELECT ib.quantity FROM inventory_balances ib WHERE ib.organization_id=$1 AND ib.store_id=$2 AND ib.product_id=p.id),0)) stock_by_store,
+ jsonb_build_object(($2::uuid)::text,COALESCE((SELECT ib.avg_cost FROM inventory_balances ib WHERE ib.organization_id=$1 AND ib.store_id=$2 AND ib.product_id=p.id),p.cost_price,0)) cost_by_store,
  (SELECT max(s.created_at) FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.organization_id=$1 AND s.store_id=$2 AND si.product_id=p.id) last_sale_at,
  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ps.id,'serial',ps.serial,'storeId',ps.store_id,'status',ps.status,'receivedAt',ps.created_at,'saleId',ps.sale_id,'transferId',ps.transfer_id) ORDER BY ps.created_at,ps.id) FROM product_serials ps WHERE ps.organization_id=$1 AND ps.store_id=$2 AND ps.product_id=p.id),'[]'::jsonb) serialized_units,
  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',ib.id,'storeId',ib.store_id,'receivedAt',ib.created_at,'invoiceNo',ib.reference_id,'batchNo',ib.batch_no,'manufacturedDate',ib.manufactured_date,'expiryDate',ib.expiry_date,'quantity',ib.received_quantity,'remaining',ib.remaining_quantity,'costPrice',ib.unit_cost) ORDER BY ib.created_at,ib.id) FROM inventory_batches ib WHERE ib.organization_id=$1 AND ib.store_id=$2 AND ib.product_id=p.id AND ib.remaining_quantity>0),'[]'::jsonb) stock_batches

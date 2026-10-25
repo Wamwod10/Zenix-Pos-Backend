@@ -39,9 +39,16 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "034_resource_entitlements.sql",
   "035_zenix_ai.sql",
   "040_financial_write_replays.sql",
+  "041_customer_repayment_cash_provenance.sql",
+  "042_customer_repayment_cash_consistency.sql",
+  "043_supplier_invoice_replay.sql",
+  "044_file_asset_purpose.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
+  'customer_repayment_shift_tenant_fk',
+  'customer_repayment_register_tenant_fk',
+  'shift_movement_customer_payment_tenant_fk',
   'financial_replays_actor_tenant_fk',
   'ai_requests_actor_tenant_fk',
   'pos_registers_store_tenant_fk','shifts_register_tenant_fk',

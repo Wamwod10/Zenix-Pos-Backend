@@ -112,6 +112,7 @@ test("customer payment derives the assigned store when a branch user omits store
   const originalQuery = pool.query;
   const originalConnect = pool.connect;
   const assignedStoreId = "00000000-0000-4000-8000-000000000003";
+  const shiftId = "00000000-0000-4000-8000-000000000007";
   let insertedStoreId = null;
   pool.query = async () => ({ rows: [{
     session_id: "session-3",
@@ -136,6 +137,10 @@ test("customer payment derives the assigned store when a branch user omits store
   const client = {
     async query(sql, params = []) {
       if(sql.includes('SELECT subscription_can_write'))return {rows:[{writable:true}]};
+      if(sql.includes('FROM organizations'))return {rows:[{id:'00000000-0000-4000-8000-000000000002',settings:{},license_status:'ACTIVE',store_limit:1,timezone:'UTC'}]};
+      if(sql.includes('FROM shifts'))return {rows:[{id:shiftId,organization_id:'00000000-0000-4000-8000-000000000002',store_id:assignedStoreId,cashier_id:'00000000-0000-4000-8000-000000000001',status:'open',register_id:'register',register_key:'key'}]};
+      if(sql.includes('FROM pos_registers'))return {rows:[{id:'register',active:true,register_key:'key'}]};
+      if(sql.includes('FROM stores')&&!sql.includes('SELECT id,name,active'))return {rows:[{id:assignedStoreId,active:true}]};
       if (/SELECT id,name,active FROM stores/.test(sql)) return { rows: [{ id: assignedStoreId, name: "Filial", active: true }] };
       if (/SELECT \* FROM customers/.test(sql)) return { rows: [{ id: "00000000-0000-4000-8000-000000000004", name: "Mijoz" }] };
       if (/SELECT COALESCE\(sum\(amount\),0\) balance/.test(sql)) return { rows: [{ balance: "20000" }] };
@@ -163,7 +168,7 @@ test("customer payment derives the assigned store when a branch user omits store
   const response = await fetch(`http://127.0.0.1:${port}/api/customers/00000000-0000-4000-8000-000000000004/payments`, {
     method: "POST",
     headers: { cookie: "zenix_session=test-session", "content-type": "application/json", origin: "http://localhost:5173", "x-zenix-client": "web" },
-    body: JSON.stringify({ amount: 10_000, paymentMethod: "cash" }),
+    body: JSON.stringify({ amount: 10_000, paymentMethod: "cash", shiftId, clientReference:"assigned-store-repayment" }),
   });
 
   assert.equal(response.status, 200);
