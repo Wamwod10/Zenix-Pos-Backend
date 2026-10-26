@@ -12,6 +12,10 @@ const url=process.env.MIGRATION_SEQUENCE_TEST_URL;
    const client=await pool.connect();try{const preflight=await finalMigrationPreflight(client);assert.equal(preflight.ok,true);console.log(`preflight ${version}: duplicates=${JSON.stringify(preflight.duplicateGroups)} unvalidated=${preflight.unvalidatedConstraints.map(c=>c.conname).join(',')}`)}finally{client.release()}
    const file=files.find(f=>Number(f.slice(0,3))===version);await fs.copyFile(path.join(source,file),path.join(directory,file));const result=await runMigrations({pool,directory});assert.deepEqual(result.applied,[file]);
   }
+  // Preserve the historical 025-030 rehearsal, then advance to today's catalog.
+  const remaining=files.filter(file=>Number(file.slice(0,3))>30);
+  for(const file of remaining)await fs.copyFile(path.join(source,file),path.join(directory,file));
+  assert.deepEqual((await runMigrations({pool,directory})).applied,remaining);
   assert.deepEqual(await checkMigrationStatus({db:pool,directory:source}),{tableMissing:false,missing:[],drifted:[],unverified:[],unknown:[]});await verifyDatabaseSchema(pool);assert.equal((await runMigrations({pool,directory})).applied.length,0);
  }finally{await pool.end();await fs.rm(directory,{recursive:true,force:true})}
 });

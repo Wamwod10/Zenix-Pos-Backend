@@ -21,6 +21,7 @@ const assertPermissionOverrides=(actor,input)=>{
 
 const assertRoleAdministration=(actor,input,target=null)=>{
   if(actor.appRole===ROLES.OWNER)return;
+  if(target?.app_role===ROLES.OWNER)throw new HttpError(403,"Egasi hisobini faqat tashkilot egasi boshqara oladi","OWNER_PROTECTED");
   if(input.appRole===ROLES.ADMIN)throw new HttpError(403,"ADMIN rolini faqat tashkilot egasi bera oladi","ROLE_ADMIN_REQUIRED");
   if(target?.app_role===ROLES.ADMIN)throw new HttpError(403,"ADMIN hisobini faqat tashkilot egasi boshqara oladi","ROLE_ADMIN_REQUIRED");
   if(target&&String(target.id)===String(actor.id)&&input.appRole&&input.appRole!==target.app_role)throw new HttpError(403,"O‘z rolingizni o‘zgartira olmaysiz","SELF_ROLE_CHANGE_FORBIDDEN");

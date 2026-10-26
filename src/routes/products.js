@@ -127,6 +127,48 @@ router.post("/", requirePermission("productWrite"), asyncRoute(async (req, res) 
   ok(res, { product }, 201);
 }));
 
+async function assertProductArchivable(client,orgId,current){
+    const [nonzero, serial, batch, transfer] = await Promise.all([
+      client.query("SELECT 1 FROM inventory_balances WHERE organization_id=$1 AND product_id=$2 AND quantity<>0 LIMIT 1", [orgId, current.id]),
+      client.query("SELECT 1 FROM product_serials WHERE organization_id=$1 AND product_id=$2 AND status='IN_STOCK' LIMIT 1", [orgId, current.id]),
+      client.query("SELECT 1 FROM inventory_batches WHERE organization_id=$1 AND product_id=$2 AND remaining_quantity>0 LIMIT 1", [orgId, current.id]),
+      client.query(`SELECT 1 FROM stock_transfer_items sti JOIN stock_transfers st ON st.id=sti.transfer_id
+        WHERE st.organization_id=$1 AND sti.product_id=$2 AND st.status IN ('pending','approved','dispatched') LIMIT 1`, [orgId, current.id]),
+    ]);
+    if (nonzero.rowCount || serial.rowCount || batch.rowCount) {
+      const stockLocations=(await client.query(`SELECT st.id AS store_id,st.name AS store_name,COALESCE(ib.quantity,0)::numeric AS quantity
+        FROM inventory_balances ib JOIN stores st ON st.id=ib.store_id AND st.organization_id=ib.organization_id
+        WHERE ib.organization_id=$1 AND ib.product_id=$2 AND ib.quantity<>0 ORDER BY st.name`,[orgId,current.id])).rows.map((row)=>({storeId:row.store_id,storeName:row.store_name,quantity:Number(row.quantity||0)}));
+      const summary=stockLocations.length?stockLocations.map((row)=>`${row.storeName}: ${row.quantity}`).join(" · "):"partiya yoki serial qoldig‘i mavjud";
+      throw new HttpError(409,`Mahsulotni arxivlashdan oldin qoldiqni nolga tushiring. ${summary}`,"PRODUCT_HAS_STOCK",{stockLocations});
+    }
+    if (transfer.rowCount) throw new HttpError(409, "Ochiq transferdagi mahsulotni arxivlab bo‘lmaydi", "PRODUCT_HAS_TRANSFER");
+}
+
+const bulkPatch=z.object({category:z.string().trim().max(120).optional(),archived:z.boolean().optional()}).strict().refine(value=>Object.keys(value).length>0,'Empty product patch');
+const bulkProductId=z.string().uuid().transform(id=>id.toLowerCase());
+const bulkSchema=z.union([
+  z.object({productIds:z.array(bulkProductId).min(1).max(10000),patch:bulkPatch}).strict(),
+  z.object({updates:z.array(z.object({productId:bulkProductId,patch:bulkPatch}).strict()).min(1).max(10000).refine(rows=>new Set(rows.map(row=>row.productId)).size===rows.length,'Duplicate product updates')}).strict(),
+]);
+router.post('/bulk',requirePermission('productWrite'),asyncRoute(async(req,res)=>{
+  const input=bulkSchema.parse(req.body),updates=new Map((input.updates||input.productIds.map(productId=>({productId,patch:input.patch}))).map(row=>[row.productId,row.patch])),ids=[...updates.keys()].sort(),orgId=req.user.organizationId;
+  const products=await withTransaction(async(client)=>{
+    const currentRows=(await client.query('SELECT * FROM products WHERE organization_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[orgId,ids])).rows;
+    if(currentRows.length!==ids.length)throw new HttpError(404,'Mahsulot topilmadi');
+    const results=[];
+    for(const current of currentRows){
+      const patch=updates.get(current.id),archived=patch.archived??current.archived;
+      if(archived&&!current.archived)await assertProductArchivable(client,orgId,current);
+      const row=(await client.query(`UPDATE products SET category=$3,archived=$4,archived_at=CASE WHEN $4 THEN COALESCE(archived_at,now()) ELSE NULL END,updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING *`,[current.id,orgId,patch.category??current.category,archived])).rows[0];
+      await writeAudit(client,{organizationId:orgId,userId:req.user.id,action:archived!==current.archived?(archived?'archive':'restore'):'update',entityType:'product',entityId:row.id,title:'Mahsulotlar yangilandi',description:row.name,before:productAuditSnapshot(current),after:productAuditSnapshot(row)});
+      results.push(row);
+    }
+    return results;
+  });
+  ok(res,{products});
+}));
+
 router.patch("/:id", requirePermission("productWrite"), asyncRoute(async (req, res) => {
   const input = productSchema.partial().parse(req.body);
   const product = await withTransaction(async (client) => {
@@ -198,21 +240,7 @@ router.post("/:id/archive", requirePermission("productWrite"), asyncRoute(async 
     if (!current) throw new HttpError(404, "Mahsulot topilmadi");
     if (current.archived) return current;
 
-    const [nonzero, serial, batch, transfer] = await Promise.all([
-      client.query("SELECT 1 FROM inventory_balances WHERE organization_id=$1 AND product_id=$2 AND quantity<>0 LIMIT 1", [orgId, current.id]),
-      client.query("SELECT 1 FROM product_serials WHERE organization_id=$1 AND product_id=$2 AND status='IN_STOCK' LIMIT 1", [orgId, current.id]),
-      client.query("SELECT 1 FROM inventory_batches WHERE organization_id=$1 AND product_id=$2 AND remaining_quantity>0 LIMIT 1", [orgId, current.id]),
-      client.query(`SELECT 1 FROM stock_transfer_items sti JOIN stock_transfers st ON st.id=sti.transfer_id
-        WHERE st.organization_id=$1 AND sti.product_id=$2 AND st.status IN ('pending','approved','dispatched') LIMIT 1`, [orgId, current.id]),
-    ]);
-    if (nonzero.rowCount || serial.rowCount || batch.rowCount) {
-      const stockLocations=(await client.query(`SELECT st.id AS store_id,st.name AS store_name,COALESCE(ib.quantity,0)::numeric AS quantity
-        FROM inventory_balances ib JOIN stores st ON st.id=ib.store_id AND st.organization_id=ib.organization_id
-        WHERE ib.organization_id=$1 AND ib.product_id=$2 AND ib.quantity<>0 ORDER BY st.name`,[orgId,current.id])).rows.map((row)=>({storeId:row.store_id,storeName:row.store_name,quantity:Number(row.quantity||0)}));
-      const summary=stockLocations.length?stockLocations.map((row)=>`${row.storeName}: ${row.quantity}`).join(" · "):"partiya yoki serial qoldig‘i mavjud";
-      throw new HttpError(409,`Mahsulotni arxivlashdan oldin qoldiqni nolga tushiring. ${summary}`,"PRODUCT_HAS_STOCK",{stockLocations});
-    }
-    if (transfer.rowCount) throw new HttpError(409, "Ochiq transferdagi mahsulotni arxivlab bo‘lmaydi", "PRODUCT_HAS_TRANSFER");
+    await assertProductArchivable(client,orgId,current);
 
     const row = (await client.query("UPDATE products SET archived=true,archived_at=now(),updated_at=now() WHERE id=$1 AND organization_id=$2 RETURNING *", [current.id, orgId])).rows[0];
     await writeAudit(client, {
