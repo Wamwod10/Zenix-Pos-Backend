@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { likeTerm } from './platformDirectory.js';
 
+// Debt due dates follow the tenant calendar, not the database session timezone.
+export const customerTodaySQL="(now() AT TIME ZONE COALESCE((SELECT NULLIF(timezone,'') FROM organizations WHERE id=$1),'Asia/Tashkent'))::date";
+
 const querySchema=z.object({
   q:z.string().trim().max(100).default(''),
   filter:z.enum(['all','debtors','overdue','vip','regular','active','inactive']).default('all'),
@@ -21,7 +24,7 @@ export const customerFinancialJoin=`
   LEFT JOIN (SELECT cl.customer_id,sum(GREATEST(cl.amount-COALESCE(a.allocated,0),0)) overdue
     FROM customer_ledger cl LEFT JOIN (SELECT credit_ledger_id,sum(amount) allocated
       FROM customer_payment_allocations WHERE organization_id=$1 GROUP BY credit_ledger_id) a ON a.credit_ledger_id=cl.id
-    WHERE cl.organization_id=$1 AND cl.entry_type='CREDIT_SALE' AND cl.due_date<CURRENT_DATE GROUP BY cl.customer_id) od ON od.customer_id=c.id
+    WHERE cl.organization_id=$1 AND cl.entry_type='CREDIT_SALE' AND cl.due_date<${customerTodaySQL} GROUP BY cl.customer_id) od ON od.customer_id=c.id
   LEFT JOIN (SELECT customer_id,sum(GREATEST(total-returned_amount,0)) total_purchases,count(*) sale_count,max(created_at) last_purchase_at
     FROM sales WHERE organization_id=$1 AND customer_id IS NOT NULL GROUP BY customer_id) s ON s.customer_id=c.id
   LEFT JOIN (SELECT customer_id,sum(points) loyalty_points FROM customer_loyalty_ledger
@@ -44,7 +47,7 @@ export function buildCustomerPageQuery(input){
     text:`WITH allocations AS MATERIALIZED (SELECT credit_ledger_id,sum(amount) allocated FROM customer_payment_allocations WHERE organization_id=$1 GROUP BY credit_ledger_id),
     events AS (
       SELECT customer_id,amount balance,0::numeric overdue,0::numeric total_purchases,0::bigint sale_count,NULL::timestamptz last_purchase_at,0::numeric loyalty_points FROM customer_ledger WHERE organization_id=$1
-      UNION ALL SELECT cl.customer_id,0,GREATEST(cl.amount-COALESCE(a.allocated,0),0),0,0,NULL,0 FROM customer_ledger cl LEFT JOIN allocations a ON a.credit_ledger_id=cl.id WHERE cl.organization_id=$1 AND cl.entry_type='CREDIT_SALE' AND cl.due_date<CURRENT_DATE
+      UNION ALL SELECT cl.customer_id,0,GREATEST(cl.amount-COALESCE(a.allocated,0),0),0,0,NULL,0 FROM customer_ledger cl LEFT JOIN allocations a ON a.credit_ledger_id=cl.id WHERE cl.organization_id=$1 AND cl.entry_type='CREDIT_SALE' AND cl.due_date<${customerTodaySQL}
       UNION ALL SELECT customer_id,0,0,GREATEST(total-returned_amount,0),1,created_at,0 FROM sales WHERE organization_id=$1 AND customer_id IS NOT NULL
       UNION ALL SELECT customer_id,0,0,0,0,NULL,points FROM customer_loyalty_ledger WHERE organization_id=$1
     ), finance AS MATERIALIZED (SELECT customer_id,sum(balance) balance,sum(overdue) overdue,sum(total_purchases) total_purchases,sum(sale_count) sale_count,max(last_purchase_at) last_purchase_at,sum(loyalty_points) loyalty_points FROM events GROUP BY customer_id),

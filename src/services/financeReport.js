@@ -1,3 +1,4 @@
+import {scopeFinanceExpenses} from './financeReportAccess.js';
 import { databaseDateISO } from '../lib/businessDate.js';
 import { HttpError } from '../lib/http.js';
 
@@ -23,6 +24,7 @@ export function reportOptions(input={}) {
 // allocations are separate cashflow; shift movements must not be deducted again.
 export async function financeReport(db,input) {
   const {organizationId,storeId=null,sellerId=null,from,to,limit,offset}=reportOptions(input);
+  const expenseAccess=input.expenseAccess||{details:true,aggregate:true};
   const args=[organizationId,storeId,sellerId,from,to,input.search||null,input.paymentMethod||null,input.shiftId||null];
   const filters=`AND ($6::text IS NULL OR s.id::text ILIKE '%'||$6||'%' OR s.sale_number ILIKE '%'||$6||'%' OR u.name ILIKE '%'||$6||'%' OR s.customer::text ILIKE '%'||$6||'%' OR EXISTS(SELECT 1 FROM sale_items si WHERE si.sale_id=s.id AND si.product_name ILIKE '%'||$6||'%')) AND ($7::text IS NULL OR ($7='split' AND (SELECT count(DISTINCT method) FROM sale_payments WHERE sale_id=s.id AND amount>0)>1) OR ($7<>'split' AND EXISTS(SELECT 1 FROM sale_payments WHERE sale_id=s.id AND method=$7 AND amount>0) AND (SELECT count(DISTINCT method) FROM sale_payments WHERE sale_id=s.id AND amount>0)=1)) AND ($8::uuid IS NULL OR s.shift_id=$8)`;
   const base=`FROM sales s LEFT JOIN users u ON u.id=s.seller_id LEFT JOIN stores st ON st.id=s.store_id WHERE s.organization_id=$1 AND ($2::uuid IS NULL OR s.store_id=$2) AND ($3::uuid IS NULL OR s.seller_id=$3) ${filters}`;
@@ -37,13 +39,13 @@ export async function financeReport(db,input) {
   for(const row of payment)if(Object.hasOwn(cashflow,row.method))cashflow[row.method]+=n(row.amount);
   const cost=(await db.query(`SELECT COALESCE(sum((SELECT sum(si.quantity*COALESCE((SELECT sm.unit_cost FROM stock_movements sm WHERE sm.organization_id=s.organization_id AND sm.reference_type='sale' AND sm.reference_id=s.id::text AND sm.product_id=si.product_id ORDER BY sm.created_at LIMIT 1),(si.metadata->>'unitCost')::numeric,0)) FROM sale_items si WHERE si.sale_id=s.id)),0) amount ${base} ${salePeriod}`,args)).rows[0];
   const refundCost=(await db.query(`SELECT COALESCE(sum(r.quantity*COALESCE((r.metadata->>'unitCost')::numeric,(SELECT sm.unit_cost FROM stock_movements sm WHERE sm.organization_id=r.organization_id AND sm.reference_type='sale' AND sm.reference_id=r.sale_id::text AND sm.product_id=r.product_id ORDER BY sm.created_at LIMIT 1),0)),0) amount ${retBase}`,args)).rows[0];
-  const expenseDate=`(e.created_at AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent') - (COALESCE(NULLIF(o.settings#>>'{workspaceSettings,businessDay,startTime}','')::time,'00:00'::time)-'00:00'::time))::date`;
+  const expenseDate=`(e.created_at AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent') - (COALESCE(NULLIF(o.settings#>>ARRAY['workspaceSettings','storeOverrides',e.store_id::text,'businessDay','startTime'],''),NULLIF(o.settings#>>'{workspaceSettings,businessDay,startTime}',''),'00:00')::time-'00:00'::time))::date`;
   const expenseBase=`FROM expenses e JOIN organizations o ON o.id=e.organization_id WHERE e.organization_id=$1 AND ($2::uuid IS NULL OR e.store_id=$2) AND ($3::date IS NULL OR ${expenseDate}>=$3) AND ($4::date IS NULL OR ${expenseDate}<=$4)`;
   const expenseArgs=[organizationId,storeId,from,to];
-  const expenseTotals=(await db.query(`SELECT count(*) count,COALESCE(sum(e.amount),0) amount ${expenseBase}`,expenseArgs)).rows[0];
-  const expenses=(await db.query(`SELECT e.*,${expenseDate}::text date_iso ${expenseBase} ORDER BY e.created_at DESC,e.id DESC LIMIT $5 OFFSET $6`,[...expenseArgs,limit,offset])).rows.map(row=>({...row.metadata,id:row.id,storeId:row.store_id,title:row.title,category:row.category,amount:n(row.amount),dateISO:row.date_iso,businessDateISO:row.date_iso,createdAt:row.created_at,paymentMethod:row.payment_method}));
+  const expenseTotals=expenseAccess.aggregate?(await db.query(`SELECT count(*) count,COALESCE(sum(e.amount),0) amount ${expenseBase}`,expenseArgs)).rows[0]:{};
+  const expenses=expenseAccess.details?(await db.query(`SELECT e.*,${expenseDate}::text date_iso ${expenseBase} ORDER BY e.created_at DESC,e.id DESC LIMIT $5 OFFSET $6`,[...expenseArgs,limit,offset])).rows.map(row=>({...row.metadata,id:row.id,storeId:row.store_id,title:row.title,category:row.category,amount:n(row.amount),dateISO:row.date_iso,businessDateISO:row.date_iso,createdAt:row.created_at,paymentMethod:row.payment_method})):[];
   const netRevenue=n(totals.gross)-n(retTotals.refunds),grossProfit=netRevenue-n(cost.amount)+n(refundCost.amount);
-  return {aggregate:{saleCount:n(totals.sale_count),returnCount:n(retTotals.return_count),grossRevenue:n(totals.gross),refundAmount:n(retTotals.refunds),netRevenue,grossProfit,expenseTotal:n(expenseTotals.amount),netProfit:grossProfit-n(expenseTotals.amount),lifetimeReturnedAmount:n(totals.lifetime_returns),lifetimeNetRevenue:n(totals.gross)-n(totals.lifetime_returns),cashflow},sales,returns,expenses,pagination:{limit,offset,total:n(totals.sale_count),returnTotal:n(retTotals.return_count),expenseTotal:n(expenseTotals.count),hasMore:offset+limit<Math.max(n(totals.sale_count),n(retTotals.return_count),n(expenseTotals.count))}};
+  return scopeFinanceExpenses({aggregate:{saleCount:n(totals.sale_count),returnCount:n(retTotals.return_count),grossRevenue:n(totals.gross),refundAmount:n(retTotals.refunds),netRevenue,grossProfit,expenseTotal:n(expenseTotals.amount),netProfit:grossProfit-n(expenseTotals.amount),lifetimeReturnedAmount:n(totals.lifetime_returns),lifetimeNetRevenue:n(totals.gross)-n(totals.lifetime_returns),cashflow},sales,returns,expenses,pagination:{limit,offset,total:n(totals.sale_count),returnTotal:n(retTotals.return_count),expenseTotal:n(expenseTotals.count),hasMore:offset+limit<Math.max(n(totals.sale_count),n(retTotals.return_count),n(expenseTotals.count))}},expenseAccess);
 }
 
 function mapSale(row){

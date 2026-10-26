@@ -1,3 +1,4 @@
+import {createSupplierInvoice} from "../services/supplierInvoices.js";
 import { Router } from "express";
 import { z } from "zod";
 import { withTransaction } from "../db/tx.js";
@@ -13,7 +14,7 @@ import {sumMoney} from '../lib/posMoney.js';
 import {financialWriteReplay,lockFinancialOrganization} from '../services/financialWriteReplay.js';
 
 const router=Router();
-const moneyValue=z.coerce.number().min(0).max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
+const moneyValue=z.coerce.number().min(0).max(999999999999.99).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
 const supplierSchema=z.object({name:z.string().trim().min(2).max(180),phone:z.string().trim().max(40).default(""),contactName:z.string().trim().max(160).default(""),telegram:z.string().trim().max(160).default(""),metadata:z.record(z.string(),z.any()).default({})});
 
@@ -73,24 +74,10 @@ router.post("/:id/restore",requirePermission("supplierWrite"),asyncRoute(async(r
 }));
 
 router.post("/:id/invoices",requirePermission("supplierWrite"),asyncRoute(async(req,res)=>{
-  const input=z.object({storeId:z.string().uuid().optional().nullable(),invoiceNo:z.string().trim().max(120).default(""),total:moneyValue.refine(value=>value>0),paidAmount:moneyValue.default(0),paymentMethod:z.enum(["cash","card","transfer","purchase"]).default("purchase"),dueDate:z.string().optional().nullable()}).refine((v)=>v.paidAmount<=v.total,{message:"To‘langan summa jami summadan oshmasin"}).parse(req.body);
+  const input=z.object({clientReference:z.string().trim().min(1).max(120),storeId:z.string().uuid().optional().nullable(),invoiceNo:z.string().trim().max(120).default(""),total:moneyValue.refine(value=>value>0),paidAmount:moneyValue.default(0),paymentMethod:z.enum(["cash","card","transfer","purchase"]).default("purchase"),dueDate:z.string().date().optional().nullable()}).refine((v)=>v.paidAmount<=v.total,{message:"To‘langan summa jami summadan oshmasin"}).parse(req.body);
   const effectiveStoreId=scopedStoreId(req.user,input.storeId);
   if(effectiveStoreId)assertStoreScope(req.user,effectiveStoreId);
-  const invoice=await withTransaction(async(client)=>{
-    await lockFinancialOrganization(client,req.user.organizationId);
-    let store=null;if(effectiveStoreId)store=await assertOrganizationStore(client,req.user.organizationId,effectiveStoreId);
-    const supplier=(await client.query("SELECT * FROM suppliers WHERE id=$1 AND organization_id=$2 AND archived=false FOR UPDATE",[req.params.id,req.user.organizationId])).rows[0];
-    if(!supplier)throw new HttpError(404,"Ta’minotchi topilmadi");
-    const row=(await client.query(`INSERT INTO supplier_invoices(organization_id,supplier_id,store_id,invoice_no,total,paid_amount,due_date) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,[req.user.organizationId,supplier.id,effectiveStoreId||null,input.invoiceNo,input.total,input.paidAmount,input.dueDate||null])).rows[0];
-    if(Number(input.paidAmount)>0){
-      await client.query(`INSERT INTO supplier_payments(organization_id,supplier_id,invoice_id,store_id,amount,method,note,created_by)
-        VALUES($1,$2,$3,$4,$5,$6,'Nakladnoy yaratilishidagi boshlang‘ich to‘lov',$7)`,[req.user.organizationId,supplier.id,row.id,effectiveStoreId||null,input.paidAmount,input.paymentMethod,req.user.id]);
-    }
-    await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,storeId:effectiveStoreId||null,action:"create",entityType:"supplier_invoice",entityId:row.id,title:"Ta’minotchi nakladnoyi qo‘shildi",description:`${supplier.name} · ${input.total}`});
-    const debt=Number(input.total)-Number(input.paidAmount);
-    if(debt>0)await enqueueNotification(client,{organizationId:req.user.organizationId,storeId:effectiveStoreId||null,eventType:"supplier.debt",eventId:row.id,payload:{supplierName:supplier.name,invoiceNo:input.invoiceNo||"",debt,dueDate:input.dueDate||"",storeName:store?.name||""}});
-    return row;
-  });
+  const invoice=await withTransaction(client=>createSupplierInvoice(client,{user:req.user,supplierId:z.string().uuid().parse(req.params.id),input,storeId:effectiveStoreId}));
   ok(res,{invoice},201);
 }));
 

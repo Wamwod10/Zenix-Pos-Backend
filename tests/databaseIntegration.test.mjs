@@ -184,7 +184,7 @@ integration('queued store authorization observes committed access changes before
       ["license_status='SUSPENDED'",'ACCOUNT_SUSPENDED'],
       ["settings=jsonb_build_object('billingHold',true)",'BILLING_HOLD'],
       ["license_status='PAYMENT_REQUIRED'",'PAYMENT_REQUIRED'],
-      ["expiry_date=CURRENT_DATE-1",'LICENSE_EXPIRED'],
+      ["expiry_date=(now() AT TIME ZONE 'UTC')::date-1",'LICENSE_EXPIRED'],
       ["store_limit=1",'STORE_ENTITLEMENT_EXPIRED'],
       ["settings=jsonb_build_object('storeTradingHolds',jsonb_build_object($2::text,jsonb_build_object('reason','Explicit hold')))",'STORE_TRADING_HOLD'],
       ["timezone='Asia/Tashkent',expiry_date='2026-10-08'",'LICENSE_EXPIRED',new Date('2026-10-08T20:00:00Z')],

@@ -19,5 +19,5 @@ export function decodePosCatalogCursor(value){
 export const mapBootstrapProduct=(row)=>({
  ...(row.metadata||{}),id:row.id,name:row.name,sku:row.sku,barcode:row.barcode,category:row.category,brand:row.brand,unit:row.unit,
  costPrice:Number(row.cost_price||0),sellPrice:Number(row.sell_price||0),price:Number(row.sell_price||0),wholesalePrice:Number(row.wholesale_price||0),minStock:Number(row.min_stock||0),archived:row.archived,
- stockByStore:row.stock_by_store||{},lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},
+ stockByStore:row.stock_by_store||{},costByStore:row.cost_by_store||{},lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},
 });

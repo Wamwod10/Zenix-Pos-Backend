@@ -295,9 +295,9 @@ test('daily reports keep returns on the business day the refund was processed',(
 test('manual supplier invoices persist their initial payment in the payment ledger',()=>{
   const suppliers=read('src/routes/suppliers.js');
   assert.match(suppliers,/paidAmount:moneyValue\.default\(0\)/);
-  assert.match(suppliers,/const moneyValue=z\.coerce\.number\(\)\.min\(0\)\.max\(9000000000000\)\.refine/);
-  assert.match(suppliers,/INSERT INTO supplier_payments\(organization_id,supplier_id,invoice_id,store_id,amount,method,note,created_by\)/);
-  assert.match(suppliers,/Nakladnoy yaratilishidagi boshlang‘ich to‘lov/);
+  assert.match(suppliers,/const moneyValue=z\.coerce\.number\(\)\.min\(0\)\.max\(999999999999\.99\)\.refine/);
+  assert.match(read('src/services/supplierInvoices.js'),/INSERT INTO supplier_payments\(organization_id,supplier_id,invoice_id,store_id,amount,method,note,created_by\)/);
+  assert.match(read('src/services/supplierInvoices.js'),/Initial invoice settlement/);
 });
 
 test('POS payment rules reject duplicate methods and disabled split payments on the server',()=>{
