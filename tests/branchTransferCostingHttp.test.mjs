@@ -1,0 +1,84 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {assertSafeTestDatabaseUrl} from '../scripts/assertTestDatabase.js';
+
+const url=process.env.TEST_DATABASE_URL;
+test('transfer carries dispatch cost into destination weighted average', {skip:!url,timeout:30000}, async()=>{
+ assertSafeTestDatabaseUrl(url);assert.equal(process.env.NODE_ENV,'test');assert.equal(process.env.DATABASE_URL,url);
+ const [{app},{pool},{sha256}]=await Promise.all([import('../src/app.js'),import('../src/db/pool.js'),import('../src/lib/crypto.js')]);
+ const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+ const post=async(path,token,body)=>{const r=await fetch(`http://127.0.0.1:${server.address().port}/api/inventory${path}`,{method:'POST',headers:{origin:'http://localhost:5173','x-zenix-client':'web','content-type':'application/json',cookie:`zenix_session=${token}`},body:JSON.stringify(body)});return {status:r.status,...await r.json()}};
+ try{
+  const org=(await pool.query("INSERT INTO organizations(name,license_status,expiry_date,store_limit) VALUES('Cost regression','ACTIVE',CURRENT_DATE+30,2) RETURNING id")).rows[0].id;
+  const stores=(await pool.query("INSERT INTO stores(organization_id,name) VALUES($1,'Source'),($1,'Destination') RETURNING id",[org])).rows.map(row=>row.id);
+  const user=(await pool.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Owner',$2,'unused','OWNER') RETURNING id",[org,randomUUID()])).rows[0].id;
+  const token=randomUUID();await pool.query("INSERT INTO auth_sessions(user_id,token_hash,expires_at,last_seen_at) VALUES($1,$2,now()+interval '1 day',now())",[user,sha256(token)]);
+  const product=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Cost item','dona') RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$4,10,20000),($1,$3,$4,10,5000)',[org,...stores,product]);
+  const sent=await post('/transfers',token,{fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,items:[{productId:product,quantity:5}]});assert.equal(sent.status,201,JSON.stringify(sent));
+  const transfer=sent.data.transfer.id;
+  const out=(await pool.query("SELECT unit_cost FROM stock_movements WHERE organization_id=$1 AND reference_id=$2 AND type='transfer_out'",[org,transfer])).rows[0];assert.equal(Number(out.unit_cost),20000);
+  await pool.query('UPDATE inventory_balances SET avg_cost=30000 WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],product]);
+  const received=await post(`/transfers/${transfer}/receive`,token,{items:[]});assert.equal(received.status,200,JSON.stringify(received));
+  const balance=(await pool.query('SELECT quantity,avg_cost,quantity*avg_cost AS value FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],product])).rows[0];
+  assert.equal(Number(balance.quantity),15);assert.equal(Number(balance.avg_cost),10000);assert.equal(Number(balance.value),150000);
+  const incoming=(await pool.query("SELECT unit_cost FROM stock_movements WHERE organization_id=$1 AND reference_id=$2 AND type='transfer_in'",[org,transfer])).rows[0];assert.equal(Number(incoming.unit_cost),20000);
+  const request=async(path,body)=>{const r=await fetch(`http://127.0.0.1:${server.address().port}${path}`,{method:body?'POST':'GET',headers:{origin:'http://localhost:5173','x-zenix-client':'web','content-type':'application/json',cookie:`zenix_session=${token}`},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,...await r.json()}};
+  const shift=(await pool.query("INSERT INTO shifts(organization_id,store_id,cashier_id,opening_cash,register_key) VALUES($1,$2,$3,0,$4) RETURNING id",[org,stores[1],user,`store:${stores[1]}`])).rows[0].id;
+  const sale=await request('/api/sales',{storeId:stores[1],shiftId:shift,clientReference:randomUUID(),items:[{productId:product,quantity:5,unitPrice:30000}],payments:[{method:'card',amount:150000}]});assert.equal(sale.status,201,JSON.stringify(sale));
+  const saleId=sale.data.sale.id;
+  assert.equal(Number((await pool.query("SELECT unit_cost FROM stock_movements WHERE organization_id=$1 AND reference_id=$2 AND type='sale'",[org,saleId])).rows[0].unit_cost),10000);
+  await pool.query('UPDATE inventory_balances SET avg_cost=5000 WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],product]);
+  const refund=await request(`/api/sales/${saleId}/returns`,{productId:product,quantity:5,reason:'Cost regression',refundMethod:'original',clientReference:randomUUID()});assert.equal(refund.status,201,JSON.stringify(refund));
+  const returned=(await pool.query('SELECT quantity,avg_cost FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],product])).rows[0];assert.equal(Number(returned.quantity),15);assert.equal(Number(returned.avg_cost),6666.67);
+  const returnCost=(await pool.query("SELECT unit_cost FROM stock_movements WHERE organization_id=$1 AND reference_id=$2 AND type='return'",[org,refund.data.return.id])).rows[0];assert.equal(Number(returnCost.unit_cost),10000);
+  const report=await request(`/api/finance?storeId=${stores[1]}`);assert.equal(report.status,200,JSON.stringify(report));assert.equal(report.data.aggregate.netRevenue,0);assert.equal(report.data.aggregate.grossProfit,0);assert.equal(report.data.aggregate.netProfit,0);
+  const reconciled=(await pool.query(`SELECT s.total::numeric AS gross,
+    (SELECT sum(r.amount) FROM sale_returns r WHERE r.organization_id=s.organization_id AND r.sale_id=s.id) AS refunded,
+    (SELECT sum(-m.quantity*m.unit_cost) FROM stock_movements m WHERE m.organization_id=s.organization_id AND m.reference_type='sale' AND m.reference_id=s.id::text) AS cogs,
+    (SELECT sum(m.quantity*m.unit_cost) FROM stock_movements m JOIN sale_returns r ON r.id::text=m.reference_id WHERE r.organization_id=s.organization_id AND r.sale_id=s.id AND m.type='return') AS reversed_cogs
+    FROM sales s WHERE s.organization_id=$1 AND s.id=$2`,[org,saleId])).rows[0];
+  assert.deepEqual(Object.fromEntries(Object.entries(reconciled).map(([k,v])=>[k,Number(v)])),{gross:150000,refunded:150000,cogs:50000,reversed_cogs:50000});
+  const unknownSale=await request('/api/sales',{storeId:stores[1],shiftId:shift,clientReference:randomUUID(),items:[{productId:product,quantity:1,unitPrice:30000}],payments:[{method:'card',amount:30000}]});assert.equal(unknownSale.status,201);
+  await pool.query("DELETE FROM stock_movements WHERE organization_id=$1 AND reference_type='sale' AND reference_id=$2",[org,unknownSale.data.sale.id]);
+  await pool.query("UPDATE sale_items SET metadata=metadata-'unitCost' WHERE sale_id=$1",[unknownSale.data.sale.id]);
+  const missingCost=await request(`/api/sales/${unknownSale.data.sale.id}/returns`,{productId:product,quantity:1,reason:'Missing cost fixture',refundMethod:'original',clientReference:randomUUID()});assert.equal(missingCost.status,409);assert.equal(missingCost.error.code,'SALE_COST_UNKNOWN');
+  assert.equal((await post(`/transfers/${transfer}/receive`,token,{items:[]})).status,409);
+  await assert.rejects(pool.query('UPDATE stock_transfer_items SET unit_cost_snapshot=99 WHERE transfer_id=$1',[transfer]),/immutable/);
+  const snapshot=(await pool.query('SELECT unit_cost_snapshot FROM stock_transfer_items WHERE transfer_id=$1',[transfer])).rows[0];assert.equal(Number(snapshot.unit_cost_snapshot),20000);
+  const free=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Free item','dona') RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,5,0)',[org,stores[0],free]);
+  const freeTransfer=await post('/transfers',token,{fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,items:[{productId:free,quantity:2}]});assert.equal(freeTransfer.status,201);
+  const freeId=freeTransfer.data.transfer.id;
+  const over=await post(`/transfers/${freeId}/receive`,token,{items:[{productId:free,receivedQuantity:3}],differenceReason:'over'});assert.equal(over.status,409);
+  const noReason=await post(`/transfers/${freeId}/receive`,token,{items:[{productId:free,receivedQuantity:1}]});assert.equal(noReason.status,400);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1 AND reference_id=$2 AND type='transfer_in'",[org,freeId])).rows[0].n,0);
+  assert.equal((await pool.query('SELECT status FROM stock_transfers WHERE id=$1',[freeId])).rows[0].status,'dispatched');
+  const partial=await post(`/transfers/${freeId}/receive`,token,{items:[{productId:free,receivedQuantity:1}],differenceReason:'short'});assert.equal(partial.status,200,JSON.stringify(partial));
+  const freeBalance=(await pool.query('SELECT quantity,avg_cost FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],free])).rows[0];assert.equal(Number(freeBalance.quantity),1);assert.equal(Number(freeBalance.avg_cost),0);
+  const cancelled=await post('/transfers',token,{fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,items:[{productId:product,quantity:2}]});assert.equal(cancelled.status,201);
+  await pool.query('UPDATE inventory_balances SET avg_cost=5000 WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],product]);
+  assert.equal((await post(`/transfers/${cancelled.data.transfer.id}/cancel`,token,{})).status,200);
+  const restored=(await pool.query('SELECT quantity,avg_cost FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],product])).rows[0];assert.equal(Number(restored.quantity),5);assert.equal(Number(restored.avg_cost),15000);
+  assert.equal((await post(`/transfers/${cancelled.data.transfer.id}/cancel`,token,{})).status,409);
+  const legacy=(await pool.query("INSERT INTO stock_transfers(organization_id,from_store_id,to_store_id,status,created_by) VALUES($1,$2,$3,'dispatched',$4) RETURNING id",[org,...stores,user])).rows[0].id;
+  await pool.query('INSERT INTO stock_transfer_items(transfer_id,product_id,sent_quantity) VALUES($1,$2,1)',[legacy,free]);
+  const unknown=await post(`/transfers/${legacy}/receive`,token,{items:[]});assert.equal(unknown.status,409);assert.equal(unknown.error.code,'TRANSFER_COST_UNKNOWN');
+  assert.equal((await post(`/transfers/${legacy}/cancel`,token,{})).error.code,'TRANSFER_COST_UNKNOWN');
+  const parallelProduct=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Parallel item','dona') RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,10,12.34)',[org,stores[0],parallelProduct]);
+  const intent={fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,items:[{productId:parallelProduct,quantity:2}]};
+  const sentParallel=await Promise.all([post('/transfers',token,intent),post('/transfers',token,intent)]);assert.deepEqual(sentParallel.map(x=>x.status),[201,201]);
+  const race=await Promise.all([post(`/transfers/${sentParallel[0].data.transfer.id}/receive`,token,{items:[]}),post(`/transfers/${sentParallel[0].data.transfer.id}/receive`,token,{items:[]})]);assert.deepEqual(race.map(x=>x.status).sort(),[200,409]);
+  assert.equal((await post(`/transfers/${sentParallel[1].data.transfer.id}/receive`,token,{items:[]})).status,200);
+  const parallelBalance=(await pool.query('SELECT quantity,avg_cost FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],parallelProduct])).rows[0];assert.equal(Number(parallelBalance.quantity),4);assert.equal(Number(parallelBalance.avg_cost),12.34);
+  const insufficient=await post('/transfers',token,{...intent,items:[{productId:parallelProduct,quantity:999}]});assert.equal(insufficient.status,409);
+  const pending=await post('/transfers',token,{...intent,needsApproval:true});assert.equal(pending.status,201);
+  assert.equal((await post(`/transfers/${pending.data.transfer.id}/cancel`,token,{})).status,200);
+  assert.equal((await pool.query('SELECT unit_cost_snapshot FROM stock_transfer_items WHERE transfer_id=$1',[pending.data.transfer.id])).rows[0].unit_cost_snapshot,null);
+  const dispatch=await post('/transfers',token,{...intent,needsApproval:true});assert.equal(dispatch.status,201);
+  assert.equal((await post(`/transfers/${dispatch.data.transfer.id}/dispatch`,token,{})).status,200);
+  assert.equal((await post(`/transfers/${dispatch.data.transfer.id}/dispatch`,token,{})).status,409);
+ }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await pool.end()}
+});
