@@ -106,5 +106,17 @@ test('transfer carries dispatch cost into destination weighted average', {skip:!
   assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],broken])).rows[0].quantity),2);
   await pool.query('UPDATE inventory_balances SET avg_cost=0 WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],broken]);
   assert.equal((await post('/transfers',token,brokenIntent)).status,201);
+  const precision=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Precision item','dona') RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,2,$4)',[org,stores[0],precision,'9999999999999999.99']);
+  const precisionTransfer=await post('/transfers',token,{...intent,clientReference:randomUUID(),items:[{productId:precision,quantity:1}]});assert.equal(precisionTransfer.status,201);
+  const exact=(await pool.query('SELECT unit_cost_snapshot::text cost FROM stock_transfer_items WHERE transfer_id=$1',[precisionTransfer.data.transfer.id])).rows[0];assert.equal(exact.cost,'9999999999999999.99');
+  assert.equal((await post(`/transfers/${precisionTransfer.data.transfer.id}/receive`,token,{items:[]})).status,200);
+  assert.equal((await pool.query('SELECT avg_cost::text cost FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],precision])).rows[0].cost,'9999999999999999.99');
+  const overflow=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Overflow item','dona') RETURNING id",[org])).rows[0].id;
+  await pool.query("INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$4,2,1),($1,$3,$4,999999999999999.999,1)",[org,...stores,overflow]);
+  const overflowTransfer=await post('/transfers',token,{...intent,clientReference:randomUUID(),items:[{productId:overflow,quantity:1}]});assert.equal(overflowTransfer.status,201);
+  assert.equal((await post(`/transfers/${overflowTransfer.data.transfer.id}/receive`,token,{items:[]})).status,500);
+  assert.equal((await pool.query('SELECT quantity::text q FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],overflow])).rows[0].q,'999999999999999.999');
+  assert.equal((await pool.query('SELECT status FROM stock_transfers WHERE id=$1',[overflowTransfer.data.transfer.id])).rows[0].status,'dispatched');
  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await pool.end()}
 });
