@@ -43,7 +43,7 @@ jobs:
           DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
           FRONTEND_ORIGIN: http://localhost:5173
       - name: POS refunds, replay, stock, credit and tenant isolation
-        run: node --test --test-concurrency=1 tests/posProHttp.test.mjs tests/posProFinalQa.test.mjs tests/warehouseMigrationAudit.test.mjs tests/posHttpIntegration.test.mjs tests/financialWritesHttp.test.mjs tests/transferReceiptHttp.test.mjs tests/financeReport.test.mjs tests/prompt3Performance.test.mjs tests/saasDatabaseIntegration.test.mjs tests/saleTrackingSelections.test.mjs
+        run: node --test --test-concurrency=1 tests/posProHttp.test.mjs tests/posProFinalQa.test.mjs tests/warehouseMigrationAudit.test.mjs tests/posHttpIntegration.test.mjs tests/financialWritesHttp.test.mjs tests/transferReceiptHttp.test.mjs tests/branchTransferCostingHttp.test.mjs tests/financeReport.test.mjs tests/prompt3Performance.test.mjs tests/saasDatabaseIntegration.test.mjs tests/saleTrackingSelections.test.mjs
         env:
           TEST_DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
           DATABASE_URL: postgresql://zenix_ci:ci_only_password@127.0.0.1:5432/zenix_ci_test
