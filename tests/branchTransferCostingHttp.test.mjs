@@ -80,5 +80,31 @@ test('transfer carries dispatch cost into destination weighted average', {skip:!
   const dispatch=await post('/transfers',token,{...intent,needsApproval:true});assert.equal(dispatch.status,201);
   assert.equal((await post(`/transfers/${dispatch.data.transfer.id}/dispatch`,token,{})).status,200);
   assert.equal((await post(`/transfers/${dispatch.data.transfer.id}/dispatch`,token,{})).status,409);
+  const reference=`transfer-${randomUUID()}`;
+  const retryIntent={...intent,clientReference:reference,items:[{productId:parallelProduct,quantity:1}]};
+  const retries=await Promise.all([post('/transfers',token,retryIntent),post('/transfers',token,retryIntent)]);
+  assert.deepEqual(retries.map(x=>x.status),[201,201]);assert.equal(retries[0].data.transfer.id,retries[1].data.transfer.id);
+  const changed=await post('/transfers',token,{...retryIntent,items:[{productId:parallelProduct,quantity:2}]});assert.equal(changed.status,409);assert.equal(changed.error.code,'IDEMPOTENCY_CONFLICT');
+  const reconciledTransfer=await request(`/api/inventory/transfer-reconciliation?storeId=${stores[0]}&clientReference=${reference}`);assert.equal(reconciledTransfer.status,200);assert.equal(reconciledTransfer.data.transfer.id,retries[0].data.transfer.id);
+  const another=(await pool.query("INSERT INTO users(organization_id,name,username,password_hash,app_role) VALUES($1,'Other owner',$2,'unused','OWNER') RETURNING id",[org,randomUUID()])).rows[0].id;
+  const anotherToken=randomUUID();await pool.query("INSERT INTO auth_sessions(user_id,token_hash,expires_at,last_seen_at) VALUES($1,$2,now()+interval '1 day',now())",[another,sha256(anotherToken)]);
+  const actorConflict=await post('/transfers',anotherToken,retryIntent);assert.equal(actorConflict.status,409);assert.equal(actorConflict.error.code,'IDEMPOTENCY_CONFLICT');
+  assert.equal(Number((await pool.query("SELECT count(*) FROM financial_write_replays WHERE organization_id=$1 AND operation='transfer_create' AND client_reference=$2",[org,reference])).rows[0].count),1);
+  const pair=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Race A','dona'),($1,'Race B','dona') RETURNING id",[org])).rows.map(r=>r.id);
+  for(const id of pair)await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$4,10,10),($1,$3,$4,10,20)',[org,...stores,id]);
+  const a={fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,clientReference:randomUUID(),items:pair.map(productId=>({productId,quantity:2}))};
+  const b={fromStoreId:stores[1],toStoreId:stores[0],needsApproval:false,clientReference:randomUUID(),items:[...pair].reverse().map(productId=>({productId,quantity:2}))};
+  const outgoing=await Promise.all([post('/transfers',token,a),post('/transfers',token,b)]);assert.deepEqual(outgoing.map(r=>r.status),[201,201]);
+  const arrivals=await Promise.all(outgoing.map(r=>post(`/transfers/${r.data.transfer.id}/receive`,token,{items:[]})));assert.deepEqual(arrivals.map(r=>r.status),[200,200]);
+  const actual=(await pool.query('SELECT store_id,product_id,quantity,avg_cost FROM inventory_balances WHERE organization_id=$1 AND product_id=ANY($2::uuid[]) ORDER BY product_id,store_id',[org,pair])).rows;
+  for(const row of actual){assert.equal(Number(row.quantity),10);assert.equal(Number(row.avg_cost),row.store_id===stores[0]?12:18)}
+  const broken=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Rollback item','dona') RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,2,-1)',[org,stores[0],broken]);
+  const brokenRef=randomUUID(),brokenIntent={...intent,clientReference:brokenRef,items:[{productId:broken,quantity:1}]};
+  assert.equal((await post('/transfers',token,brokenIntent)).status,400);
+  assert.equal(Number((await pool.query("SELECT count(*) FROM financial_write_replays WHERE organization_id=$1 AND operation='transfer_create' AND client_reference=$2",[org,brokenRef])).rows[0].count),0);
+  assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],broken])).rows[0].quantity),2);
+  await pool.query('UPDATE inventory_balances SET avg_cost=0 WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],broken]);
+  assert.equal((await post('/transfers',token,brokenIntent)).status,201);
  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await pool.end()}
 });

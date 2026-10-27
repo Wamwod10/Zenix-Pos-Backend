@@ -11,10 +11,11 @@ import { writeAudit } from "../services/audit.js";
 import { enqueueNotification, enqueueStockLevelNotification } from "../services/notifications.js";
 import { hasPermission } from "../lib/permissions.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
+import {financialWriteReplay} from '../services/financialWriteReplay.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
-router.use((req,res,next)=>req.method==='GET'&&req.path==='/receipt-reconciliation'?next():requireActiveLicense(req,res,next));
+router.use((req,res,next)=>req.method==='GET'&&['/receipt-reconciliation','/transfer-reconciliation'].includes(req.path)?next():requireActiveLicense(req,res,next));
 const qty=z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin');
 const uniqueProductArray=(schema,message="Bir mahsulot faqat bitta qatorda bo‘lishi mumkin")=>z.array(schema).min(1).superRefine((items,ctx)=>{
   const seen=new Set();
@@ -227,6 +228,13 @@ router.get('/receipt-reconciliation',requirePermission('inventoryAdjust'),asyncR
   const row=(await pool.query("SELECT metadata FROM audit_logs WHERE organization_id=$1 AND store_id=$2 AND user_id=$3 AND action='receive' AND entity_type='inventory' AND metadata->>'clientReference'=$4",[req.user.organizationId,input.storeId,req.user.id,input.clientReference])).rows[0];
   ok(res,row?.metadata?.response?{state:'confirmed',receipt:row.metadata.response}:{state:'unknown'});
 }));
+router.get('/transfer-reconciliation',requirePermission('transferCreate'),asyncRoute(async(req,res)=>{
+  const input=z.object({storeId:z.string().uuid(),clientReference:z.string().trim().min(1).max(120)}).strict().parse(req.query);
+  assertStoreScope(req.user,input.storeId);
+  await assertOrganizationStore(pool,req.user.organizationId,input.storeId);
+  const row=(await pool.query(`SELECT result FROM financial_write_replays WHERE organization_id=$1 AND operation='transfer_create' AND client_reference=$2 AND user_id=$3 AND result->>'from_store_id'=$4`,[req.user.organizationId,input.clientReference,req.user.id,input.storeId])).rows[0];
+  ok(res,row?{state:'confirmed',transfer:row.result}:{state:'unknown'});
+}));
 router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req,res)=>{
   const input=inventoryReceiptSchema.parse(req.body);
   assertStoreScope(req.user,input.storeId);
@@ -257,9 +265,9 @@ router.post("/adjust",requirePermission("inventoryAdjust"),asyncRoute(async(req,
 }));
 
 router.post("/transfers",requirePermission("transferCreate"),asyncRoute(async(req,res)=>{
-  const input=z.object({fromStoreId:z.string().uuid(),toStoreId:z.string().uuid(),needsApproval:z.boolean().default(true),items:uniqueProductArray(z.object({productId:z.string().uuid(),quantity:qty}))}).refine((v)=>v.fromStoreId!==v.toStoreId,{message:"Filiallar bir xil bo‘lishi mumkin emas"}).parse(req.body);
+  const input=z.object({fromStoreId:z.string().uuid(),toStoreId:z.string().uuid(),needsApproval:z.boolean().default(true),clientReference:z.string().trim().max(120).default(''),items:uniqueProductArray(z.object({productId:z.string().uuid(),quantity:qty}))}).refine((v)=>v.fromStoreId!==v.toStoreId,{message:"Filiallar bir xil bo‘lishi mumkin emas"}).parse(req.body);
   assertStoreScope(req.user,input.fromStoreId);
-  const result=await withTransaction(async(client)=>{
+  const result=await withTransaction(async(client)=>financialWriteReplay(client,{organizationId:req.user.organizationId,userId:req.user.id,operation:'transfer_create',clientReference:input.clientReference,input},async()=>{
     const orgId=req.user.organizationId;
     await assertOrganizationStore(client,orgId,input.fromStoreId);await assertOrganizationStore(client,orgId,input.toStoreId);
     for(const line of [...input.items].sort((a,b)=>a.productId.localeCompare(b.productId))){
@@ -275,7 +283,7 @@ router.post("/transfers",requirePermission("transferCreate"),asyncRoute(async(re
     }
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.fromStoreId,action:"create",entityType:"transfer",entityId:transfer.id,title:input.needsApproval?"Transfer tasdiqlashga yuborildi":"Transfer jo‘natildi",description:`${input.items.length} ta mahsulot`});
     return transfer;
-  });
+  }));
   ok(res,{transfer:result},201);
 }));
 

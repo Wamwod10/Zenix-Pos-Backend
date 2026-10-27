@@ -44,6 +44,7 @@ export const REQUIRED_MIGRATIONS = Object.freeze([
   "043_supplier_invoice_replay.sql",
   "044_file_asset_purpose.sql",
   "045_transfer_cost_snapshot.sql",
+  "046_transfer_create_replay.sql",
 ]);
 
 export const REQUIRED_TENANT_CONSTRAINTS = Object.freeze([
