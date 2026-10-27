@@ -1,3 +1,4 @@
+import {HttpError} from './http.js';
 // Decimal inputs are evaluated as integer ratios; only final cents are rounded.
 const ratio=value=>{
  const match=String(value).match(/^([+-]?)(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i);
@@ -10,7 +11,7 @@ const ratio=value=>{
 };
 const round=(n,d)=>n<0n?-((-n+d/2n)/d):(n+d/2n)/d;
 const cents=value=>{const r=ratio(value);return round(r.numerator*100n,r.denominator)};
-const fromCents=value=>{if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<-BigInt(Number.MAX_SAFE_INTEGER))throw new RangeError('Money out of range');return Number(value)/100};
+const fromCents=value=>{if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<-BigInt(Number.MAX_SAFE_INTEGER))throw new HttpError(409,'Summa ruxsat etilgan aniq hisoblash chegarasidan oshdi.','FINANCIAL_NUMERIC_LIMIT');return Number(value)/100};
 export const roundMoney=value=>fromCents(cents(value));
 export const sumMoney=values=>fromCents(values.reduce((sum,value)=>sum+cents(value),0n));
 export const lineAmount=(quantity,unitPrice,discount=0)=>{
@@ -27,4 +28,28 @@ export const refundAmount=(lineTotal,soldQuantity,returnedQuantity,quantity,alre
  const next=round(total*endN*sold.denominator,endD*sold.numerator);
  if(next<previous||previous>total)throw new RangeError('Historical refund exceeds allocation');
  return fromCents(next-previous);
+};
+
+const precisionError=()=>new HttpError(409,'Moliyaviy qiymat aniq ko‘rsatiladigan chegaradan oshdi. Hisobni tekshiring.','FINANCIAL_PRECISION_REVIEW_REQUIRED');
+// Keep the existing numeric API shape only when its decimal JSON value is exact.
+// Large values must be reviewed instead of silently losing cents in Number().
+export const exactDecimalNumber=value=>{
+ try{
+  const r=ratio(value??0),n=Number(value??0),back=ratio(n);
+  const absolute=r.numerator<0n?-r.numerator:r.numerator;
+  if(!Number.isFinite(n)||absolute*100n>BigInt(Number.MAX_SAFE_INTEGER)*r.denominator||r.numerator*back.denominator!==back.numerator*r.denominator)throw precisionError();
+  return n;
+ }catch{throw precisionError()}
+};
+export const sumExactDecimals=values=>{
+ const ratios=values.map(value=>ratio(value??0));
+ const denominator=ratios.reduce((max,r)=>r.denominator>max?r.denominator:max,1n);
+ const numerator=ratios.reduce((sum,r)=>sum+r.numerator*(denominator/r.denominator),0n);
+ const negative=numerator<0n,absolute=negative?-numerator:numerator;
+ const digits=denominator.toString().length-1;
+ const decimal=digits?`${absolute/denominator}.${String(absolute%denominator).padStart(digits,'0')}`:String(absolute);
+ return exactDecimalNumber(`${negative?'-':''}${decimal}`);
+};
+export const isMoneyInput=value=>{
+ try{const r=ratio(value);return r.numerator>=0n&&r.numerator<=9000000000000n*r.denominator&&(r.numerator*100n)%r.denominator===0n}catch{return false}
 };

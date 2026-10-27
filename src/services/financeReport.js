@@ -2,10 +2,11 @@ import {scopeFinanceExpenses} from './financeReportAccess.js';
 import { databaseDateISO } from '../lib/businessDate.js';
 import { HttpError } from '../lib/http.js';
 
-const n=value=>Number(value||0);
-const saleJSON=`jsonb_build_object('id',s.id,'saleNumber',s.sale_number,'storeId',s.store_id,'shiftId',s.shift_id,'sellerId',s.seller_id,'sellerAccountId',s.seller_id,'sellerName',u.name,'seller',u.name,'store',st.name,'total',s.total,'saleTotal',s.total,'subtotal',s.subtotal,'discountTotal',s.discount_amount,'returnedAmount',s.returned_amount,'returnedTotal',s.returned_amount,'businessDateISO',s.business_date::text,'dateISO',s.business_date::text,'createdAt',s.created_at,'customer',s.customer,'status',s.status,
-  'items',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',si.id,'productId',si.product_id,'name',si.product_name,'category',p.category,'quantity',si.quantity,'qty',si.quantity,'unitPrice',si.unit_price,'finalPrice',si.unit_price*(1-si.discount_percent/100),'discountPercent',si.discount_percent,'lineTotal',si.line_total,'metadata',si.metadata,'unitCost',COALESCE((SELECT sm.unit_cost FROM stock_movements sm WHERE sm.organization_id=s.organization_id AND sm.reference_type='sale' AND sm.reference_id=s.id::text AND sm.product_id=si.product_id ORDER BY sm.created_at LIMIT 1),(si.metadata->>'unitCost')::numeric,0),'returnedQty',COALESCE((SELECT sum(r.quantity) FROM sale_returns r WHERE r.organization_id=s.organization_id AND r.sale_id=s.id AND r.product_id=si.product_id),0))) FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=s.id),'[]'::jsonb),
-  'payments',COALESCE((SELECT jsonb_agg(jsonb_build_object('method',sp.method,'amount',sp.amount)) FROM sale_payments sp WHERE sp.sale_id=s.id),'[]'::jsonb))`;
+import {exactDecimalNumber,sumExactDecimals} from '../lib/posMoney.js';
+const n=value=>exactDecimalNumber(value??0);
+const saleJSON=`jsonb_build_object('id',s.id,'saleNumber',s.sale_number,'storeId',s.store_id,'shiftId',s.shift_id,'sellerId',s.seller_id,'sellerAccountId',s.seller_id,'sellerName',u.name,'seller',u.name,'store',st.name,'total',s.total::text,'saleTotal',s.total::text,'subtotal',s.subtotal::text,'discountTotal',s.discount_amount::text,'returnedAmount',s.returned_amount::text,'returnedTotal',s.returned_amount::text,'businessDateISO',s.business_date::text,'dateISO',s.business_date::text,'createdAt',s.created_at,'customer',s.customer,'status',s.status,
+  'items',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',si.id,'productId',si.product_id,'name',si.product_name,'category',p.category,'quantity',si.quantity::text,'qty',si.quantity::text,'unitPrice',si.unit_price::text,'finalPrice',(si.unit_price*(1-si.discount_percent/100))::text,'discountPercent',si.discount_percent::text,'lineTotal',si.line_total::text,'metadata',si.metadata,'unitCost',COALESCE((SELECT sm.unit_cost FROM stock_movements sm WHERE sm.organization_id=s.organization_id AND sm.reference_type='sale' AND sm.reference_id=s.id::text AND sm.product_id=si.product_id ORDER BY sm.created_at LIMIT 1),(si.metadata->>'unitCost')::numeric,0)::text,'returnedQty',COALESCE((SELECT sum(r.quantity) FROM sale_returns r WHERE r.organization_id=s.organization_id AND r.sale_id=s.id AND r.product_id=si.product_id),0)::text)) FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=s.id),'[]'::jsonb),
+  'payments',COALESCE((SELECT jsonb_agg(jsonb_build_object('method',sp.method,'amount',sp.amount::text)) FROM sale_payments sp WHERE sp.sale_id=s.id),'[]'::jsonb))`;
 
 export function reportOptions(input={}) {
   const result={...input};
@@ -36,7 +37,7 @@ export async function financeReport(db,input) {
   const retTotals=(await db.query(`SELECT count(*) return_count,COALESCE(sum(r.amount),0) refunds,COALESCE(sum((r.metadata->'refundBreakdown'->>'cash')::numeric),0) cash,COALESCE(sum((r.metadata->'refundBreakdown'->>'card')::numeric),0) card,COALESCE(sum((r.metadata->'refundBreakdown'->>'transfer')::numeric),0) transfer ${retBase}`,args)).rows[0];
   const payment=(await db.query(`SELECT sp.method,sum(sp.amount) amount FROM sale_payments sp JOIN sales s ON s.id=sp.sale_id LEFT JOIN users u ON u.id=s.seller_id WHERE s.organization_id=$1 AND ($2::uuid IS NULL OR s.store_id=$2) AND ($3::uuid IS NULL OR s.seller_id=$3) ${salePeriod} ${filters} GROUP BY sp.method`,args)).rows;
   const cashflow={cash:0-n(retTotals.cash),card:0-n(retTotals.card),transfer:0-n(retTotals.transfer)};
-  for(const row of payment)if(Object.hasOwn(cashflow,row.method))cashflow[row.method]+=n(row.amount);
+  for(const row of payment)if(Object.hasOwn(cashflow,row.method))cashflow[row.method]=sumExactDecimals([cashflow[row.method],row.amount]);
   const cost=(await db.query(`SELECT COALESCE(sum((SELECT sum(si.quantity*COALESCE((SELECT sm.unit_cost FROM stock_movements sm WHERE sm.organization_id=s.organization_id AND sm.reference_type='sale' AND sm.reference_id=s.id::text AND sm.product_id=si.product_id ORDER BY sm.created_at LIMIT 1),(si.metadata->>'unitCost')::numeric,0)) FROM sale_items si WHERE si.sale_id=s.id)),0) amount ${base} ${salePeriod}`,args)).rows[0];
   const refundCost=(await db.query(`SELECT COALESCE(sum(r.quantity*COALESCE((r.metadata->>'unitCost')::numeric,(SELECT sm.unit_cost FROM stock_movements sm WHERE sm.organization_id=r.organization_id AND sm.reference_type='sale' AND sm.reference_id=r.sale_id::text AND sm.product_id=r.product_id ORDER BY sm.created_at LIMIT 1),0)),0) amount ${retBase}`,args)).rows[0];
   const expenseDate=`(e.created_at AT TIME ZONE COALESCE(NULLIF(o.timezone,''),'Asia/Tashkent') - (COALESCE(NULLIF(o.settings#>>ARRAY['workspaceSettings','storeOverrides',e.store_id::text,'businessDay','startTime'],''),NULLIF(o.settings#>>'{workspaceSettings,businessDay,startTime}',''),'00:00')::time-'00:00'::time))::date`;
@@ -44,13 +45,17 @@ export async function financeReport(db,input) {
   const expenseArgs=[organizationId,storeId,from,to];
   const expenseTotals=expenseAccess.aggregate?(await db.query(`SELECT count(*) count,COALESCE(sum(e.amount),0) amount ${expenseBase}`,expenseArgs)).rows[0]:{};
   const expenses=expenseAccess.details?(await db.query(`SELECT e.*,${expenseDate}::text date_iso ${expenseBase} ORDER BY e.created_at DESC,e.id DESC LIMIT $5 OFFSET $6`,[...expenseArgs,limit,offset])).rows.map(row=>({...row.metadata,id:row.id,storeId:row.store_id,title:row.title,category:row.category,amount:n(row.amount),dateISO:row.date_iso,businessDateISO:row.date_iso,createdAt:row.created_at,paymentMethod:row.payment_method})):[];
-  const netRevenue=n(totals.gross)-n(retTotals.refunds),grossProfit=netRevenue-n(cost.amount)+n(refundCost.amount);
-  return scopeFinanceExpenses({aggregate:{saleCount:n(totals.sale_count),returnCount:n(retTotals.return_count),grossRevenue:n(totals.gross),refundAmount:n(retTotals.refunds),netRevenue,grossProfit,expenseTotal:n(expenseTotals.amount),netProfit:grossProfit-n(expenseTotals.amount),lifetimeReturnedAmount:n(totals.lifetime_returns),lifetimeNetRevenue:n(totals.gross)-n(totals.lifetime_returns),cashflow},sales,returns,expenses,pagination:{limit,offset,total:n(totals.sale_count),returnTotal:n(retTotals.return_count),expenseTotal:n(expenseTotals.count),hasMore:offset+limit<Math.max(n(totals.sale_count),n(retTotals.return_count),n(expenseTotals.count))}},expenseAccess);
+  const netRevenue=sumExactDecimals([totals.gross,`-${retTotals.refunds??0}`]),grossProfit=sumExactDecimals([totals.gross,`-${retTotals.refunds??0}`,`-${cost.amount??0}`,refundCost.amount]);
+  return scopeFinanceExpenses({aggregate:{saleCount:n(totals.sale_count),returnCount:n(retTotals.return_count),grossRevenue:n(totals.gross),refundAmount:n(retTotals.refunds),netRevenue,grossProfit,expenseTotal:n(expenseTotals.amount),netProfit:sumExactDecimals([grossProfit,`-${expenseTotals.amount||0}`]),lifetimeReturnedAmount:n(totals.lifetime_returns),lifetimeNetRevenue:sumExactDecimals([totals.gross,`-${totals.lifetime_returns??0}`]),cashflow},sales,returns,expenses,pagination:{limit,offset,total:n(totals.sale_count),returnTotal:n(retTotals.return_count),expenseTotal:n(expenseTotals.count),hasMore:offset+limit<Math.max(n(totals.sale_count),n(retTotals.return_count),n(expenseTotals.count))}},expenseAccess);
 }
 
 function mapSale(row){
+  row={...row};
+  for(const key of ['total','saleTotal','subtotal','discountTotal','returnedAmount','returnedTotal'])if(row[key]!=null)row[key]=n(row[key]);
+  row.items=(row.items||[]).map(item=>{const result={...item};for(const key of ['quantity','qty','unitPrice','finalPrice','discountPercent','lineTotal','unitCost','returnedQty'])if(result[key]!=null)result[key]=n(result[key]);return result});
+  row.payments=(row.payments||[]).map(p=>({...p,amount:n(p.amount)}));
   const mix={cash:0,card:0,transfer:0,credit:0};
-  for(const p of row.payments||[])mix[p.method]=(mix[p.method]||0)+n(p.amount);
+  for(const p of row.payments||[])mix[p.method]=sumExactDecimals([mix[p.method]||0,p.amount]);
   const methods=Object.keys(mix).filter(method=>mix[method]>0);
   return {...row,paymentBreakdown:methods.length>1?mix:null,paymentMethod:methods.length>1?'split':methods[0]||'cash'};
 }

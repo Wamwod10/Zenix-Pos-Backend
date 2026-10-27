@@ -49,7 +49,7 @@ router.get("/",requireAuth,requireOrganization,asyncRoute(async(req,res)=>{
     core?Promise.resolve({rows:[]}):pool.query(`SELECT p.*,COALESCE(ib.stock_by_store,'{}'::jsonb) AS stock_by_store,COALESCE(ib.cost_by_store,'{}'::jsonb) AS cost_by_store,ls.last_sale_at
       FROM products p
       LEFT JOIN (
-        SELECT product_id,jsonb_object_agg(store_id,quantity) AS stock_by_store,jsonb_object_agg(store_id,avg_cost) AS cost_by_store
+        SELECT product_id,jsonb_object_agg(store_id,quantity::text) AS stock_by_store,jsonb_object_agg(store_id,avg_cost::text) AS cost_by_store
         FROM inventory_balances WHERE organization_id=$1 ${branchStoreId?"AND store_id=$2":""}
         GROUP BY product_id
       ) ib ON ib.product_id=p.id

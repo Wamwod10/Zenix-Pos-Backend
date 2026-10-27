@@ -12,6 +12,7 @@ import { enqueueNotification, enqueueStockLevelNotification } from "../services/
 import { hasPermission } from "../lib/permissions.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 import {financialWriteReplay} from '../services/financialWriteReplay.js';
+import {assertInventoryAddition} from '../lib/inventoryNumeric.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -314,6 +315,7 @@ router.post("/transfers/:id/receive",requirePermission("transferReceive"),asyncR
       if(received>sent)throw new HttpError(409,'Transferda ortiqcha qabul qilish tekshiruv talab qiladi','TRANSFER_OVER_RECEIPT');
       const tracking=line.metadata?.tracking||{};
       const balance=await lockBalance(client,{orgId,storeId:transfer.to_store_id,productId:line.product_id});const before=Number(balance.quantity),after=before+received;
+      assertInventoryAddition(balance,received,line.unit_cost_snapshot);
       if(before<0)throw new HttpError(409,'Manfiy qoldiq tannarxini tekshirish kerak','NEGATIVE_COST_BALANCE');
       const receivedTracking=await receiveTransferTracking(client,{orgId,transferId:transfer.id,fromStoreId:transfer.from_store_id,toStoreId:transfer.to_store_id,productId:line.product_id,sentQuantity:sent,receivedQuantity:received,tracking});
       const updatedBalance=(await client.query(`UPDATE inventory_balances SET avg_cost=CASE WHEN $4::numeric=0 THEN avg_cost ELSE ((quantity*avg_cost)+($4::numeric*$5::numeric))/(quantity+$4::numeric) END,quantity=quantity+$4::numeric,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 RETURNING quantity`,[orgId,transfer.to_store_id,line.product_id,received,line.unit_cost_snapshot])).rows[0];
@@ -343,6 +345,7 @@ router.post("/transfers/:id/cancel",requirePermission("transferCancel"),asyncRou
       for(const line of items){
         if(line.unit_cost_snapshot==null)throw new HttpError(409,'Transfer tannarxi mavjud emas; tekshirish talab etiladi','TRANSFER_COST_UNKNOWN');
         const balance=await lockBalance(client,{orgId,storeId:transfer.from_store_id,productId:line.product_id});const before=Number(balance.quantity),after=before+Number(line.sent_quantity);
+        assertInventoryAddition(balance,line.sent_quantity,line.unit_cost_snapshot);
         if(before<0)throw new HttpError(409,'Manfiy qoldiq tannarxini tekshirish kerak','NEGATIVE_COST_BALANCE');
         await restoreTransferTrackingToSource(client,{orgId,transferId:transfer.id,storeId:transfer.from_store_id,productId:line.product_id,tracking:line.metadata?.tracking||{}});
         const updatedBalance=(await client.query(`UPDATE inventory_balances SET avg_cost=((quantity*avg_cost)+($4::numeric*$5::numeric))/(quantity+$4::numeric),quantity=quantity+$4::numeric,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 RETURNING quantity`,[orgId,transfer.from_store_id,line.product_id,line.sent_quantity,line.unit_cost_snapshot])).rows[0];

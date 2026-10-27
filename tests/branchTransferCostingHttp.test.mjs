@@ -115,8 +115,32 @@ test('transfer carries dispatch cost into destination weighted average', {skip:!
   const overflow=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Overflow item','dona') RETURNING id",[org])).rows[0].id;
   await pool.query("INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$4,2,1),($1,$3,$4,999999999999999.999,1)",[org,...stores,overflow]);
   const overflowTransfer=await post('/transfers',token,{...intent,clientReference:randomUUID(),items:[{productId:overflow,quantity:1}]});assert.equal(overflowTransfer.status,201);
-  assert.equal((await post(`/transfers/${overflowTransfer.data.transfer.id}/receive`,token,{items:[]})).status,500);
+  const overflowBefore=(await pool.query('SELECT row_to_json(b) data FROM inventory_balances b WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],overflow])).rows[0].data;
+  const movementCount=(await pool.query('SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1 AND product_id=$2',[org,overflow])).rows[0].n;
+  const replayCount=(await pool.query('SELECT count(*)::int n FROM financial_write_replays WHERE organization_id=$1',[org])).rows[0].n;
+  const overflowResult=await post(`/transfers/${overflowTransfer.data.transfer.id}/receive`,token,{items:[]});assert.equal(overflowResult.status,409);assert.equal(overflowResult.error.code,'INVENTORY_NUMERIC_LIMIT');
+  assert.deepEqual((await pool.query('SELECT row_to_json(b) data FROM inventory_balances b WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],overflow])).rows[0].data,overflowBefore);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1 AND product_id=$2',[org,overflow])).rows[0].n,movementCount);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM financial_write_replays WHERE organization_id=$1',[org])).rows[0].n,replayCount);
   assert.equal((await pool.query('SELECT quantity::text q FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[1],overflow])).rows[0].q,'999999999999999.999');
   assert.equal((await pool.query('SELECT status FROM stock_transfers WHERE id=$1',[overflowTransfer.data.transfer.id])).rows[0].status,'dispatched');
+  const sourceBefore=(await pool.query('SELECT row_to_json(b) data FROM inventory_balances b WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],overflow])).rows[0].data;
+  const receiptOverflow=await request('/api/inventory/receive',{storeId:stores[0],clientReference:randomUUID(),lines:[{productId:overflow,quantity:999999999,costPrice:9000000000000}]});
+  assert.equal(receiptOverflow.status,409,JSON.stringify(receiptOverflow));assert.equal(receiptOverflow.error.code,'FINANCIAL_NUMERIC_LIMIT');
+  assert.deepEqual((await pool.query('SELECT row_to_json(b) data FROM inventory_balances b WHERE organization_id=$1 AND store_id=$2 AND product_id=$3',[org,stores[0],overflow])).rows[0].data,sourceBefore);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1 AND product_id=$2',[org,overflow])).rows[0].n,movementCount);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM financial_write_replays WHERE organization_id=$1',[org])).rows[0].n,replayCount);
+  const unsafeCatalog=await request('/api/bootstrap');assert.equal(unsafeCatalog.status,409);assert.equal(unsafeCatalog.error.code,'FINANCIAL_PRECISION_REVIEW_REQUIRED');
+  const concurrentProduct=(await pool.query("INSERT INTO products(organization_id,name,unit,sell_price) VALUES($1,'Concurrent sale return','dona',1000) RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,10,50)',[org,stores[1],concurrentProduct]);
+  const saleIntent=quantity=>({storeId:stores[1],shiftId:shift,clientReference:randomUUID(),items:[{productId:concurrentProduct,quantity,unitPrice:1000}],payments:[{method:'card',amount:quantity*1000}]});
+  const original=await request('/api/sales',saleIntent(2));assert.equal(original.status,201);
+  const simultaneous=await Promise.all([request('/api/sales',saleIntent(1)),request(`/api/sales/${original.data.sale.id}/returns`,{productId:concurrentProduct,quantity:1,reason:'Concurrent partial return',refundMethod:'original',clientReference:randomUUID()})]);
+  assert.deepEqual(simultaneous.map(r=>r.status),[201,201]);
+  const invariant=(await pool.query(`SELECT b.quantity::text quantity,b.avg_cost::text cost,(b.quantity*b.avg_cost)::text valuation,
+    (SELECT sum(-quantity*unit_cost) FROM stock_movements WHERE organization_id=$1 AND product_id=$3 AND type='sale')::text cogs,
+    (SELECT sum(quantity*unit_cost) FROM stock_movements WHERE organization_id=$1 AND product_id=$3 AND type='return')::text reversed
+    FROM inventory_balances b WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[org,stores[1],concurrentProduct])).rows[0];
+  assert.deepEqual(invariant,{quantity:'8.000',cost:'50.00',valuation:'400.00000',cogs:'150.00000',reversed:'50.00000'});
  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await pool.end()}
 });

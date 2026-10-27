@@ -23,10 +23,10 @@ const productSchema = z.object({
   category: z.string().trim().max(120).default(""),
   brand: z.string().trim().max(120).default(""),
   unit: z.string().trim().max(40).default("dona"),
-  costPrice: z.coerce.number().min(0).default(0),
-  sellPrice: z.coerce.number().min(0).default(0),
-  wholesalePrice: z.coerce.number().min(0).default(0),
-  minStock: z.coerce.number().min(0).default(0),
+  costPrice: z.coerce.number().min(0).max(9000000000000).default(0),
+  sellPrice: z.coerce.number().min(0).max(9000000000000).default(0),
+  wholesalePrice: z.coerce.number().min(0).max(9000000000000).default(0),
+  minStock: z.coerce.number().min(0).max(999999999).default(0),
   metadata: z.record(z.string(), z.any()).default({}).transform(validateProductMetadata),
 });
 
