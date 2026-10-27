@@ -12,6 +12,8 @@ Starting HEAD PR CI was successful: [backend 40543850576](https://github.com/Wam
 
 Expected destination quantity overflow previously propagated PostgreSQL 22003 as HTTP 500. A locked-balance decimal/BigInt guard now rejects out-of-range addition with HTTP 409 `INVENTORY_NUMERIC_LIMIT` before mutation. It covers transfer receipt, dispatched cancellation restoration, inventory receipt and sale return. Negative balances remain rejected. Unknown cost and actual zero remain distinct.
 
+The final boundary regression also reproduces silent cent loss at 90071992547409.91 when dividing an otherwise safe integer-cent value by 100. Conversion now builds the exact decimal string first and validates its JSON numeric round-trip; this value is rejected with FINANCIAL_PRECISION_REVIEW_REQUIRED instead of being rounded silently. Ordinary monetary rounding remains unchanged.
+
 Financial integer-cent overflow now returns 409 `FINANCIAL_NUMERIC_LIMIT`. Invalid input prices are bounded consistently with existing payment limits (9,000,000,000,000), and quantity inputs retain their existing lower operational cap. This is an API input/representation limit, not a new accounting rounding policy. Generic/unrelated PostgreSQL 22003 errors still return 500; no global error-code remapping was added.
 
 Catalog and finance NUMERIC values remain text inside PostgreSQL JSON until checked conversion to the existing numeric API shape. Unsafe decimal conversion returns 409 `FINANCIAL_PRECISION_REVIEW_REQUIRED`; it does not silently lose cents. Finance subtraction/addition uses decimal integer ratios, retaining fractional COGS rather than rounding every component to cents. Receipt weighted average is calculated in PostgreSQL NUMERIC using the locked balance; the existing positive-cost receipt input contract and its original assertions remain intact. Existing zero-cost stock can still transfer, sell and return without reference-price substitution. Creating a free receipt remains a pre-existing limitation and is not represented as fixed.
@@ -26,7 +28,7 @@ Local environment: Windows, Node 24.11.1, npm 11.6.2; PostgreSQL localhost:55447
 
 | Gate | Result | Evidence / boundary |
 |---|---|---|
-| Backend npm test | PASS | 823 pass / 17 pre-existing environment-gated skips on local disposable PG; skips are not passes |
+| Backend npm test | PASS | 676 pass / 66 existing environment-gated skips after final cent-conversion fix; prior full local disposable-PG suite 823 pass / 17 skips; skips are not passes |
 | Backend check | PASS | 166 JS modules |
 | db:verify | PASS | 46 migrations, 64 tables, 190 indexes |
 | migrate:status | PASS | No pending, missing, drifted or unknown migrations |

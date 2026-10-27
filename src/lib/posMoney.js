@@ -11,7 +11,7 @@ const ratio=value=>{
 };
 const round=(n,d)=>n<0n?-((-n+d/2n)/d):(n+d/2n)/d;
 const cents=value=>{const r=ratio(value);return round(r.numerator*100n,r.denominator)};
-const fromCents=value=>{if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<-BigInt(Number.MAX_SAFE_INTEGER))throw new HttpError(409,'Summa ruxsat etilgan aniq hisoblash chegarasidan oshdi.','FINANCIAL_NUMERIC_LIMIT');return Number(value)/100};
+const fromCents=value=>{if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<-BigInt(Number.MAX_SAFE_INTEGER))throw new HttpError(409,'Summa ruxsat etilgan aniq hisoblash chegarasidan oshdi.','FINANCIAL_NUMERIC_LIMIT');const absolute=value<0n?-value:value;return exactDecimalNumber(`${value<0n?'-':''}${absolute/100n}.${String(absolute%100n).padStart(2,'0')}`)};
 export const roundMoney=value=>fromCents(cents(value));
 export const sumMoney=values=>fromCents(values.reduce((sum,value)=>sum+cents(value),0n));
 export const lineAmount=(quantity,unitPrice,discount=0)=>{

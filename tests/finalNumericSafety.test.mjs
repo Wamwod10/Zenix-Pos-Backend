@@ -19,6 +19,7 @@ test('report decimal conversion rejects loss and exact arithmetic preserves canc
  assert.equal(money.exactDecimalNumber('0.12345'),0.12345);
  assert.equal(money.sumExactDecimals(['0.1','0.2','-0.3']),0);
  assert.equal(money.sumExactDecimals(['100.00001','-100','-0.00001']),0);
+ assert.throws(()=>money.roundMoney('90071992547409.91'),e=>e.code==='FINANCIAL_PRECISION_REVIEW_REQUIRED');
  for(const value of ['9999999999999999.99','90071992547409.93','NaN'])assert.throws(()=>money.exactDecimalNumber(value),e=>e.code==='FINANCIAL_PRECISION_REVIEW_REQUIRED');
 });
 test('inventory receipt preserves positive-cost contract and rejects invalid cost domain',()=>{
