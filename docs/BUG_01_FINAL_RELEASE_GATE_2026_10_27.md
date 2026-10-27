@@ -16,6 +16,8 @@ Financial integer-cent overflow now returns 409 `FINANCIAL_NUMERIC_LIMIT`. Inval
 
 Catalog and finance NUMERIC values remain text inside PostgreSQL JSON until checked conversion to the existing numeric API shape. Unsafe decimal conversion returns 409 `FINANCIAL_PRECISION_REVIEW_REQUIRED`; it does not silently lose cents. Finance subtraction/addition uses decimal integer ratios, retaining fractional COGS rather than rounding every component to cents. Receipt weighted average is calculated in PostgreSQL NUMERIC using the locked balance; the existing positive-cost receipt input contract and its original assertions remain intact. Existing zero-cost stock can still transfer, sell and return without reference-price substitution. Creating a free receipt remains a pre-existing limitation and is not represented as fixed.
 
+A real PostgreSQL supplier invoice test exposed DATE-to-JS-Date timezone serialization: the prior frontend calendar formatter correctly rejected a non-midnight instant but displayed a dash. Bootstrap now uses existing databaseDateISO on supplier due_date before JSON serialization, preserving the database calendar key for sorting and workspace formatting. This supplements BUG-04 without interpreting DATE as TIMESTAMPTZ. The regression first failed on real data and passed after the fix.
+
 No new migration; immutable migrations `045_transfer_cost_snapshot.sql` and `046_transfer_create_replay.sql` are unchanged. No historical backfill.
 
 ## Results and reproducible evidence
@@ -40,7 +42,8 @@ Local environment: Windows, Node 24.11.1, npm 11.6.2; PostgreSQL localhost:55447
 | Browser partial/full return | PASS | Extended `frontendStockLifecyclePostgres.browser.mjs`: real product/receipt/sale/partial return/final return/shift; SQL and finance aggregate assertions at both stages |
 | Browser cashier/manager flows | PASS | `posProSupermarket.browser.mjs`, 15 checks, 11 persisted sales; history and manager dashboard |
 | BUG-02/03/04 synthetic browser regression | PASS, synthetic | `productionBrowserDashboard.browser.mjs`: later-day/other-operator refund ranking and supplier dates; not a PostgreSQL integration claim |
-| Full requested browser matrix | NOT VERIFIED | Four-role end-to-end permission matrix, real supplier invoice views, cross-operator seller attribution and all report filter combinations remain incomplete |
+| Real supplier DATE / basic four-role browser | PASS | Real PostgreSQL invoice DATE displays 30.09.2026; OWNER/MANAGER/CASHIER/WAREHOUSE settings route and API/finance status assertions |
+| Full requested browser matrix | NOT VERIFIED | Full four-role transaction/action matrix, cross-operator seller attribution and all report filter combinations remain incomplete |
 | Staging production-like backup/restore | SKIP | No approved staging clone or production backup material provided; runbook required |
 
 Local transcripts are under workspace `.task/final-*`; browser JSON/screenshots under `.task/final-browser`. They contain isolated fixture evidence and are not production audit screenshots.
@@ -55,7 +58,7 @@ Parallel identical create requests yield one transfer/replay; changed payload or
 
 At the NUMERIC(18,2) maximum, snapshot and destination cost preserve exact `9999999999999999.99` text. NUMERIC(18,3) addition at maximum is rejected before mutation. SQL asserts unchanged balance row (including version/time), movement count, replay count and transfer status after overflow. Receipt total overflow rolls back its already-attempted balance/movement writes. Catalog refuses unsafe numeric rendering. Generic server-error regression remains HTTP 500.
 
-NOT VERIFIED: exhaustive deadlock/lock-timeout injection, high-load stress, simultaneous cancellation against every other writer, complete four-role browser matrix. Existing basic races are not evidence of every possible interleaving.
+NOT VERIFIED: exhaustive deadlock/lock-timeout injection, high-load stress, simultaneous cancellation against every other writer, complete four-role transaction/action matrix. Existing basic races are not evidence of every possible interleaving.
 
 ## Compatibility, policies and release blockers
 
@@ -63,4 +66,4 @@ Old frontend/new backend retains optional-reference compatibility; old clients w
 
 Legacy NULL snapshot operations remain manual review/fail closed, without filling from current/global price. Short receipt values actual received quantity and is final with a difference reason; overreceipt is rejected. No automatic variance income/expense is booked. In-transit valuation, shortage accounting, negative balances, residual allocation and legacy correction remain accounting decisions. Existing seller-filter refund attribution uses refund operator in finance reports; independent AI seller reporting may use original seller. Cross-operator seller policy was not changed and requires explicit business review.
 
-Production GO requires final exact-HEAD CI success, independent financial/security review, the missing browser/concurrency coverage, approved accounting exception handling, approved maintenance window, verified production-like restore, legacy transfer review and operator-approved cutover. Passing build/production scripts alone is not release authorization.
+Production GO requires final exact-HEAD CI success, independent financial/security review, the remaining browser/concurrency coverage, approved accounting exception handling, approved maintenance window, verified production-like restore, legacy transfer review and operator-approved cutover. Passing build/production scripts alone is not release authorization.
