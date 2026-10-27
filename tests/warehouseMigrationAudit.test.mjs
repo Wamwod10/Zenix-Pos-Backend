@@ -61,7 +61,13 @@ async function fixture(run) {
     if (created) {
       assert.match(name, /^warehouse_audit_test_[a-f0-9]{24}$/);
       assert.notEqual(decodeURIComponent(url.pathname.slice(1)), name);
-      await admin.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()', [name]);
+      // Pool shutdown closes clients asynchronously at the server. Never kill
+      // those sockets while pg may still emit an unhandled termination error.
+      const deadline=Date.now()+5000;
+      while((await admin.query('SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid() LIMIT 1',[name])).rowCount){
+        if(Date.now()>=deadline)throw new Error(`Test database ${name} still has active clients after pool shutdown`);
+        await new Promise(resolve=>setTimeout(resolve,25));
+      }
       await admin.query(`DROP DATABASE "${name}"`);
     }
     await admin.end();

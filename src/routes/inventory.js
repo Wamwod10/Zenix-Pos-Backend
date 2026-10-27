@@ -11,10 +11,12 @@ import { writeAudit } from "../services/audit.js";
 import { enqueueNotification, enqueueStockLevelNotification } from "../services/notifications.js";
 import { hasPermission } from "../lib/permissions.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
+import {financialWriteReplay} from '../services/financialWriteReplay.js';
+import {assertInventoryAddition} from '../lib/inventoryNumeric.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
-router.use((req,res,next)=>req.method==='GET'&&req.path==='/receipt-reconciliation'?next():requireActiveLicense(req,res,next));
+router.use((req,res,next)=>req.method==='GET'&&['/receipt-reconciliation','/transfer-reconciliation'].includes(req.path)?next():requireActiveLicense(req,res,next));
 const qty=z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin');
 const uniqueProductArray=(schema,message="Bir mahsulot faqat bitta qatorda bo‘lishi mumkin")=>z.array(schema).min(1).superRefine((items,ctx)=>{
   const seen=new Set();
@@ -203,17 +205,17 @@ async function receiveTransferTracking(client,{orgId,transferId,fromStoreId,toSt
 async function dispatchTransfer(client,{orgId,transfer,userId}){
   const sourceStore=await assertOrganizationStore(client,orgId,transfer.from_store_id);
   const destinationStore=await assertOrganizationStore(client,orgId,transfer.to_store_id);
-  const items=(await client.query(`SELECT ti.*,p.name,p.unit,p.min_stock FROM stock_transfer_items ti JOIN products p ON p.id=ti.product_id WHERE ti.transfer_id=$1 ORDER BY ti.id`,[transfer.id])).rows;
+  const items=(await client.query(`SELECT ti.*,p.name,p.unit,p.min_stock FROM stock_transfer_items ti JOIN products p ON p.id=ti.product_id WHERE ti.transfer_id=$1 ORDER BY ti.product_id`,[transfer.id])).rows;
   for(const line of items){
     const balance=await lockBalance(client,{orgId,storeId:transfer.from_store_id,productId:line.product_id});
     const before=Number(balance.quantity),sentQuantity=Number(line.sent_quantity),after=before-sentQuantity;
     if(after<0)throw new HttpError(409,`${line.name}: jo‘natish uchun qoldiq yetarli emas`,"INSUFFICIENT_STOCK");
     const tracking=await allocateTransferTracking(client,{orgId,transferId:transfer.id,storeId:transfer.from_store_id,productId:line.product_id,quantity:sentQuantity,balanceQuantity:before});
-    await client.query(`UPDATE stock_transfer_items SET metadata=metadata||$3::jsonb WHERE transfer_id=$1 AND product_id=$2`,[transfer.id,line.product_id,JSON.stringify({tracking})]);
-    await client.query(`UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,transfer.from_store_id,line.product_id,after]);
+    await client.query(`UPDATE stock_transfer_items SET unit_cost_snapshot=$4,metadata=metadata||$3::jsonb WHERE transfer_id=$1 AND product_id=$2`,[transfer.id,line.product_id,JSON.stringify({tracking}),balance.avg_cost]);
+    const updatedBalance=(await client.query(`UPDATE inventory_balances SET quantity=quantity-$4::numeric,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 RETURNING quantity`,[orgId,transfer.from_store_id,line.product_id,line.sent_quantity])).rows[0];
     await enqueueStockLevelNotification(client,{organizationId:orgId,storeId:transfer.from_store_id,eventBase:transfer.id,productId:line.product_id,productName:line.name,storeName:sourceStore.name,before,after,minStock:Number(line.min_stock||0)});
-    await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by,metadata) VALUES($1,$2,$3,'transfer_out',$4,$5,$6,'transfer',$7,$8,$9,$10::jsonb)`,[orgId,transfer.from_store_id,line.product_id,-sentQuantity,before,after,transfer.id,"Filiallararo transfer",userId,JSON.stringify({tracking})]);
-    line.metadata={...(line.metadata||{}),tracking};
+    await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by,metadata,unit_cost) VALUES($1,$2,$3,'transfer_out',$4,$5,$6,'transfer',$7,$8,$9,$10::jsonb,$11)`,[orgId,transfer.from_store_id,line.product_id,-sentQuantity,balance.quantity,updatedBalance.quantity,transfer.id,"Filiallararo transfer",userId,JSON.stringify({tracking}),balance.avg_cost]);
+    line.unit_cost_snapshot=balance.avg_cost;line.metadata={...(line.metadata||{}),tracking};
   }
   const updated=(await client.query(`UPDATE stock_transfers SET status='dispatched',dispatched_at=now(),updated_at=now() WHERE id=$1 RETURNING *`,[transfer.id])).rows[0];
   await enqueueNotification(client,{organizationId:orgId,storeId:transfer.from_store_id,eventType:"inventory.transfer_dispatched",eventId:transfer.id,payload:{transferId:transfer.id,fromStoreId:transfer.from_store_id,toStoreId:transfer.to_store_id,fromStoreName:sourceStore.name,toStoreName:destinationStore.name,lineCount:items.length,totalQuantity:items.reduce((sum,line)=>sum+Number(line.sent_quantity||0),0)}});
@@ -226,6 +228,13 @@ router.get('/receipt-reconciliation',requirePermission('inventoryAdjust'),asyncR
   await assertOrganizationStore(pool,req.user.organizationId,input.storeId);
   const row=(await pool.query("SELECT metadata FROM audit_logs WHERE organization_id=$1 AND store_id=$2 AND user_id=$3 AND action='receive' AND entity_type='inventory' AND metadata->>'clientReference'=$4",[req.user.organizationId,input.storeId,req.user.id,input.clientReference])).rows[0];
   ok(res,row?.metadata?.response?{state:'confirmed',receipt:row.metadata.response}:{state:'unknown'});
+}));
+router.get('/transfer-reconciliation',requirePermission('transferCreate'),asyncRoute(async(req,res)=>{
+  const input=z.object({storeId:z.string().uuid(),clientReference:z.string().trim().min(1).max(120)}).strict().parse(req.query);
+  assertStoreScope(req.user,input.storeId);
+  await assertOrganizationStore(pool,req.user.organizationId,input.storeId);
+  const row=(await pool.query(`SELECT result FROM financial_write_replays WHERE organization_id=$1 AND operation='transfer_create' AND client_reference=$2 AND user_id=$3 AND result->>'from_store_id'=$4`,[req.user.organizationId,input.clientReference,req.user.id,input.storeId])).rows[0];
+  ok(res,row?{state:'confirmed',transfer:row.result}:{state:'unknown'});
 }));
 router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req,res)=>{
   const input=inventoryReceiptSchema.parse(req.body);
@@ -257,12 +266,12 @@ router.post("/adjust",requirePermission("inventoryAdjust"),asyncRoute(async(req,
 }));
 
 router.post("/transfers",requirePermission("transferCreate"),asyncRoute(async(req,res)=>{
-  const input=z.object({fromStoreId:z.string().uuid(),toStoreId:z.string().uuid(),needsApproval:z.boolean().default(true),items:uniqueProductArray(z.object({productId:z.string().uuid(),quantity:qty}))}).refine((v)=>v.fromStoreId!==v.toStoreId,{message:"Filiallar bir xil bo‘lishi mumkin emas"}).parse(req.body);
+  const input=z.object({fromStoreId:z.string().uuid(),toStoreId:z.string().uuid(),needsApproval:z.boolean().default(true),clientReference:z.string().trim().max(120).default(''),items:uniqueProductArray(z.object({productId:z.string().uuid(),quantity:qty}))}).refine((v)=>v.fromStoreId!==v.toStoreId,{message:"Filiallar bir xil bo‘lishi mumkin emas"}).parse(req.body);
   assertStoreScope(req.user,input.fromStoreId);
-  const result=await withTransaction(async(client)=>{
+  const result=await withTransaction(async(client)=>financialWriteReplay(client,{organizationId:req.user.organizationId,userId:req.user.id,operation:'transfer_create',clientReference:input.clientReference,input},async()=>{
     const orgId=req.user.organizationId;
     await assertOrganizationStore(client,orgId,input.fromStoreId);await assertOrganizationStore(client,orgId,input.toStoreId);
-    for(const line of input.items){
+    for(const line of [...input.items].sort((a,b)=>a.productId.localeCompare(b.productId))){
       const product=await assertProduct(client,orgId,line.productId);const balance=await lockBalance(client,{orgId,storeId:input.fromStoreId,productId:line.productId});
       const reserved=Number((await client.query(`SELECT COALESCE(sum(ti.sent_quantity),0) reserved FROM stock_transfers t JOIN stock_transfer_items ti ON ti.transfer_id=t.id WHERE t.organization_id=$1 AND t.from_store_id=$2 AND ti.product_id=$3 AND t.status IN('pending','approved')`,[orgId,input.fromStoreId,line.productId])).rows[0].reserved);
       if(Number(balance.quantity)-reserved<Number(line.quantity))throw new HttpError(409,`${product.name}: transfer uchun yetarli bo‘sh qoldiq yo‘q`,"INSUFFICIENT_AVAILABLE_STOCK");
@@ -275,7 +284,7 @@ router.post("/transfers",requirePermission("transferCreate"),asyncRoute(async(re
     }
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.fromStoreId,action:"create",entityType:"transfer",entityId:transfer.id,title:input.needsApproval?"Transfer tasdiqlashga yuborildi":"Transfer jo‘natildi",description:`${input.items.length} ta mahsulot`});
     return transfer;
-  });
+  }));
   ok(res,{transfer:result},201);
 }));
 
@@ -294,7 +303,7 @@ router.post("/transfers/:id/receive",requirePermission("transferReceive"),asyncR
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;const transfer=(await client.query(`SELECT * FROM stock_transfers WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.params.id,orgId])).rows[0];
     if(!transfer)throw new HttpError(404,"Transfer topilmadi");assertStoreScope(req.user,transfer.to_store_id);if(transfer.status!=="dispatched")throw new HttpError(409,"Transfer qabul qilish holatida emas");
-    const items=(await client.query(`SELECT ti.*,p.name,p.unit FROM stock_transfer_items ti JOIN products p ON p.id=ti.product_id WHERE ti.transfer_id=$1`,[transfer.id])).rows;
+    const items=(await client.query(`SELECT ti.*,p.name,p.unit FROM stock_transfer_items ti JOIN products p ON p.id=ti.product_id WHERE ti.transfer_id=$1 ORDER BY ti.product_id`,[transfer.id])).rows;
     const transferProductIds=new Set(items.map((item)=>String(item.product_id)));
     const unknown=input.items.filter((item)=>!transferProductIds.has(String(item.productId)));
     if(unknown.length)throw new HttpError(400,"Qabul ro‘yxatida transferga tegishli bo‘lmagan mahsulot bor","TRANSFER_ITEM_INVALID",{productIds:unknown.map((item)=>item.productId)});
@@ -302,12 +311,16 @@ router.post("/transfers/:id/receive",requirePermission("transferReceive"),asyncR
     const results=[];let hasDifference=false;
     for(const line of items){
       const sent=Number(line.sent_quantity),received=quantityMap.has(line.product_id)?quantityMap.get(line.product_id):sent;if(received!==sent)hasDifference=true;
+      if(line.unit_cost_snapshot==null)throw new HttpError(409,'Transfer tannarxi mavjud emas; tekshirish talab etiladi','TRANSFER_COST_UNKNOWN');
+      if(received>sent)throw new HttpError(409,'Transferda ortiqcha qabul qilish tekshiruv talab qiladi','TRANSFER_OVER_RECEIPT');
       const tracking=line.metadata?.tracking||{};
-      const receivedTracking=await receiveTransferTracking(client,{orgId,transferId:transfer.id,fromStoreId:transfer.from_store_id,toStoreId:transfer.to_store_id,productId:line.product_id,sentQuantity:sent,receivedQuantity:received,tracking});
       const balance=await lockBalance(client,{orgId,storeId:transfer.to_store_id,productId:line.product_id});const before=Number(balance.quantity),after=before+received;
-      await client.query(`UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,transfer.to_store_id,line.product_id,after]);
+      assertInventoryAddition(balance,received,line.unit_cost_snapshot);
+      if(before<0)throw new HttpError(409,'Manfiy qoldiq tannarxini tekshirish kerak','NEGATIVE_COST_BALANCE');
+      const receivedTracking=await receiveTransferTracking(client,{orgId,transferId:transfer.id,fromStoreId:transfer.from_store_id,toStoreId:transfer.to_store_id,productId:line.product_id,sentQuantity:sent,receivedQuantity:received,tracking});
+      const updatedBalance=(await client.query(`UPDATE inventory_balances SET avg_cost=CASE WHEN $4::numeric=0 THEN avg_cost ELSE ((quantity*avg_cost)+($4::numeric*$5::numeric))/(quantity+$4::numeric) END,quantity=quantity+$4::numeric,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 RETURNING quantity`,[orgId,transfer.to_store_id,line.product_id,received,line.unit_cost_snapshot])).rows[0];
       await client.query(`UPDATE stock_transfer_items SET received_quantity=$3,metadata=metadata||$4::jsonb WHERE transfer_id=$1 AND product_id=$2`,[transfer.id,line.product_id,received,JSON.stringify({receiptTracking:receivedTracking})]);
-      await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by,metadata) VALUES($1,$2,$3,'transfer_in',$4,$5,$6,'transfer',$7,$8,$9,$10::jsonb)`,[orgId,transfer.to_store_id,line.product_id,received,before,after,transfer.id,received===sent?"":`Farq: ${received-sent}${input.differenceReason?` · ${input.differenceReason}`:""}`,req.user.id,JSON.stringify({sentQuantity:sent,receivedQuantity:received,tracking:receivedTracking})]);
+      await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by,metadata,unit_cost) VALUES($1,$2,$3,'transfer_in',$4,$5,$6,'transfer',$7,$8,$9,$10::jsonb,$11)`,[orgId,transfer.to_store_id,line.product_id,received,balance.quantity,updatedBalance.quantity,transfer.id,received===sent?"":`Farq: ${received-sent}${input.differenceReason?` · ${input.differenceReason}`:""}`,req.user.id,JSON.stringify({sentQuantity:sent,receivedQuantity:received,tracking:receivedTracking}),line.unit_cost_snapshot]);
       results.push({productId:line.product_id,product:line.name,unit:line.unit,sentQty:sent,receivedQty:received,difference:received-sent,before,after,tracking:receivedTracking});
     }
     if(hasDifference&&!input.differenceReason)throw new HttpError(400,"Kam yoki ortiq qabul qilingan bo‘lsa, farq sababini yozing","DIFFERENCE_REASON_REQUIRED");
@@ -328,12 +341,15 @@ router.post("/transfers/:id/cancel",requirePermission("transferCancel"),asyncRou
     assertStoreScope(req.user,transfer.from_store_id);
     if(!['pending','approved','dispatched'].includes(transfer.status))throw new HttpError(409,"Bu transferni bekor qilib bo‘lmaydi","TRANSFER_NOT_CANCELLABLE");
     if(transfer.status==='dispatched'){
-      const items=(await client.query(`SELECT * FROM stock_transfer_items WHERE transfer_id=$1`,[transfer.id])).rows;
+      const items=(await client.query(`SELECT * FROM stock_transfer_items WHERE transfer_id=$1 ORDER BY product_id`,[transfer.id])).rows;
       for(const line of items){
-        await restoreTransferTrackingToSource(client,{orgId,transferId:transfer.id,storeId:transfer.from_store_id,productId:line.product_id,tracking:line.metadata?.tracking||{}});
+        if(line.unit_cost_snapshot==null)throw new HttpError(409,'Transfer tannarxi mavjud emas; tekshirish talab etiladi','TRANSFER_COST_UNKNOWN');
         const balance=await lockBalance(client,{orgId,storeId:transfer.from_store_id,productId:line.product_id});const before=Number(balance.quantity),after=before+Number(line.sent_quantity);
-        await client.query(`UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,transfer.from_store_id,line.product_id,after]);
-        await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by,metadata) VALUES($1,$2,$3,'transfer_cancel',$4,$5,$6,'transfer',$7,'Transfer bekor qilindi',$8,$9::jsonb)`,[orgId,transfer.from_store_id,line.product_id,Number(line.sent_quantity),before,after,transfer.id,req.user.id,JSON.stringify({tracking:line.metadata?.tracking||{}})]);
+        assertInventoryAddition(balance,line.sent_quantity,line.unit_cost_snapshot);
+        if(before<0)throw new HttpError(409,'Manfiy qoldiq tannarxini tekshirish kerak','NEGATIVE_COST_BALANCE');
+        await restoreTransferTrackingToSource(client,{orgId,transferId:transfer.id,storeId:transfer.from_store_id,productId:line.product_id,tracking:line.metadata?.tracking||{}});
+        const updatedBalance=(await client.query(`UPDATE inventory_balances SET avg_cost=((quantity*avg_cost)+($4::numeric*$5::numeric))/(quantity+$4::numeric),quantity=quantity+$4::numeric,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 RETURNING quantity`,[orgId,transfer.from_store_id,line.product_id,line.sent_quantity,line.unit_cost_snapshot])).rows[0];
+        await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,reference_type,reference_id,reason,created_by,metadata,unit_cost) VALUES($1,$2,$3,'transfer_cancel',$4,$5,$6,'transfer',$7,'Transfer bekor qilindi',$8,$9::jsonb,$10)`,[orgId,transfer.from_store_id,line.product_id,line.sent_quantity,balance.quantity,updatedBalance.quantity,transfer.id,req.user.id,JSON.stringify({tracking:line.metadata?.tracking||{}}),line.unit_cost_snapshot]);
       }
     }
     const previousStatus=transfer.status;

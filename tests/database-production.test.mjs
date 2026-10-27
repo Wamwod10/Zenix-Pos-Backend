@@ -173,6 +173,8 @@ test("schema verification covers all migrations and core backend domains", () =>
     "042_customer_repayment_cash_consistency.sql",
     "043_supplier_invoice_replay.sql",
     "044_file_asset_purpose.sql",
+    "045_transfer_cost_snapshot.sql",
+    "046_transfer_create_replay.sql",
   ]);
 
   for (const table of [

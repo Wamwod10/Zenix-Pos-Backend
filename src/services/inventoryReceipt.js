@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import {assertFileAssetBinding} from './fileAssets.js';
 import {z} from 'zod';
 import {requestFingerprint} from './posReplay.js';
-import {lineAmount,sumMoney} from '../lib/posMoney.js';
+import {lineAmount,sumMoney,isMoneyInput,exactDecimalNumber} from '../lib/posMoney.js';
+import {assertInventoryAddition} from '../lib/inventoryNumeric.js';
 import {setInventoryWarehouse} from './warehouses.js';
 import {validateProductMetadata} from '../lib/productOptions.js';
 import {HttpError} from '../lib/http.js';
@@ -19,7 +20,7 @@ async function lockBalance(client,{orgId,storeId,productId}){
   const lineSchema=z.object({
     productId:z.string().uuid().optional().nullable(),name:z.string().trim().max(240).default(""),sku:z.string().trim().max(120).default(""),barcode:z.string().trim().max(120).default(""),
     category:z.string().trim().max(120).default(""),brand:z.string().trim().max(120).default(""),unit:z.string().trim().max(40).default("dona"),quantity:qty,
-    costPrice:z.coerce.number().positive(),sellPrice:z.coerce.number().min(0).default(0),wholesalePrice:z.coerce.number().min(0).default(0),minStock:z.coerce.number().min(0).default(0),
+    costPrice:z.coerce.number().positive().refine(isMoneyInput,'Tannarx 0 dan 9000000000000 gacha, ko‘pi bilan 2 kasr xonali bo‘lsin'),sellPrice:z.coerce.number().min(0).refine(isMoneyInput).default(0),wholesalePrice:z.coerce.number().min(0).refine(isMoneyInput).default(0),minStock:z.coerce.number().min(0).max(999999999).default(0),
     batchNo:z.string().trim().max(120).default(""),expiryDate:z.string().date().optional().nullable(),manufacturedDate:z.string().date().optional().nullable(),serials:z.array(z.string().trim().min(1).max(180)).default([]),metadata:z.record(z.string(),z.any()).default({}).transform(validateProductMetadata),note:z.string().trim().max(500).default(""),
   }).refine((line)=>Boolean(line.productId||line.name||line.barcode),{message:"Mahsulot ID yoki nomi kerak"});
   const inventoryReceiptSchema=z.object({
@@ -76,9 +77,12 @@ export async function receiveInventory(client,user,input){
         if(duplicate)throw new HttpError(409,`Serial/IMEI ${duplicate.serial} allaqachon mavjud`,`SERIAL_EXISTS`);
       }
       const balance=await lockBalance(client,{orgId,storeId:input.storeId,productId:product.id});
-      const before=Number(balance.quantity),incomingQty=Number(line.quantity),after=before+incomingQty,oldCost=Number(balance.avg_cost??product.cost_price??0),incomingCost=Number(line.costPrice||0);
-      const avg=after>0?((before*oldCost)+(incomingQty*incomingCost))/after:incomingCost;
-      await client.query(`UPDATE inventory_balances SET quantity=$4,avg_cost=$5,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,input.storeId,product.id,after,avg]);
+        assertInventoryAddition(balance,line.quantity,line.costPrice);
+      exactDecimalNumber(balance.avg_cost??0);
+      const oldCost=Number(balance.avg_cost??0);
+      const before=balance.quantity,incomingQty=line.quantity,incomingCost=line.costPrice;
+      const changed=(await client.query(`UPDATE inventory_balances SET quantity=quantity+$4::numeric,avg_cost=(quantity*$6::numeric+$4::numeric*$5::numeric)/(quantity+$4::numeric),version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 RETURNING quantity,avg_cost`,[orgId,input.storeId,product.id,incomingQty,incomingCost,oldCost])).rows[0];
+      const after=exactDecimalNumber(changed.quantity),avg=exactDecimalNumber(changed.avg_cost);
       await client.query(`UPDATE products SET cost_price=$3,sell_price=CASE WHEN $4>0 THEN $4 ELSE sell_price END,metadata=metadata||$5::jsonb,updated_at=now() WHERE id=$1 AND organization_id=$2`,[product.id,orgId,avg,Number(line.sellPrice||0),JSON.stringify({...line.metadata,supplierId:supplier?.id||undefined,supplier:supplier?.name||undefined})]);
       await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,unit_cost,reference_type,reference_id,reason,created_by,metadata)
         VALUES($1,$2,$3,'receive',$4,$5,$6,$7,'receipt',$8,$9,$10,$11::jsonb)`,[orgId,input.storeId,product.id,incomingQty,before,after,incomingCost,receiptId,line.note||input.note||input.reference||"",user.id,JSON.stringify({supplierId:supplier?.id||null,reference:input.reference||input.settlement.invoiceNo||"",batchNo:lotNo,expiryDate:line.expiryDate||null,manufacturedDate:line.manufacturedDate||null,warehouseId:input.warehouseId||null})]);

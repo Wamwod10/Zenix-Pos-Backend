@@ -1,4 +1,6 @@
 import {z} from 'zod';
+import {exactDecimalNumber} from './posMoney.js';
+const decimalMap=value=>Object.fromEntries(Object.entries(value||{}).map(([key,n])=>[key,exactDecimalNumber(n)]));
 import {HttpError} from './http.js';
 const uuid=z.string().uuid().transform(value=>value.toLowerCase());
 export const posCatalogQuerySchema=z.object({
@@ -18,6 +20,6 @@ export function decodePosCatalogCursor(value){
 }
 export const mapBootstrapProduct=(row)=>({
  ...(row.metadata||{}),id:row.id,name:row.name,sku:row.sku,barcode:row.barcode,category:row.category,brand:row.brand,unit:row.unit,
- costPrice:Number(row.cost_price||0),sellPrice:Number(row.sell_price||0),price:Number(row.sell_price||0),wholesalePrice:Number(row.wholesale_price||0),minStock:Number(row.min_stock||0),archived:row.archived,
- stockByStore:row.stock_by_store||{},costByStore:row.cost_by_store||{},lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},
+ costPrice:exactDecimalNumber(row.cost_price||0),sellPrice:exactDecimalNumber(row.sell_price||0),price:exactDecimalNumber(row.sell_price||0),wholesalePrice:exactDecimalNumber(row.wholesale_price||0),minStock:exactDecimalNumber(row.min_stock||0),archived:row.archived,
+ stockByStore:decimalMap(row.stock_by_store),costByStore:decimalMap(row.cost_by_store),lastSaleAt:row.last_sale_at||null,metadata:row.metadata||{},
 });
