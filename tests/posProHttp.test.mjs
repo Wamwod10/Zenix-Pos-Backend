@@ -34,7 +34,8 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    // A rejected decimal quantity must not create a sale, stock movement or
    // financial write. Exact three-decimal quantities remain valid below.
    for(const quantity of ['',null,0,0.00001,0.0009,'0.0009',1.0000000001,1000000000]){
-    status(await request('/api/sales',body('invalid-qty-'+randomUUID(),quantity),token),400);
+    const invalid={...body('invalid-qty-'+randomUUID(),quantity),payments:[{method:'cash',amount:12000}],metadata:{source:'pos-pro',cashTendered:12000}};
+    status(await request('/api/sales',invalid,token),400);
    }
    assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[product])).rows[0].quantity),10);
    assert.equal(Number((await pool.query('SELECT count(*)::int n FROM sales WHERE organization_id=$1',[org])).rows[0].n),0);
