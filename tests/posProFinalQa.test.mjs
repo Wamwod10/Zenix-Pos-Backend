@@ -10,6 +10,16 @@ test('supermarket final QA: real HTTP money, credit, units, scope and shift life
   const cashier=(await request('/api/auth/login',fixture.users.cashier)).cookie,second=(await request('/api/auth/login',fixture.users.second)).cookie,manager=(await request('/api/auth/login',fixture.users.manager)).cookie;assert.ok(cashier&&second&&manager);
   const shift=expectStatus(await request('/api/shifts/open',{storeId:fixture.stores[0],openingCash:10000},cashier),201).shift;
   const packet=(index,quantity=1)=>({storeId:fixture.stores[0],shiftId:shift.id,clientReference:randomUUID(),items:[{productId:fixture.products[index].id,quantity,unitPrice:fixture.products[index].price,metadata:{originalUnitPrice:fixture.products[index].price}}],payments:[{method:'cash',amount:fixture.products[index].price*quantity}],metadata:{source:'pos-pro',cashTendered:fixture.products[index].price*quantity}});
+  await t.test('impossible calendar days fail with 400 before closing any business day',async()=>{
+   for(const bad of ['2026-02-30','2026-13-01','0000-01-01','2026-04-31']){
+    const close=await request('/api/sales/business-days/close',{storeId:fixture.stores[0],businessDate:bad},manager);
+    assert.equal(close.status,400,'invalid close '+bad);
+    const sale=await request('/api/sales',{...packet(6),businessDate:bad},cashier);
+    assert.equal(sale.status,400,'invalid sale metadata '+bad);
+   }
+   const count=await pool.query('SELECT count(*)::int AS count FROM business_days WHERE organization_id=$1',[fixture.org]);
+   assert.equal(count.rows[0].count,0,'no business day may be closed by an invalid calendar date');
+  });
   await t.test('zero, negative, short and excess payments reject atomically',async()=>{
    const initial=Number((await pool.query('SELECT count(*) n FROM sales WHERE organization_id=$1',[fixture.org])).rows[0].n);
    for(const payments of [[],[{method:'cash',amount:0}],[{method:'cash',amount:-1}],[{method:'cash',amount:126999}],[{method:'card',amount:127001}]]){const result=await request('/api/sales',{...packet(6),payments},cashier);assert.ok(result.status>=400,JSON.stringify(result))}
