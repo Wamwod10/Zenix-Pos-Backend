@@ -18,7 +18,7 @@ import {holdSchema,holdView,holdIntent,validateHoldCatalog} from '../services/sa
 import {requestFingerprint,assertSaleReplay,assertRefundReplay} from '../services/posReplay.js';
 import {salesPage} from '../services/salesDirectory.js';
 import {readPosProSummary,validatePosProPayment} from '../services/posPro.js';
-import {assertInventoryAddition} from '../lib/inventoryNumeric.js';
+import {assertInventoryAddition,isInventoryQuantityInput} from '../lib/inventoryNumeric.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -79,8 +79,13 @@ const moneyValue=z.union([z.number(),z.string()])
  .refine(isMoneyInput,{message:"Summa 2 kasr aniqligida bo‘lishi kerak"})
  .transform(Number);
 const paymentSchema=z.object({method:z.enum(["cash","card","transfer"]),amount:moneyValue,metadata:z.record(z.string(),z.any()).default({})});
+// Validate the raw quantity before coercion so sub-milli amounts cannot be
+// silently rounded by the stock NUMERIC(18,3) column.
+const saleQuantity=z.union([z.number(),z.string()])
+  .refine(isInventoryQuantityInput,{message:"Miqdor aniq 3 kasr xonagacha bo‘lishi kerak"})
+  .transform(Number);
 const saleItemSchema=z.object({
-  productId:z.string().uuid(),quantity:z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.00001,"Miqdor 3 kasr belgidan oshmasin"),unitPrice:z.coerce.number().min(0).max(9000000000000),
+  productId:z.string().uuid(),quantity:saleQuantity,unitPrice:z.coerce.number().min(0).max(9000000000000),
   discountPercent:z.coerce.number().min(0).max(100).default(0),metadata:z.record(z.string(),z.any()).default({}),
 });
 const validBusinessCalendarDate=(value)=>{
@@ -322,7 +327,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
 
 router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res)=>{
   const input=z.object({
-    productId:z.string().uuid(),quantity:z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.00001,"Miqdor 3 kasr belgidan oshmasin"),reason:z.string().trim().min(2).max(500),refundMethod:z.enum(["original","cash","card","transfer"]).default("original"),
+    productId:z.string().uuid(),quantity:saleQuantity,reason:z.string().trim().min(2).max(500),refundMethod:z.enum(["original","cash","card","transfer"]).default("original"),
     refundShiftId:z.string().uuid().optional().nullable(),refundBreakdown:z.object({cash:moneyValue.default(0),card:moneyValue.default(0),transfer:moneyValue.default(0)}).optional(),clientReference:z.string().trim().max(120).default(""),metadata:z.record(z.string(),z.any()).default({}),
   }).parse(req.body);
   const result=await withTransaction(async(client)=>{
