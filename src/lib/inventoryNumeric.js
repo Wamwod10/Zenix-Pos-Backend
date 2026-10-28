@@ -3,13 +3,14 @@ import {HttpError} from './http.js';
 const limit=999999999999999999n;
 // Raw receipt quantities must match NUMERIC(18,3) exactly before Number()
 // conversion. Do not accept 0.0000001 and silently post 0.000 to stock.
-export function isInventoryQuantityInput(value){
+export function isInventoryQuantityInput(value,{allowZero=false,allowNegative=false}={}){
  if(!['string','number'].includes(typeof value))return false;
  const raw=String(value).trim();
- if(!/^\d+(?:\.\d{1,3})?$/.test(raw))return false;
- const [whole,fraction='']=raw.split('.');
+ if(!(allowNegative?/^-?\d+(?:\.\d{1,3})?$/:/^\d+(?:\.\d{1,3})?$/).test(raw))return false;
+ const negative=raw.startsWith('-'),positive=negative?raw.slice(1):raw;
+ const [whole,fraction='']=positive.split('.');
  const units=BigInt(whole)*1000n+BigInt(fraction.padEnd(3,'0'));
- return units>0n&&units<=999999999000n;
+ return (allowZero||units>0n)&&units<=999999999000n;
 }
 const scaled=(value,scale)=>{
  const match=String(value).match(/^(-?)(\d+)(?:\.(\d+))?$/);
