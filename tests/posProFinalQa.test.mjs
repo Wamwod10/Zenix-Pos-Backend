@@ -17,6 +17,9 @@ test('supermarket final QA: real HTTP money, credit, units, scope and shift life
     const sale=await request('/api/sales',{...packet(6),businessDate:bad},cashier);
     assert.equal(sale.status,400,'invalid sale metadata '+bad);
    }
+   const leap=await request('/api/sales/business-days/close',{storeId:fixture.stores[0],businessDate:'2024-02-29'},manager);
+   assert.equal(leap.status,409,'valid leap day must reach the existing open-shift guard');
+   assert.equal(leap.body.error.code,'OPEN_SHIFT_EXISTS');
    const count=await pool.query('SELECT count(*)::int AS count FROM business_days WHERE organization_id=$1',[fixture.org]);
    assert.equal(count.rows[0].count,0,'no business day may be closed by an invalid calendar date');
   });
