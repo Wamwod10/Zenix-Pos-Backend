@@ -1,4 +1,4 @@
-import { sumMoney, isMoneyInput } from "../lib/posMoney.js";
+import { sumMoney, isMoneyInput, isSignedMoneyInput } from "../lib/posMoney.js";
 import {resolveShiftRegister} from '../services/posRegisters.js';
 import { Router } from "express";
 import { z } from "zod";
@@ -143,7 +143,9 @@ router.post("/:id/movements", requirePermission("moduleShifts"), asyncRoute(asyn
 router.post("/:id/close", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
   const input = z.object({
     actualCash: shiftMoneySchema,
-    expectedCash: z.coerce.number().min(-Number.MAX_SAFE_INTEGER/100).max(Number.MAX_SAFE_INTEGER/100).multipleOf(0.01).optional(),
+    expectedCash: z.union([z.string(),z.number()])
+      .refine(isSignedMoneyInput,{message:"Kutilgan naqd summa 2 kasr aniqligida bo‘lishi kerak"})
+      .transform(Number).optional(),
     metadata: z.record(z.string(), z.any()).default({}),
   }).parse(req.body);
 
