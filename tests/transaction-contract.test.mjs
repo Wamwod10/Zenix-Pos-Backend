@@ -295,10 +295,12 @@ test('daily reports keep returns on the business day the refund was processed',(
 test('manual supplier invoices persist their initial payment in the payment ledger',()=>{
   const suppliers=read('src/routes/suppliers.js');
   assert.match(suppliers,/paidAmount:moneyValue\.default\(0\)/);
-  assert.match(suppliers,/const moneyValue=z\\.union\\(\\[z\\.string\\(\\),z\\.number\\(\\)\\]\\)/);
-  assert.match(suppliers,/\\.refine\\(isMoneyInput/);
-  assert.match(suppliers,/\\.transform\\(Number\\)/);
-  assert.match(suppliers,/\\.pipe\\(z\\.number\\(\\)\\.min\\(0\\)\\.max\\(999999999999\\.99\\)\\)/);
+  for(const fragment of [
+    'const moneyValue=z.union([z.string(),z.number()])',
+    '.refine(isMoneyInput',
+    '.transform(Number)',
+    '.pipe(z.number().min(0).max(999999999999.99))',
+  ]) assert.ok(suppliers.includes(fragment),fragment);
   assert.match(read('src/services/supplierInvoices.js'),/INSERT INTO supplier_payments\(organization_id,supplier_id,invoice_id,store_id,amount,method,note,created_by\)/);
   assert.match(read('src/services/supplierInvoices.js'),/Initial invoice settlement/);
 });
