@@ -31,7 +31,13 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    const card={...body('unconfirmed'),payments:[{method:'card',amount:15000}]};status(await request('/api/sales',card,token),409);
    status(await request('/api/sales',{...body('stale'),items:[{productId:product,quantity:1.25,unitPrice:11000,metadata:{originalUnitPrice:11000}}]},token),409);
    status(await request('/api/sales',{...body('raise'),items:[{productId:product,quantity:1.25,unitPrice:13000,metadata:{originalUnitPrice:12000}}]},token),403);
+   // A rejected decimal quantity must not create a sale, stock movement or
+   // financial write. Exact three-decimal quantities remain valid below.
+   for(const quantity of ['',null,0,0.00001,0.0009,'0.0009',1.0000000001,1000000000]){
+    status(await request('/api/sales',body('invalid-qty-'+randomUUID(),quantity),token),400);
+   }
    assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[product])).rows[0].quantity),10);
+   assert.equal(Number((await pool.query('SELECT count(*)::int n FROM sales WHERE organization_id=$1',[org])).rows[0].n),0);
   });
   await t.test('double submit commits exactly once and remains visible to ordinary sales',async()=>{
    const sale=body('PRO-'+suffix),results=await Promise.all([request('/api/sales',sale,token),request('/api/sales',sale,token)]);
@@ -53,6 +59,10 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    // Existing notification pipeline receives the same canonical sale event.
    assert.equal(Number((await pool.query("SELECT count(*) n FROM audit_logs WHERE organization_id=$1 AND entity_type='sale'",[org])).rows[0].n),4);
    assert.equal(Number((await pool.query("SELECT count(*) n FROM notification_outbox WHERE organization_id=$1 AND event_type='sale.completed'",[org])).rows[0].n),4);
+   for(const quantity of ['',null,0,0.00001,0.0009,'0.0009',1.0000000001,1000000000]){
+    status(await request(`/api/sales/${first.id}/returns`,{productId:product,quantity,reason:'Invalid fractional refund',refundMethod:'original',refundShiftId:shiftId,clientReference:randomUUID()},token),400);
+   }
+   assert.equal(Number((await pool.query('SELECT count(*)::int n FROM sale_returns WHERE sale_id=$1',[first.id])).rows[0].n),0);
    status(await request(`/api/sales/${first.id}/returns`,{productId:product,quantity:.25,reason:'Test refund',refundMethod:'original',refundShiftId:shiftId,clientReference:'return-'+suffix},token),201);
    const after=status(await request(`/api/sales/pos-pro/summary?storeId=${storeId}`,null,token),200);assert.equal(after.total,100800);assert.equal(after.cash,94000);
   });
