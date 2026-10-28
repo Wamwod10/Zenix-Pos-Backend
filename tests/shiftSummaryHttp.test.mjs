@@ -42,7 +42,17 @@ test('SHIFT01 HTTP summary scope and locked close cash precondition',{skip:!url,
     assert.equal((await request(path+'/summary',{cookie:denied.cookie})).status,403);
     assert.equal((await request(path+'/summary',{cookie:foreign.cookie})).status,404);
     const summary=await request(path+'/summary',{cookie:owner.cookie});assert.equal(summary.status,200);
-    for(const expectedCash of [0.001,Number.MAX_SAFE_INTEGER])assert.equal((await request(path+'/close',{cookie:owner.cookie,method:'POST',body:{actualCash:100.10,expectedCash}})).status,400);
+    // expectedCash is an optional optimistic concurrency token; omitted remains
+    // supported, but explicit empty/null/microscopic values must not become 0.
+    for(const expectedCash of [0.001,Number.MAX_SAFE_INTEGER,'',null,'0.001',127000.00000001,'-0.001']){
+      const invalid=await request(path+'/close',{cookie:owner.cookie,method:'POST',body:{actualCash:100.10,expectedCash}});
+      assert.equal(invalid.status,400,'invalid expectedCash '+String(expectedCash));
+    }
+    // Legitimate signed two-decimal snapshots retain their old contract;
+    // mismatch is still HTTP 409 rather than an input validation failure.
+    const negativeSnapshot=await request(path+'/close',{cookie:owner.cookie,method:'POST',body:{actualCash:100.10,expectedCash:'-0.10'}});
+    assert.equal(negativeSnapshot.status,409);assert.equal(negativeSnapshot.body.error.code,'SHIFT_CASH_CHANGED');
+    assert.equal((await pool.query('SELECT status FROM shifts WHERE id=$1',[shift])).rows[0].status,'open');
     await pool.query("INSERT INTO expenses(organization_id,store_id,title,amount,payment_method) VALUES($1,$2,'Private expense fixture',41.25,'card')",[org,stores[0]]);
     const history=await request(`/api/finance?storeId=${stores[0]}`,{cookie:cashier.cookie});
     assert.equal(history.status,200);assert.equal(Object.hasOwn(history.body.data,'expenses'),false);
