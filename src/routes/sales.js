@@ -72,6 +72,12 @@ const normalizedLinePricing=({product,line,posRules,user})=>{
   return {unitPrice:storedUnitPrice,discountPercent:storedDiscount,gross,lineTotal,effectiveDiscount,finalUnitPrice,packaging:pack?{unit:pack.unit,factor:Number(pack.factor),salePrice:Number(pack.salePrice)}:null};
 };
 
+const moneyValue=z.coerce.number().min(0).max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
+const paymentSchema=z.object({method:z.enum(["cash","card","transfer"]),amount:moneyValue,metadata:z.record(z.string(),z.any()).default({})});
+const saleItemSchema=z.object({
+  productId:z.string().uuid(),quantity:z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.00001,"Miqdor 3 kasr belgidan oshmasin"),unitPrice:z.coerce.number().min(0).max(9000000000000),
+  discountPercent:z.coerce.number().min(0).max(100).default(0),metadata:z.record(z.string(),z.any()).default({}),
+});
 const validBusinessCalendarDate=(value)=>{
   if(typeof value!=="string"||!/^(?!0000)\d{4}-\d{2}-\d{2}$/.test(value))return false;
   const candidate=new Date(value+"T12:00:00.000Z");
@@ -79,12 +85,6 @@ const validBusinessCalendarDate=(value)=>{
 };
 const businessDateSchema=z.string().refine(validBusinessCalendarDate,"Haqiqiy kalendar sanasini kiriting");
 
-const moneyValue=z.coerce.number().min(0).max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
-const paymentSchema=z.object({method:z.enum(["cash","card","transfer"]),amount:moneyValue,metadata:z.record(z.string(),z.any()).default({})});
-const saleItemSchema=z.object({
-  productId:z.string().uuid(),quantity:z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.00001,"Miqdor 3 kasr belgidan oshmasin"),unitPrice:z.coerce.number().min(0).max(9000000000000),
-  discountPercent:z.coerce.number().min(0).max(100).default(0),metadata:z.record(z.string(),z.any()).default({}),
-});
 const saleSchema=z.object({
   storeId:z.string().uuid(),shiftId:z.string().uuid(),clientReference:z.string().trim().max(120).default(""),
   businessDate:businessDateSchema.optional(),
