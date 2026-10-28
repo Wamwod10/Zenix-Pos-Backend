@@ -12,12 +12,15 @@ import { enqueueNotification, enqueueStockLevelNotification } from "../services/
 import { hasPermission } from "../lib/permissions.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 import {financialWriteReplay} from '../services/financialWriteReplay.js';
-import {assertInventoryAddition} from '../lib/inventoryNumeric.js';
+import {assertInventoryAddition,isInventoryQuantityInput} from '../lib/inventoryNumeric.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
 router.use((req,res,next)=>req.method==='GET'&&['/receipt-reconciliation','/transfer-reconciliation'].includes(req.path)?next():requireActiveLicense(req,res,next));
-const qty=z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin');
+const quantityInput=(options={})=>z.union([z.number(),z.string()])
+  .refine(value=>isInventoryQuantityInput(value,options),{message:'Miqdor aniq 3 kasr xonagacha bo‘lishi kerak'})
+  .transform(Number);
+const qty=quantityInput();
 const uniqueProductArray=(schema,message="Bir mahsulot faqat bitta qatorda bo‘lishi mumkin")=>z.array(schema).min(1).superRefine((items,ctx)=>{
   const seen=new Set();
   items.forEach((item,index)=>{if(seen.has(item.productId))ctx.addIssue({code:z.ZodIssueCode.custom,path:[index,"productId"],message});seen.add(item.productId)});
@@ -244,7 +247,7 @@ router.post("/receive",requirePermission("inventoryAdjust"),asyncRoute(async(req
 }));
 
 router.post("/adjust",requirePermission("inventoryAdjust"),asyncRoute(async(req,res)=>{
-  const input=z.object({storeId:z.string().uuid(),warehouseId:z.string().uuid().optional().nullable(),productId:z.string().uuid(),delta:z.coerce.number().refine((v)=>v!==0),reason:z.string().trim().min(2).max(500),allowNegative:z.boolean().default(false)}).parse(req.body);
+  const input=z.object({storeId:z.string().uuid(),warehouseId:z.string().uuid().optional().nullable(),productId:z.string().uuid(),delta:quantityInput({allowNegative:true}),reason:z.string().trim().min(2).max(500),allowNegative:z.boolean().default(false)}).parse(req.body);
   assertStoreScope(req.user,input.storeId);
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;const store=await assertOrganizationStore(client,orgId,input.storeId);const product=await assertProduct(client,orgId,input.productId);const balance=await lockBalance(client,{orgId,storeId:input.storeId,productId:input.productId});
@@ -298,7 +301,7 @@ router.post("/transfers/:id/dispatch",requirePermission("transferApprove"),async
 }));
 
 router.post("/transfers/:id/receive",requirePermission("transferReceive"),asyncRoute(async(req,res)=>{
-  const receiveItem=z.object({productId:z.string().uuid(),receivedQuantity:z.coerce.number().min(0).max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin')});
+  const receiveItem=z.object({productId:z.string().uuid(),receivedQuantity:quantityInput({allowZero:true})});
   const input=z.object({items:z.array(receiveItem).default([]).superRefine((items,ctx)=>{const seen=new Set();items.forEach((item,index)=>{if(seen.has(item.productId))ctx.addIssue({code:z.ZodIssueCode.custom,path:[index,"productId"],message:"Bir mahsulot qabul ro‘yxatida takrorlanmasin"});seen.add(item.productId)})}),differenceReason:z.string().trim().max(500).default("")}).parse(req.body||{});
   const result=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;const transfer=(await client.query(`SELECT * FROM stock_transfers WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.params.id,orgId])).rows[0];
