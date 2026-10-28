@@ -18,6 +18,15 @@ const scaled=(value,scale)=>{
  const units=BigInt(match[2])*10n**BigInt(scale)+BigInt((match[3]||'').padEnd(scale,'0'));
  return match[1]?-units:units;
 };
+// Derive UI/audit/stock-movement snapshot balances in exact thousandths.
+// Native JS 10.2 + 0.1 can become 10.299999999999999; PostgreSQL stores
+// NUMERIC(18,3), so keep the same canonical decimal at every layer.
+export function sumInventoryQuantity(values){
+ const units=values.reduce((sum,value)=>sum+scaled(value,3),0n);
+ const absolute=units<0n?-units:units;
+ if(absolute>limit||absolute>BigInt(Number.MAX_SAFE_INTEGER))throw new HttpError(409,'Ombor miqdori aniq hisoblash chegarasidan oshadi.','INVENTORY_NUMERIC_LIMIT');
+ return Number(`${units<0n?'-':''}${absolute/1000n}.${String(absolute%1000n).padStart(3,'0')}`);
+}
 // Called on the locked balance before tracking or monetary mutations. PostgreSQL
 // remains authoritative for weighted average and its existing NUMERIC rounding.
 export function assertInventoryAddition(balance,quantity,unitCost){

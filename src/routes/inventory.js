@@ -12,7 +12,7 @@ import { enqueueNotification, enqueueStockLevelNotification } from "../services/
 import { hasPermission } from "../lib/permissions.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 import {financialWriteReplay} from '../services/financialWriteReplay.js';
-import {assertInventoryAddition,isInventoryQuantityInput} from '../lib/inventoryNumeric.js';
+import {assertInventoryAddition,isInventoryQuantityInput,sumInventoryQuantity} from '../lib/inventoryNumeric.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -211,7 +211,7 @@ async function dispatchTransfer(client,{orgId,transfer,userId}){
   const items=(await client.query(`SELECT ti.*,p.name,p.unit,p.min_stock FROM stock_transfer_items ti JOIN products p ON p.id=ti.product_id WHERE ti.transfer_id=$1 ORDER BY ti.product_id`,[transfer.id])).rows;
   for(const line of items){
     const balance=await lockBalance(client,{orgId,storeId:transfer.from_store_id,productId:line.product_id});
-    const before=Number(balance.quantity),sentQuantity=Number(line.sent_quantity),after=before-sentQuantity;
+    const before=Number(balance.quantity),sentQuantity=Number(line.sent_quantity),after=sumInventoryQuantity([balance.quantity,-sentQuantity]);
     if(after<0)throw new HttpError(409,`${line.name}: jo‘natish uchun qoldiq yetarli emas`,"INSUFFICIENT_STOCK");
     const tracking=await allocateTransferTracking(client,{orgId,transferId:transfer.id,storeId:transfer.from_store_id,productId:line.product_id,quantity:sentQuantity,balanceQuantity:before});
     await client.query(`UPDATE stock_transfer_items SET unit_cost_snapshot=$4,metadata=metadata||$3::jsonb WHERE transfer_id=$1 AND product_id=$2`,[transfer.id,line.product_id,JSON.stringify({tracking}),balance.avg_cost]);
@@ -256,7 +256,7 @@ router.post("/adjust",requirePermission("inventoryAdjust"),asyncRoute(async(req,
       const stock=(await client.query('SELECT quantity FROM warehouse_balances WHERE organization_id=$1 AND store_id=$2 AND warehouse_id=$3 AND product_id=$4 FOR UPDATE',[orgId,input.storeId,input.warehouseId,input.productId])).rows[0];
       if(Number(stock?.quantity||0)+input.delta<0)throw new HttpError(409,'Tanlangan omborda qoldiq yetarli emas','INSUFFICIENT_STOCK');
     }
-    const before=Number(balance.quantity),after=before+Number(input.delta);if(after<0&&!input.allowNegative)throw new HttpError(409,"Qoldiq manfiy bo‘lib qoladi","NEGATIVE_STOCK");
+    const before=Number(balance.quantity),after=sumInventoryQuantity([balance.quantity,input.delta]);if(after<0&&!input.allowNegative)throw new HttpError(409,"Qoldiq manfiy bo‘lib qoladi","NEGATIVE_STOCK");
     await assertManualQuantityChangeSafe(client,{orgId,storeId:input.storeId,productId:input.productId,current:before,after});
     const id=crypto.randomUUID();
     await client.query(`UPDATE inventory_balances SET quantity=$4,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3`,[orgId,input.storeId,input.productId,after]);
@@ -317,7 +317,7 @@ router.post("/transfers/:id/receive",requirePermission("transferReceive"),asyncR
       if(line.unit_cost_snapshot==null)throw new HttpError(409,'Transfer tannarxi mavjud emas; tekshirish talab etiladi','TRANSFER_COST_UNKNOWN');
       if(received>sent)throw new HttpError(409,'Transferda ortiqcha qabul qilish tekshiruv talab qiladi','TRANSFER_OVER_RECEIPT');
       const tracking=line.metadata?.tracking||{};
-      const balance=await lockBalance(client,{orgId,storeId:transfer.to_store_id,productId:line.product_id});const before=Number(balance.quantity),after=before+received;
+      const balance=await lockBalance(client,{orgId,storeId:transfer.to_store_id,productId:line.product_id});const before=Number(balance.quantity),after=sumInventoryQuantity([balance.quantity,received]);
       assertInventoryAddition(balance,received,line.unit_cost_snapshot);
       if(before<0)throw new HttpError(409,'Manfiy qoldiq tannarxini tekshirish kerak','NEGATIVE_COST_BALANCE');
       const receivedTracking=await receiveTransferTracking(client,{orgId,transferId:transfer.id,fromStoreId:transfer.from_store_id,toStoreId:transfer.to_store_id,productId:line.product_id,sentQuantity:sent,receivedQuantity:received,tracking});
@@ -347,7 +347,7 @@ router.post("/transfers/:id/cancel",requirePermission("transferCancel"),asyncRou
       const items=(await client.query(`SELECT * FROM stock_transfer_items WHERE transfer_id=$1 ORDER BY product_id`,[transfer.id])).rows;
       for(const line of items){
         if(line.unit_cost_snapshot==null)throw new HttpError(409,'Transfer tannarxi mavjud emas; tekshirish talab etiladi','TRANSFER_COST_UNKNOWN');
-        const balance=await lockBalance(client,{orgId,storeId:transfer.from_store_id,productId:line.product_id});const before=Number(balance.quantity),after=before+Number(line.sent_quantity);
+        const balance=await lockBalance(client,{orgId,storeId:transfer.from_store_id,productId:line.product_id});const before=Number(balance.quantity),after=sumInventoryQuantity([balance.quantity,line.sent_quantity]);
         assertInventoryAddition(balance,line.sent_quantity,line.unit_cost_snapshot);
         if(before<0)throw new HttpError(409,'Manfiy qoldiq tannarxini tekshirish kerak','NEGATIVE_COST_BALANCE');
         await restoreTransferTrackingToSource(client,{orgId,transferId:transfer.id,storeId:transfer.from_store_id,productId:line.product_id,tracking:line.metadata?.tracking||{}});
