@@ -34,6 +34,14 @@ test('supermarket final QA: real HTTP money, credit, units, scope and shift life
   await t.test('zero, negative, short and excess payments reject atomically',async()=>{
    const initial=Number((await pool.query('SELECT count(*) n FROM sales WHERE organization_id=$1',[fixture.org])).rows[0].n);
    for(const payments of [[],[{method:'cash',amount:0}],[{method:'cash',amount:-1}],[{method:'cash',amount:126999}],[{method:'card',amount:127001}]]){const result=await request('/api/sales',{...packet(6),payments},cashier);assert.ok(result.status>=400,JSON.stringify(result))}
+   // A tolerance-based 2-decimal check incorrectly accepted tiny fractions
+   // which PostgreSQL NUMERIC(18,2) silently rounded. Reject before writes.
+   for(const invalid of [127000.00000001,'127000.00000001','',null]){
+    const bad=await request('/api/sales',{...packet(6),payments:[{method:'cash',amount:invalid}]},cashier);
+    assert.equal(bad.status,400,'invalid tender precision '+String(invalid));
+   }
+   const invalidCredit=await request('/api/sales',{...packet(6),creditAmount:0.00000001},cashier);
+   assert.equal(invalidCredit.status,400,'fractional credit must fail schema validation');
    const short=await request('/api/sales',{...packet(6),metadata:{source:'pos-pro',cashTendered:126999}},cashier);assert.ok(short.status>=400,JSON.stringify(short));
    assert.equal(Number((await pool.query('SELECT count(*) n FROM sales WHERE organization_id=$1',[fixture.org])).rows[0].n),initial);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[fixture.products[6].id])).rows[0].quantity),20);
   });
