@@ -72,6 +72,13 @@ const normalizedLinePricing=({product,line,posRules,user})=>{
   return {unitPrice:storedUnitPrice,discountPercent:storedDiscount,gross,lineTotal,effectiveDiscount,finalUnitPrice,packaging:pack?{unit:pack.unit,factor:Number(pack.factor),salePrice:Number(pack.salePrice)}:null};
 };
 
+const validBusinessCalendarDate=(value)=>{
+  if(typeof value!=="string"||!/^(?!0000)\d{4}-\d{2}-\d{2}$/.test(value))return false;
+  const candidate=new Date(value+"T12:00:00.000Z");
+  return Number.isFinite(candidate.getTime())&&candidate.toISOString().slice(0,10)===value;
+};
+const businessDateSchema=z.string().refine(validBusinessCalendarDate,"Haqiqiy kalendar sanasini kiriting");
+
 const moneyValue=z.coerce.number().min(0).max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
 const paymentSchema=z.object({method:z.enum(["cash","card","transfer"]),amount:moneyValue,metadata:z.record(z.string(),z.any()).default({})});
 const saleItemSchema=z.object({
@@ -80,7 +87,7 @@ const saleItemSchema=z.object({
 });
 const saleSchema=z.object({
   storeId:z.string().uuid(),shiftId:z.string().uuid(),clientReference:z.string().trim().max(120).default(""),
-  businessDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  businessDate:businessDateSchema.optional(),
   items:z.array(saleItemSchema).min(1).superRefine((items,ctx)=>{
     const seen=new Set();
     items.forEach((item,index)=>{
@@ -186,7 +193,7 @@ router.delete("/holds/:id",requirePermission("moduleSales"),asyncRoute(async(req
 }));
 
 router.post("/business-days/close",requirePermission("closeBusinessDay"),asyncRoute(async(req,res)=>{
-  const input=z.object({storeId:z.string().uuid(),businessDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),metadata:z.record(z.string(),z.any()).default({})}).parse(req.body);
+  const input=z.object({storeId:z.string().uuid(),businessDate:businessDateSchema,metadata:z.record(z.string(),z.any()).default({})}).parse(req.body);
   assertStoreScope(req.user,input.storeId);
   const day=await withTransaction(async(client)=>{
     const orgId=req.user.organizationId;
