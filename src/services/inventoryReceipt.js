@@ -3,14 +3,16 @@ import {assertFileAssetBinding} from './fileAssets.js';
 import {z} from 'zod';
 import {requestFingerprint} from './posReplay.js';
 import {lineAmount,sumMoney,isMoneyInput,exactDecimalNumber} from '../lib/posMoney.js';
-import {assertInventoryAddition} from '../lib/inventoryNumeric.js';
+import {assertInventoryAddition,isInventoryQuantityInput} from '../lib/inventoryNumeric.js';
 import {setInventoryWarehouse} from './warehouses.js';
 import {validateProductMetadata} from '../lib/productOptions.js';
 import {HttpError} from '../lib/http.js';
 import {assertOrganizationStore,assertStoreScope} from '../lib/storeScope.js';
 import {writeAudit} from './audit.js';
 import {enqueueNotification} from './notifications.js';
-const qty=z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.000001,'Miqdor 3 kasr xonadan oshmasin');
+const qty=z.union([z.string(),z.number()])
+  .refine(isInventoryQuantityInput,{message:'Miqdor ko‘pi bilan 3 kasr xonali musbat qiymat bo‘lishi kerak'})
+  .transform(Number).pipe(z.number().positive().max(999999999));
 async function lockBalance(client,{orgId,storeId,productId}){
   await client.query(`INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,0,0) ON CONFLICT(store_id,product_id) DO NOTHING`,[orgId,storeId,productId]);
   const row=(await client.query(`SELECT * FROM inventory_balances WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 FOR UPDATE`,[orgId,storeId,productId])).rows[0];
@@ -25,7 +27,9 @@ async function lockBalance(client,{orgId,storeId,productId}){
   }).refine((line)=>Boolean(line.productId||line.name||line.barcode),{message:"Mahsulot ID yoki nomi kerak"});
   const inventoryReceiptSchema=z.object({
     storeId:z.string().uuid(),warehouseId:z.string().uuid().optional().nullable(),lines:z.array(lineSchema).min(1).max(250),supplierId:z.string().uuid().optional().nullable(),newSupplier:z.object({name:z.string().trim().min(2).max(180),phone:z.string().trim().max(40).default("")}).optional().nullable(),
-    settlement:z.object({status:z.enum(["paid","partial","credit"]).default("paid"),paidAmount:z.coerce.number().min(0).default(0),invoiceNo:z.string().trim().max(120).default(""),dueDate:z.string().optional().nullable(),note:z.string().trim().max(500).default("")}).default({}),
+    settlement:z.object({status:z.enum(["paid","partial","credit"]).default("paid"),paidAmount:z.union([z.string(),z.number()])
+      .refine(isMoneyInput,{message:'To‘langan summa 2 kasr aniqligida bo‘lishi kerak'})
+      .transform(Number).pipe(z.number().min(0)).default(0),invoiceNo:z.string().trim().max(120).default(""),dueDate:z.string().optional().nullable(),note:z.string().trim().max(500).default("")}).default({}),
     clientReference:z.string().trim().max(160).default(""),reference:z.string().trim().max(160).default(""),note:z.string().trim().max(500).default(""),
   }).refine((value)=>!(value.supplierId&&value.newSupplier),{message:"Mavjud yoki yangi ta’minotchidan bittasini tanlang"});
 

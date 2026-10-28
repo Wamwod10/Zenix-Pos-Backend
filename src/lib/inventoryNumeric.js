@@ -1,6 +1,16 @@
 import {HttpError} from './http.js';
 
 const limit=999999999999999999n;
+// Raw receipt quantities must match NUMERIC(18,3) exactly before Number()
+// conversion. Do not accept 0.0000001 and silently post 0.000 to stock.
+export function isInventoryQuantityInput(value){
+ if(!['string','number'].includes(typeof value))return false;
+ const raw=String(value).trim();
+ if(!/^\d+(?:\.\d{1,3})?$/.test(raw))return false;
+ const [whole,fraction='']=raw.split('.');
+ const units=BigInt(whole)*1000n+BigInt(fraction.padEnd(3,'0'));
+ return units>0n&&units<=999999999000n;
+}
 const scaled=(value,scale)=>{
  const match=String(value).match(/^(-?)(\d+)(?:\.(\d+))?$/);
  if(!match||(match[3]||'').length>scale)throw new HttpError(409,'Ombor qiymati yoki miqdori aniqligini tekshiring.','INVENTORY_NUMERIC_LIMIT');
