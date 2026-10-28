@@ -80,6 +80,26 @@ test('supplier payments and expenses preserve money, replay and tenant boundarie
    expectStatus(await request(`/api/suppliers/${decimals.supplier}/payments`,decimals.token,{storeId:decimals.store,amount:0.3,method:'card',clientReference:randomUUID()}),201);
    assert.equal((await pool.query('SELECT sum(total-paid_amount)::text debt FROM supplier_invoices WHERE supplier_id=$1',[decimals.supplier])).rows[0].debt,'0.00');
   });
+  await t.test('expense POST and PATCH reject sub-cent input without ledger, cash or audit mutations',async()=>{
+   const f=await fixture(),bad=['',null,0,0.001,'0.001',25.00000001,'127000.00000001'];
+   for(const amount of bad){
+    const result=await request('/api/expenses',f.token,{storeId:f.store,title:'Expense invalid',amount,paymentMethod:'card',clientReference:randomUUID()});
+    expectStatus(result,400);
+   }
+   assert.equal(Number((await pool.query('SELECT count(*) n FROM expenses WHERE organization_id=$1',[f.org])).rows[0].n),0);
+   assert.equal(Number((await pool.query("SELECT count(*) n FROM shift_movements WHERE organization_id=$1 AND source='expense'",[f.org])).rows[0].n),0);
+   assert.equal(Number((await pool.query('SELECT count(*) n FROM financial_write_replays WHERE organization_id=$1',[f.org])).rows[0].n),0);
+   const created=expectStatus(await request('/api/expenses',f.token,{storeId:f.store,title:'Expense valid',category:'Travel',note:'Card payment',amount:'25.50',paymentMethod:'card',clientReference:randomUUID()}),201).expense;
+   for(const amount of bad){
+    expectStatus(await request(`/api/expenses/${created.id}`,f.token,{amount},'PATCH'),400);
+   }
+   assert.equal((await pool.query('SELECT amount::text amount FROM expenses WHERE id=$1',[created.id])).rows[0].amount,'25.50');
+   assert.equal(Number((await pool.query("SELECT count(*) n FROM audit_logs WHERE organization_id=$1 AND entity_type='expense' AND action='update'",[f.org])).rows[0].n),0);
+   expectStatus(await request(`/api/expenses/${created.id}`,f.token,{amount:'25.51'},'PATCH'),200);
+   assert.equal((await pool.query('SELECT amount::text amount FROM expenses WHERE id=$1',[created.id])).rows[0].amount,'25.51');
+   const updated=(await pool.query('SELECT payment_method,category,note,shift_id FROM expenses WHERE id=$1',[created.id])).rows[0];
+   assert.deepEqual(updated,{payment_method:'card',category:'Travel',note:'Card payment',shift_id:null},'amount-only PATCH must preserve other fields');
+  });
   await t.test('expense retries post one expense and one cash movement; changed intent conflicts',async()=>{
    const f=await fixture();const body={storeId:f.store,shiftId:f.shift,title:'Transport',amount:25.50,paymentMethod:'cash',clientReference:randomUUID()};
    const results=await Promise.all([request('/api/expenses',f.token,body),request('/api/expenses',f.token,body)]);

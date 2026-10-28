@@ -10,6 +10,7 @@ import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { hasPermission } from "../lib/permissions.js";
 import {financialWriteReplay,lockFinancialOrganization} from '../services/financialWriteReplay.js';
 import {assertFileAssetBinding} from '../services/fileAssets.js';
+import {isMoneyInput} from '../lib/posMoney.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
@@ -19,11 +20,25 @@ const schema=z.object({
   shiftId:z.string().uuid().optional().nullable(),
   title:z.string().trim().min(2).max(200),
   category:z.string().trim().max(120).default(""),
-  amount:z.coerce.number().positive().max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin'),
+  amount:z.union([z.string(),z.number()])
+    .refine(isMoneyInput,{message:'Summa 2 kasr aniqligida bo‘lishi kerak'})
+    .transform(Number)
+    .pipe(z.number().positive().max(9000000000000)),
   paymentMethod:z.enum(["cash","card","transfer"]).default("cash"),
   note:z.string().max(500).default(""),
   metadata:z.record(z.string(),z.any()).default({}),
   clientReference:z.string().trim().max(120).default(""),
+});
+
+// Editing a single expense field must not inherit create-form defaults.
+// Otherwise amount-only PATCH silently changes card -> cash, requiring a shift
+// and potentially resetting category/note.
+const patchSchema=schema.partial().extend({
+  category:z.string().trim().max(120).optional(),
+  paymentMethod:z.enum(["cash","card","transfer"]).optional(),
+  note:z.string().max(500).optional(),
+  metadata:z.record(z.string(),z.any()).optional(),
+  clientReference:z.string().trim().max(120).optional(),
 });
 
 async function requireCashShift(client,{organizationId,storeId,shiftId,paymentMethod}){
@@ -63,7 +78,7 @@ router.post("/",requirePermission("expensesWrite"),asyncRoute(async(req,res)=>{
 }));
 
 router.patch("/:id",requirePermission("expensesWrite"),asyncRoute(async(req,res)=>{
-  const input=schema.partial().parse(req.body);
+  const input=patchSchema.parse(req.body);
   const expense=await withTransaction(async(client)=>{
     await lockFinancialOrganization(client,req.user.organizationId);
     const old=(await client.query("SELECT * FROM expenses WHERE id=$1 AND organization_id=$2 FOR UPDATE",[req.params.id,req.user.organizationId])).rows[0];
