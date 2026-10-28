@@ -10,11 +10,16 @@ import { writeAudit } from "../services/audit.js";
 import { enqueueNotification } from "../services/notifications.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { hasPermission } from "../lib/permissions.js";
-import {sumMoney} from '../lib/posMoney.js';
+import {sumMoney,isMoneyInput} from '../lib/posMoney.js';
 import {financialWriteReplay,lockFinancialOrganization} from '../services/financialWriteReplay.js';
 
 const router=Router();
-const moneyValue=z.coerce.number().min(0).max(999999999999.99).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
+// Never coerce nullable/blank monetary input to 0 or tolerate fractions
+// smaller than a cent; PostgreSQL NUMERIC(18,2) must never round an intent.
+const moneyValue=z.union([z.string(),z.number()])
+  .refine(isMoneyInput,{message:'Summa aniq 2 kasr belgigacha bo‘lishi kerak'})
+  .transform(Number)
+  .pipe(z.number().min(0).max(999999999999.99));
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
 const supplierSchema=z.object({name:z.string().trim().min(2).max(180),phone:z.string().trim().max(40).default(""),contactName:z.string().trim().max(160).default(""),telegram:z.string().trim().max(160).default(""),metadata:z.record(z.string(),z.any()).default({})});
 

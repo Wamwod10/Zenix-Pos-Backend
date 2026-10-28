@@ -37,6 +37,32 @@ test('supplier payments and expenses preserve money, replay and tenant boundarie
     const conflict=await request(path,f.token,{...body,...change});expectStatus(conflict,409);assert.equal(conflict.error.code,'IDEMPOTENCY_CONFLICT');
    }
   });
+  await t.test('supplier invoice and payment reject blank/null and sub-cent input before any write',async()=>{
+   const f=await fixture(),invoicePath=`/api/suppliers/${f.supplier}/invoices`,payPath=`/api/suppliers/${f.supplier}/payments`;
+   const invoiceBody={storeId:f.store,invoiceNo:'FIN-002',total:100.30,paidAmount:0.10,paymentMethod:'card'};
+   const invalidMoney=[0.001,'0.001',127000.00000001,'127000.00000001','',null];
+   for(const value of invalidMoney){
+    const invalidTotal=await request(invoicePath,f.token,{...invoiceBody,total:value,clientReference:randomUUID()});
+    expectStatus(invalidTotal,400);
+    const invalidPaid=await request(invoicePath,f.token,{...invoiceBody,paidAmount:value,clientReference:randomUUID()});
+    expectStatus(invalidPaid,400);
+   }
+   assert.equal(Number((await pool.query('SELECT count(*) AS n FROM supplier_invoices WHERE supplier_id=$1',[f.supplier])).rows[0].n),0);
+   assert.equal(Number((await pool.query('SELECT count(*) AS n FROM supplier_payments WHERE supplier_id=$1',[f.supplier])).rows[0].n),0);
+   assert.equal(Number((await pool.query('SELECT count(*) AS n FROM financial_write_replays WHERE organization_id=$1',[f.org])).rows[0].n),0);
+   const valid=expectStatus(await request(invoicePath,f.token,{...invoiceBody,clientReference:randomUUID()}),201).invoice;
+   assert.ok(valid.id,'valid 2-decimal invoice accepted');
+   for(const value of invalidMoney){
+    const result=await request(payPath,f.token,{storeId:f.store,invoiceId:valid.id,amount:value,method:'card',clientReference:randomUUID()});
+    expectStatus(result,400);
+   }
+   assert.equal((await pool.query("SELECT sum(total-paid_amount)::text AS debt FROM supplier_invoices WHERE supplier_id=$1",[f.supplier])).rows[0].debt,'100.20');
+   assert.equal(Number((await pool.query('SELECT count(*) AS n FROM supplier_payments WHERE supplier_id=$1',[f.supplier])).rows[0].n),1,'only valid invoice initial payment is persisted');
+   assert.equal(Number((await pool.query("SELECT count(*) AS n FROM shift_movements WHERE organization_id=$1 AND source='supplier'",[f.org])).rows[0].n),0);
+   const paid=expectStatus(await request(payPath,f.token,{storeId:f.store,invoiceId:valid.id,amount:100.20,method:'card',clientReference:randomUUID()}),201).payment;
+   assert.ok(paid.id);
+   assert.equal((await pool.query("SELECT sum(total-paid_amount)::text AS debt FROM supplier_invoices WHERE supplier_id=$1",[f.supplier])).rows[0].debt,'0.00');
+  });
   await t.test('supplier debt never accepts even a one-cent overpayment or sub-cent input',async()=>{
    const f=await fixture();const id=await invoice(f,'0.10');const body={storeId:f.store,invoiceId:id,amount:0.11,method:'card',clientReference:randomUUID()};
    const result=await request(`/api/suppliers/${f.supplier}/payments`,f.token,body);expectStatus(result,409);assert.equal(result.error.code,'PAYMENT_EXCEEDS_DEBT');
