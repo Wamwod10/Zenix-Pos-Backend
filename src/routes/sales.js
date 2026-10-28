@@ -8,7 +8,8 @@ import { enqueueNotification, enqueueStockLevelNotification } from "../services/
 import { writeAudit } from "../services/audit.js";
 import { assertOrganizationStore, assertStoreScope } from "../lib/storeScope.js";
 import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js";
-import { organizationBusinessDateISO } from "../lib/businessDate.js";
+import { organizationBusinessDateISO, organizationCalendarDateISO } from "../lib/businessDate.js";
+import {isValidCalendarDateISO,isAcceptableCreditDueDate} from "../lib/creditDueDate.js";
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { assertSharedOpenShift } from "../lib/branchShift.js";
 import { planSaleTracking, consumeSaleTracking } from "../services/saleTrackingSelections.js";
@@ -88,7 +89,7 @@ const saleSchema=z.object({
       seen.add(item.productId);
     });
   }),
-  payments:z.array(paymentSchema).default([]),customer:z.record(z.string(),z.any()).default({}),customerId:z.string().uuid().optional().nullable(),creditAmount:moneyValue.default(0),creditDueDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),metadata:z.record(z.string(),z.any()).default({}),
+  payments:z.array(paymentSchema).default([]),customer:z.record(z.string(),z.any()).default({}),customerId:z.string().uuid().optional().nullable(),creditAmount:moneyValue.default(0),creditDueDate:z.string().refine(isValidCalendarDateISO,{message:"Nasiya muddati haqiqiy kalendar sana bo‘lishi kerak"}).optional().nullable(),metadata:z.record(z.string(),z.any()).default({}),
 });
 
 async function restoreInventoryBatches(client,{organizationId,storeId,productId,tracking,returnStart,returnEnd}){
@@ -275,6 +276,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
     if(creditAmount>0){
       if(!input.customerId)throw new HttpError(409,"Nasiya savdo uchun mijozni tanlang","CREDIT_CUSTOMER_REQUIRED");
       if(!input.creditDueDate)throw new HttpError(409,"Nasiya to‘lov muddatini kiriting","CREDIT_DUE_DATE_REQUIRED");
+       if(!isAcceptableCreditDueDate(input.creditDueDate,organizationCalendarDateISO(organization)))throw new HttpError(409,"Nasiya muddati bugundan oldin bo‘lishi mumkin emas","CREDIT_DUE_DATE_PAST");
       creditCustomer=(await client.query("SELECT * FROM customers WHERE id=$1 AND organization_id=$2 AND archived=false FOR UPDATE",[input.customerId,orgId])).rows[0];
       if(!creditCustomer)throw new HttpError(404,"Mijoz topilmadi");
       const currentDebt=Number((await client.query("SELECT COALESCE(sum(amount),0) balance FROM customer_ledger WHERE organization_id=$1 AND customer_id=$2",[orgId,input.customerId])).rows[0]?.balance||0);
