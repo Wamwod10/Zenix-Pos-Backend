@@ -53,3 +53,13 @@ export const sumExactDecimals=values=>{
 export const isMoneyInput=value=>{
  try{const r=ratio(value);return r.numerator>=0n&&r.numerator<=9000000000000n*r.denominator&&(r.numerator*100n)%r.denominator===0n}catch{return false}
 };
+// The optional cashier snapshot is signed (unlike tender amounts), but must
+// still be exact cents. Never let a string/number lose cents during conversion.
+export const isSignedMoneyInput=value=>{
+ try{
+  const r=ratio(value),absolute=r.numerator<0n?-r.numerator:r.numerator;
+  return absolute*100n<=BigInt(Number.MAX_SAFE_INTEGER)*r.denominator&&
+   (r.numerator*100n)%r.denominator===0n&&
+   exactDecimalNumber(value)===Number(value);
+ }catch{return false}
+};
