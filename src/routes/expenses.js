@@ -10,6 +10,7 @@ import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { hasPermission } from "../lib/permissions.js";
 import {financialWriteReplay,lockFinancialOrganization} from '../services/financialWriteReplay.js';
 import {assertFileAssetBinding} from '../services/fileAssets.js';
+import {isMoneyInput} from '../lib/posMoney.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);router.use(requireActiveLicense);
@@ -19,7 +20,10 @@ const schema=z.object({
   shiftId:z.string().uuid().optional().nullable(),
   title:z.string().trim().min(2).max(200),
   category:z.string().trim().max(120).default(""),
-  amount:z.coerce.number().positive().max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin'),
+  amount:z.union([z.string(),z.number()])
+    .refine(isMoneyInput,{message:'Summa 2 kasr aniqligida bo‘lishi kerak'})
+    .transform(Number)
+    .pipe(z.number().positive().max(9000000000000)),
   paymentMethod:z.enum(["cash","card","transfer"]).default("cash"),
   note:z.string().max(500).default(""),
   metadata:z.record(z.string(),z.any()).default({}),
