@@ -105,16 +105,32 @@ router.post("/:id/movements", requirePermission("moduleShifts"), asyncRoute(asyn
     referenceId: z.string().max(120).default(""),
   }).parse(req.body);
 
-  const movement = await withTransaction(async (client) => {
+  const result = await withTransaction(async (client) => {
     await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId});
+    // A single shift row lock serializes both duplicate manual attempts and
+    // concurrent shift close. Keep closed shifts readable for confirmed replay.
     const shift = (await client.query(
-      "SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND status='open' FOR UPDATE",
+      "SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 FOR UPDATE",
       [req.params.id, req.user.organizationId],
     )).rows[0];
-    if (!shift) throw new HttpError(404, "Ochiq smena topilmadi");
+    if (!shift) throw new HttpError(404, "Smena topilmadi");
     assertStoreScope(req.user, shift.store_id);
     await lockStoreTradingAuthorization(client,{organizationId:req.user.organizationId,storeId:shift.store_id});
     assertShiftControl(req.user, shift);
+    if (input.referenceId) {
+      const previous=(await client.query(`
+        SELECT * FROM shift_movements
+        WHERE organization_id=$1 AND shift_id=$2 AND source='manual' AND reference_id=$3
+        ORDER BY created_at,id LIMIT 1
+      `,[req.user.organizationId,shift.id,input.referenceId])).rows[0];
+      if(previous) {
+        if(previous.type!==input.type||Number(previous.amount)!==input.amount||
+          previous.reason!==input.reason||String(previous.created_by)!==String(req.user.id))
+          throw new HttpError(409,"Kassa harakati identifikatori boshqa ma’lumot bilan ishlatilgan","SHIFT_MOVEMENT_REPLAY_CONFLICT");
+        return {movement:previous,replayed:true};
+      }
+    }
+    if (shift.status!=='open') throw new HttpError(404, "Ochiq smena topilmadi");
     if(input.type==="out")await assertShiftCashAvailable(client,shift,input.amount);
 
     const row = (await client.query(`
@@ -134,10 +150,10 @@ router.post("/:id/movements", requirePermission("moduleShifts"), asyncRoute(asyn
       description: `${input.reason} · ${input.amount}`,
       after: { movementId: row.id, type: row.type, amount: Number(row.amount), reason: row.reason },
     });
-    return row;
+    return {movement:row,replayed:false};
   });
 
-  ok(res, { movement }, 201);
+  ok(res, { movement:result.movement }, result.replayed?200:201);
 }));
 
 router.post("/:id/close", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
