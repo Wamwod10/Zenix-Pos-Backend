@@ -13,7 +13,7 @@ import {isValidCalendarDateISO,isAcceptableCreditDueDate} from "../lib/creditDue
 import { assertShiftCashAvailable } from "../lib/shiftCash.js";
 import { assertSharedOpenShift } from "../lib/branchShift.js";
 import { planSaleTracking, consumeSaleTracking } from "../services/saleTrackingSelections.js";
-import {lineAmount,refundAmount,sumMoney,roundMoney,exactDecimalNumber,sumExactDecimals} from '../lib/posMoney.js';
+import {lineAmount,refundAmount,sumMoney,roundMoney,exactDecimalNumber,sumExactDecimals,isMoneyInput} from '../lib/posMoney.js';
 import {holdSchema,holdView,holdIntent,validateHoldCatalog} from '../services/saleHolds.js';
 import {requestFingerprint,assertSaleReplay,assertRefundReplay} from '../services/posReplay.js';
 import {salesPage} from '../services/salesDirectory.js';
@@ -73,7 +73,11 @@ const normalizedLinePricing=({product,line,posRules,user})=>{
   return {unitPrice:storedUnitPrice,discountPercent:storedDiscount,gross,lineTotal,effectiveDiscount,finalUnitPrice,packaging:pack?{unit:pack.unit,factor:Number(pack.factor),salePrice:Number(pack.salePrice)}:null};
 };
 
-const moneyValue=z.coerce.number().min(0).max(9000000000000).refine(value=>Math.abs(value*100-Math.round(value*100))<0.00001,'Summa 2 kasr belgidan oshmasin');
+// Validate precise tiyin amounts before coercion. A floating tolerance can
+// accept 127000.00000001 and silently record 127000.00 in NUMERIC(18,2).
+const moneyValue=z.union([z.number(),z.string()])
+ .refine(isMoneyInput,{message:"Summa 2 kasr aniqligida bo‘lishi kerak"})
+ .transform(Number);
 const paymentSchema=z.object({method:z.enum(["cash","card","transfer"]),amount:moneyValue,metadata:z.record(z.string(),z.any()).default({})});
 const saleItemSchema=z.object({
   productId:z.string().uuid(),quantity:z.coerce.number().positive().max(999999999).refine(value=>Math.abs(value*1000-Math.round(value*1000))<0.00001,"Miqdor 3 kasr belgidan oshmasin"),unitPrice:z.coerce.number().min(0).max(9000000000000),
