@@ -11,10 +11,24 @@ test('transfer receiving enforces exact quantity precision and branch/tenant bou
   const stores=(await pool.query("INSERT INTO stores(organization_id,name) VALUES($1,'Source'),($1,'Destination') RETURNING id",[org])).rows.map(row=>row.id);const owner=await session(org,stores[0],'OWNER'),sourceWorker=await session(org,stores[0],'WAREHOUSE');
   const product=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Kilograms','kg') RETURNING id",[org])).rows[0].id;
   await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,10,2)',[org,stores[0],product]);
+  // Invalid quantities must fail before any transfer/adjustment can affect stock.
+  for(const quantity of ['',null,0,0.0001,'0.0001',1.0000000001,1000000000]){
+   expectStatus(await post('/transfers',owner,{fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,items:[{productId:product,quantity}]}),400);
+   assert.equal((await pool.query('SELECT count(*)::int AS n FROM stock_transfers WHERE organization_id=$1',[org])).rows[0].n,0);
+  }
+  for(const delta of ['',null,0,0.0001,-0.0001,1.0000000001,1000000000]){
+   expectStatus(await post('/adjust',owner,{storeId:stores[0],productId:product,delta,reason:'Invalid raw inventory delta'}),400);
+   assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[stores[0],product])).rows[0].quantity),10);
+  }
+  const adjust=await post('/adjust',owner,{storeId:stores[0],productId:product,delta:'-0.125',reason:'Measured stock correction'});
+  expectStatus(adjust,200);
+  assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[stores[0],product])).rows[0].quantity),9.875);
+  expectStatus(await post('/adjust',owner,{storeId:stores[0],productId:product,delta:'0.125',reason:'Reversed correction'}),200);
+  assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[stores[0],product])).rows[0].quantity),10);
   const create=async()=>expectStatus(await post('/transfers',owner,{fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,items:[{productId:product,quantity:1}]}),201).transfer.id;
   const id=await create(),path=`/transfers/${id}/receive`;
   expectStatus(await post(path,sourceWorker,{items:[]}),403);
-  for(const quantity of [0.0004,1000000000]){
+  for(const quantity of ['',null,-0.001,0.0004,'0.0004',1.0000000001,1000000000]){
    expectStatus(await post(path,owner,{items:[{productId:product,receivedQuantity:quantity}],differenceReason:'Invalid precision test'}),400);
    assert.equal((await pool.query('SELECT status FROM stock_transfers WHERE id=$1',[id])).rows[0].status,'dispatched');
   }
