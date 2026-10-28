@@ -11,13 +11,21 @@ test('supermarket final QA: real HTTP money, credit, units, scope and shift life
   const shift=expectStatus(await request('/api/shifts/open',{storeId:fixture.stores[0],openingCash:10000},cashier),201).shift;
   const packet=(index,quantity=1)=>({storeId:fixture.stores[0],shiftId:shift.id,clientReference:randomUUID(),items:[{productId:fixture.products[index].id,quantity,unitPrice:fixture.products[index].price,metadata:{originalUnitPrice:fixture.products[index].price}}],payments:[{method:'cash',amount:fixture.products[index].price*quantity}],metadata:{source:'pos-pro',cashTendered:fixture.products[index].price*quantity}});
   await t.test('impossible calendar days fail with 400 before closing any business day',async()=>{
+   // Close-business-day permission belongs to ADMIN/OWNER, not MANAGER.
+   // Create an isolated test administrator without altering existing fixture roles.
+   const adminUsername='qa-close-'+randomUUID();
+   await pool.query(`INSERT INTO users(organization_id,name,username,password_hash,app_role)
+    SELECT organization_id,'Business day QA',$2,password_hash,'ADMIN' FROM users WHERE id=$1`,[fixture.users.manager.id,adminUsername]);
+   const adminLogin=await request('/api/auth/login',{username:adminUsername,password:fixture.users.manager.password});
+   assert.equal(adminLogin.status,200);
+   const admin=adminLogin.cookie;assert.ok(admin);
    for(const bad of ['2026-02-30','2026-13-01','0000-01-01','2026-04-31']){
-    const close=await request('/api/sales/business-days/close',{storeId:fixture.stores[0],businessDate:bad},manager);
+    const close=await request('/api/sales/business-days/close',{storeId:fixture.stores[0],businessDate:bad},admin);
     assert.equal(close.status,400,'invalid close '+bad);
     const sale=await request('/api/sales',{...packet(6),businessDate:bad},cashier);
     assert.equal(sale.status,400,'invalid sale metadata '+bad);
    }
-   const leap=await request('/api/sales/business-days/close',{storeId:fixture.stores[0],businessDate:'2024-02-29'},manager);
+   const leap=await request('/api/sales/business-days/close',{storeId:fixture.stores[0],businessDate:'2024-02-29'},admin);
    assert.equal(leap.status,409,'valid leap day must reach the existing open-shift guard');
    assert.equal(leap.body.error.code,'OPEN_SHIFT_EXISTS');
    const count=await pool.query('SELECT count(*)::int AS count FROM business_days WHERE organization_id=$1',[fixture.org]);
