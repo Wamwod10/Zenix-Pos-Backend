@@ -25,6 +25,13 @@ test('supermarket final QA: real HTTP money, credit, units, scope and shift life
    const missing=await request('/api/sales',{...credit,customerId:undefined},cashier);assert.ok(missing.status>=400);
    const noDate=await request('/api/sales',{...credit,creditDueDate:undefined},cashier);assert.equal(noDate.status,409);assert.equal(noDate.body.error.code,'CREDIT_DUE_DATE_REQUIRED');
    assert.equal((await request('/api/sales',{...credit,creditDueDate:'not-a-date'},cashier)).status,400);
+   for(const invalid of ['2026-02-30','2026-13-01','0000-01-01']){
+    const result=await request('/api/sales',{...credit,creditDueDate:invalid},cashier);
+    assert.equal(result.status,400,'invalid date '+invalid);
+   }
+   const past=await request('/api/sales',{...credit,creditDueDate:'2000-01-01'},cashier);
+   assert.equal(past.status,409);assert.equal(past.body.error.code,'CREDIT_DUE_DATE_PAST');
+   assert.equal(Number((await pool.query('SELECT count(*) n FROM customer_ledger WHERE organization_id=$1',[fixture.org])).rows[0].n),0,'invalid credit dates must not post ledger entries');
    const above=await request('/api/sales',{...credit,items:[{...credit.items[0],quantity:4}],payments:[],creditAmount:80000},cashier);assert.equal(above.status,409);assert.equal(above.body.error.code,'CREDIT_LIMIT_EXCEEDED');
    const saved=expectStatus(await request('/api/sales',credit,cashier),201).sale;assert.equal(Number(saved.total),20000);
    const ledger=(await pool.query('SELECT amount FROM customer_ledger WHERE sale_id=$1 AND entry_type=\'CREDIT_SALE\'',[saved.id])).rows;assert.equal(ledger.length,1);assert.equal(Number(ledger[0].amount),15000);
