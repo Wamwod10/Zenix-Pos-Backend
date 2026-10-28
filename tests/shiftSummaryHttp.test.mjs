@@ -89,6 +89,28 @@ test('SHIFT01 HTTP summary scope and locked close cash precondition',{skip:!url,
     const legacy=await request(`/api/shifts/${legacyShift}/close`,{cookie:owner.cookie,method:'POST',body:{actualCash:0.10}});
     assert.equal(legacy.status,200,'older clients may omit the new cash precondition');
     assert.equal(Number(legacy.body.data.shift.difference),0);
+    // Duplicate manual register writes must be idempotent under the shift lock.
+    // Each retry uses one stable reference, including after a response loss.
+    const replayShift=(await pool.query('INSERT INTO shifts(organization_id,store_id,cashier_id,register_key,opening_cash) VALUES($1,$2,$3,$4,25) RETURNING id',[org,stores[0],cashier.id,randomUUID()])).rows[0].id;
+    const replayPath=`/api/shifts/${replayShift}/movements`,referenceId=randomUUID();
+    const sameMovement={type:'in',amount:10.20,reason:'QA register cash',referenceId};
+    const sendMovement=(body,cookie=owner.cookie)=>request(replayPath,{cookie,method:'POST',body});
+    const [first,duplicate]=await Promise.all([sendMovement(sameMovement),sendMovement(sameMovement)]);
+    assert.deepEqual([first.status,duplicate.status].sort((a,b)=>a-b),[200,201]);
+    assert.equal(first.body.data.movement.id,duplicate.body.data.movement.id,'concurrent retry returns the committed row');
+    assert.equal((await pool.query("SELECT count(*)::int n FROM shift_movements WHERE shift_id=$1 AND source='manual'",[replayShift])).rows[0].n,1);
+    assert.equal((await request(`/api/shifts/${replayShift}/summary`,{cookie:owner.cookie})).body.data.summary.expectedCash,35.2);
+    for(const bad of [{...sameMovement,amount:10.21},{...sameMovement,reason:'Different cash'},{...sameMovement,type:'out'}]){
+      const changed=await sendMovement(bad);assert.equal(changed.status,409);assert.equal(changed.body.error.code,'SHIFT_MOVEMENT_REPLAY_CONFLICT');
+    }
+    assert.equal((await sendMovement(sameMovement,cashier.cookie)).status,409,'another actor cannot impersonate a movement replay');
+    const closedReplayShift=await request(`/api/shifts/${replayShift}/close`,{cookie:owner.cookie,method:'POST',body:{actualCash:35.20,expectedCash:35.20}});
+    assert.equal(closedReplayShift.status,200,JSON.stringify(closedReplayShift.body));
+    const lateReplay=await sendMovement(sameMovement);
+    assert.equal(lateReplay.status,200,'confirmed movement replay survives shift close');
+    assert.equal(lateReplay.body.data.movement.id,first.body.data.movement.id);
+    assert.equal((await sendMovement({...sameMovement,referenceId:randomUUID()})).status,404,'closed shift rejects new manual movement');
+    assert.equal((await pool.query("SELECT count(*)::int n FROM shift_movements WHERE shift_id=$1 AND source='manual'",[replayShift])).rows[0].n,1);
   }finally{
     if(writer){await writer.query('ROLLBACK');writer.release()}
     await new Promise(r=>server.close(r));await pool.end();
