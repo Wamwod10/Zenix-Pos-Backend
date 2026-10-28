@@ -24,7 +24,7 @@ const scaled=(value,scale)=>{
 export function sumInventoryQuantity(values){
  const units=values.reduce((sum,value)=>sum+scaled(value,3),0n);
  const absolute=units<0n?-units:units;
- if(absolute>limit)throw new HttpError(409,'Ombor miqdori ruxsat etilgan chegaradan oshadi.','INVENTORY_NUMERIC_LIMIT');
+ if(absolute>limit||absolute>BigInt(Number.MAX_SAFE_INTEGER))throw new HttpError(409,'Ombor miqdori aniq hisoblash chegarasidan oshadi.','INVENTORY_NUMERIC_LIMIT');
  return Number(`${units<0n?'-':''}${absolute/1000n}.${String(absolute%1000n).padStart(3,'0')}`);
 }
 // Called on the locked balance before tracking or monetary mutations. PostgreSQL
