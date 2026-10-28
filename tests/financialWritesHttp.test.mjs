@@ -89,7 +89,7 @@ test('supplier payments and expenses preserve money, replay and tenant boundarie
    assert.equal(Number((await pool.query('SELECT count(*) n FROM expenses WHERE organization_id=$1',[f.org])).rows[0].n),0);
    assert.equal(Number((await pool.query("SELECT count(*) n FROM shift_movements WHERE organization_id=$1 AND source='expense'",[f.org])).rows[0].n),0);
    assert.equal(Number((await pool.query('SELECT count(*) n FROM financial_write_replays WHERE organization_id=$1',[f.org])).rows[0].n),0);
-   const created=expectStatus(await request('/api/expenses',f.token,{storeId:f.store,title:'Expense valid',amount:'25.50',paymentMethod:'card',clientReference:randomUUID()}),201).expense;
+   const created=expectStatus(await request('/api/expenses',f.token,{storeId:f.store,title:'Expense valid',category:'Travel',note:'Card payment',amount:'25.50',paymentMethod:'card',clientReference:randomUUID()}),201).expense;
    for(const amount of bad){
     expectStatus(await request(`/api/expenses/${created.id}`,f.token,{amount},'PATCH'),400);
    }
@@ -97,6 +97,8 @@ test('supplier payments and expenses preserve money, replay and tenant boundarie
    assert.equal(Number((await pool.query("SELECT count(*) n FROM audit_logs WHERE organization_id=$1 AND entity_type='expense' AND action='update'",[f.org])).rows[0].n),0);
    expectStatus(await request(`/api/expenses/${created.id}`,f.token,{amount:'25.51'},'PATCH'),200);
    assert.equal((await pool.query('SELECT amount::text amount FROM expenses WHERE id=$1',[created.id])).rows[0].amount,'25.51');
+   const updated=(await pool.query('SELECT payment_method,category,note,shift_id FROM expenses WHERE id=$1',[created.id])).rows[0];
+   assert.deepEqual(updated,{payment_method:'card',category:'Travel',note:'Card payment',shift_id:null},'amount-only PATCH must preserve other fields');
   });
   await t.test('expense retries post one expense and one cash movement; changed intent conflicts',async()=>{
    const f=await fixture();const body={storeId:f.store,shiftId:f.shift,title:'Transport',amount:25.50,paymentMethod:'cash',clientReference:randomUUID()};
