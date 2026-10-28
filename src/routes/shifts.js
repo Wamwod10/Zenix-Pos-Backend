@@ -1,4 +1,4 @@
-import { sumMoney } from "../lib/posMoney.js";
+import { sumMoney, isMoneyInput } from "../lib/posMoney.js";
 import {resolveShiftRegister} from '../services/posRegisters.js';
 import { Router } from "express";
 import { z } from "zod";
@@ -12,6 +12,14 @@ import { lockStoreTradingAuthorization } from "../services/storeTradingHolds.js"
 import { hasPermission } from "../lib/permissions.js";
 import { assertShiftCashAvailable, shiftExpectedCash, shiftCashSummary } from "../lib/shiftCash.js";
 import { assertEmployeeShiftAvailableWithLock, findOpenBranchShiftWithLock } from "../lib/branchShift.js";
+
+// Validate the exact two-decimal amount BEFORE coercion. z.coerce.number()
+ // silently turns an empty string or null into 0; PostgreSQL NUMERIC(18,2)
+ // silently rounds fractions of a tiyin. Both are unsafe at shift close.
+const shiftMoneySchema = z.union([z.string(),z.number()])
+  .refine(isMoneyInput,{message:"Summani 2 kasr aniqligida kiriting"})
+  .transform(Number);
+const positiveShiftMoneySchema = shiftMoneySchema.refine(value=>value>0,{message:"Summa 0 dan katta bo‘lishi kerak"});
 
 const router = Router();
 router.use(requireAuth, requireOrganization);
@@ -43,7 +51,7 @@ router.get("/:id/summary", requirePermission("moduleShifts"), asyncRoute(async (
 router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
   const input = z.object({
     storeId: z.string().uuid(),
-    openingCash: z.coerce.number().min(0).default(0),
+    openingCash: shiftMoneySchema.default(0),
     registerId: z.string().uuid().optional(),
     registerKey: z.string().trim().max(80).optional(),
     metadata: z.record(z.string(), z.any()).default({}),
@@ -92,7 +100,7 @@ router.post("/open", requirePermission("moduleShifts"), asyncRoute(async (req, r
 router.post("/:id/movements", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
   const input = z.object({
     type: z.enum(["in", "out"]),
-    amount: z.coerce.number().positive(),
+    amount: positiveShiftMoneySchema,
     reason: z.string().trim().min(2).max(300),
     referenceId: z.string().max(120).default(""),
   }).parse(req.body);
@@ -134,7 +142,7 @@ router.post("/:id/movements", requirePermission("moduleShifts"), asyncRoute(asyn
 
 router.post("/:id/close", requirePermission("moduleShifts"), asyncRoute(async (req, res) => {
   const input = z.object({
-    actualCash: z.coerce.number().min(0),
+    actualCash: shiftMoneySchema,
     expectedCash: z.coerce.number().min(-Number.MAX_SAFE_INTEGER/100).max(Number.MAX_SAFE_INTEGER/100).multipleOf(0.01).optional(),
     metadata: z.record(z.string(), z.any()).default({}),
   }).parse(req.body);

@@ -25,6 +25,18 @@ test('SHIFT01 HTTP summary scope and locked close cash precondition',{skip:!url,
     const owner=await account('OWNER'),cashier=await account('CASHIER'),otherBranch=await account('CASHIER',org,stores[1]),denied=await account('CASHIER',org,stores[0],{moduleShifts:false}),foreign=await account('OWNER',otherOrg,null);
     const shift=(await pool.query('INSERT INTO shifts(organization_id,store_id,cashier_id,register_key,opening_cash) VALUES($1,$2,$3,$4,100.10) RETURNING id',[org,stores[0],cashier.id,randomUUID()])).rows[0].id;
     const path=`/api/shifts/${shift}`;
+    // Blank/null cash and fractional tiyin must never be silently treated
+    // as 0 or rounded by NUMERIC(18,2), especially at shift close.
+    for(const invalid of ['',null,'0.001',0.001,'-1','9000000000001']){
+      const opening=await request('/api/shifts/open',{cookie:cashier.cookie,method:'POST',body:{storeId:stores[0],openingCash:invalid}});
+      assert.equal(opening.status,400,'invalid openingCash '+String(invalid));
+      const movement=await request(path+'/movements',{cookie:cashier.cookie,method:'POST',body:{type:'in',amount:invalid,reason:'QA invalid money'}});
+      assert.equal(movement.status,400,'invalid movement '+String(invalid));
+      const close=await request(path+'/close',{cookie:owner.cookie,method:'POST',body:{actualCash:invalid}});
+      assert.equal(close.status,400,'invalid actualCash '+String(invalid));
+    }
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM shift_movements WHERE shift_id=$1",[shift])).rows[0].n,0);
+    assert.equal((await pool.query("SELECT status FROM shifts WHERE id=$1",[shift])).rows[0].status,'open');
     assert.equal((await request(path+'/summary',{cookie:cashier.cookie})).body.data.summary.expectedCash,100.1);
     assert.equal((await request(path+'/summary',{cookie:otherBranch.cookie})).status,403);
     assert.equal((await request(path+'/summary',{cookie:denied.cookie})).status,403);
