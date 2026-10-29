@@ -1,5 +1,6 @@
 import { pool } from "../db/pool.js";
 import { formatNotification, sendTelegramMessage } from "./telegram.js";
+import { createWorkerMaintenanceGate } from "./workerMaintenanceGate.js";
 
 let running=false;
 const batchSize=20;
@@ -248,8 +249,9 @@ export async function processNotificationOutbox(){
 
 export function startNotificationWorker(){
   const activeRuns=new Set();
+  const gatedRun=createWorkerMaintenanceGate({name:"telegram-worker"});
   const run=()=>{
-    const task=processNotificationOutbox().catch((error)=>console.error("[telegram-worker]",error));
+    const task=gatedRun(()=>processNotificationOutbox());
     activeRuns.add(task);
     task.finally(()=>activeRuns.delete(task));
     return task;
