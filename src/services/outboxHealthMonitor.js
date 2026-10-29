@@ -108,6 +108,12 @@ export function startOutboxHealthMonitor({
   intervalMs = 5 * 60_000,
 } = {}) {
   const check = createOutboxHealthMonitor({ query: (sql) => db.query(sql), send });
+  // Emit readiness without ever printing secret values or tenant metadata.
+  if (send === sendAdminAlert && (!env.paymentBotToken || !env.paymentAdminChatId)) {
+    console.warn("[worker-alerts] admin Telegram channel not configured; queue alerts cannot be delivered");
+  } else {
+    console.info("[worker-alerts] outbox monitor started; 5-minute interval, 15-minute stale threshold");
+  }
   const active = new Set();
   const run = () => {
     const task = check();
