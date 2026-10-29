@@ -276,8 +276,11 @@ router.post("/transfers",requirePermission("transferCreate"),asyncRoute(async(re
     await assertOrganizationStore(client,orgId,input.fromStoreId);await assertOrganizationStore(client,orgId,input.toStoreId);
     for(const line of [...input.items].sort((a,b)=>a.productId.localeCompare(b.productId))){
       const product=await assertProduct(client,orgId,line.productId);const balance=await lockBalance(client,{orgId,storeId:input.fromStoreId,productId:line.productId});
-      const reserved=Number((await client.query(`SELECT COALESCE(sum(ti.sent_quantity),0) reserved FROM stock_transfers t JOIN stock_transfer_items ti ON ti.transfer_id=t.id WHERE t.organization_id=$1 AND t.from_store_id=$2 AND ti.product_id=$3 AND t.status IN('pending','approved')`,[orgId,input.fromStoreId,line.productId])).rows[0].reserved);
-      if(Number(balance.quantity)-reserved<Number(line.quantity))throw new HttpError(409,`${product.name}: transfer uchun yetarli bo‘sh qoldiq yo‘q`,"INSUFFICIENT_AVAILABLE_STOCK");
+      const reserved=(await client.query(`SELECT COALESCE(sum(ti.sent_quantity),0) reserved FROM stock_transfers t JOIN stock_transfer_items ti ON ti.transfer_id=t.id WHERE t.organization_id=$1 AND t.from_store_id=$2 AND ti.product_id=$3 AND t.status IN('pending','approved')`,[orgId,input.fromStoreId,line.productId])).rows[0].reserved;
+      // Both PostgreSQL values are exact NUMERIC(18,3). Native 0.300 - 0.200
+      // evaluates to 0.09999999999999998 and incorrectly rejects 0.100.
+      const available=sumInventoryQuantity([balance.quantity,`-${reserved}`]);
+      if(available<line.quantity)throw new HttpError(409,`${product.name}: transfer uchun yetarli bo‘sh qoldiq yo‘q`,"INSUFFICIENT_AVAILABLE_STOCK");
     }
     let transfer=(await client.query(`INSERT INTO stock_transfers(organization_id,from_store_id,to_store_id,status,created_by) VALUES($1,$2,$3,'pending',$4) RETURNING *`,[orgId,input.fromStoreId,input.toStoreId,req.user.id])).rows[0];
     for(const line of input.items)await client.query(`INSERT INTO stock_transfer_items(transfer_id,product_id,sent_quantity) VALUES($1,$2,$3)`,[transfer.id,line.productId,line.quantity]);
