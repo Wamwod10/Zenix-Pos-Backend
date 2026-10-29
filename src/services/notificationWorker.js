@@ -1,6 +1,6 @@
 import { pool } from "../db/pool.js";
 import { formatNotification, sendTelegramMessage } from "./telegram.js";
-import { createWorkerMaintenanceGate } from "./workerMaintenanceGate.js";
+import { createWorkerMaintenanceGate, isFinancialWriteMaintenance } from "./workerMaintenanceGate.js";
 
 let running=false;
 const batchSize=20;
@@ -224,7 +224,7 @@ async function enqueueScheduledDailyReports(){
 
 export async function runScheduledReportsSafely(run=enqueueScheduledDailyReports,onError=(error)=>console.error("[telegram-worker:daily-report]",error)){
   try{await run()}
-  catch(error){onError(error)}
+  catch(error){if(isFinancialWriteMaintenance(error))throw error;onError(error)}
 }
 
 export async function processNotificationOutbox(){
