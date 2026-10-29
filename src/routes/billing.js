@@ -40,7 +40,7 @@ export const draftSchema=z.object({
     .refine(value=>dateISO(value)===value,'Sana noto‘g‘ri').optional().nullable(),
   // Omitted count may default to 0, but explicit blank/null must never
   // silently become a paid one-store EXTRA checkout.
-  extraStoreCount:z.union([z.number(),z.string().regex(/^\\d+$/)])
+  extraStoreCount:z.union([z.number(),z.string().regex(/^\d+$/)])
     .transform(Number).pipe(z.number().int().min(0).max(20)).default(0),
   extraDuration:z.enum(["UNTIL_LICENSE","MONTHLY","ANNUAL"]).default("UNTIL_LICENSE"),
   promoCode:z.string().trim().max(40).default(""),
