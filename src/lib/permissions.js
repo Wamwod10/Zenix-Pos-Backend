@@ -52,9 +52,9 @@ export function hasPermission(user, permission) {
   if (user.appRole === ROLES.PLATFORM_ADMIN) return false;
   if (user.appRole === ROLES.OWNER) return true;
   const overrides = user.permissionOverrides || {};
-  if (Object.prototype.hasOwnProperty.call(overrides, permission)) return Boolean(overrides[permission]);
+  if (Object.prototype.hasOwnProperty.call(overrides, permission)) return overrides[permission] === true;
   const organizationRole = user.rolePermissions?.[user.appRole] || {};
-  if (Object.prototype.hasOwnProperty.call(organizationRole, permission)) return Boolean(organizationRole[permission]);
+  if (Object.prototype.hasOwnProperty.call(organizationRole, permission)) return organizationRole[permission] === true;
   const defaults = DEFAULT_ROLE_PERMISSIONS[user.appRole] || {};
   return Boolean(defaults["*"] || defaults[permission]);
 }
