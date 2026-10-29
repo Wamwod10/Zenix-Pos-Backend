@@ -105,7 +105,11 @@ export async function processPaymentNotificationOutbox({ db = pool, telegramSend
 
 export function startPaymentNotificationWorker() {
   const activeRuns = new Set();
-  const gatedRun = createWorkerMaintenanceGate({name:"payment-telegram-worker"});
+  const gatedRun = createWorkerMaintenanceGate({
+    name:"payment-telegram-worker",
+    // Preserve the existing 300-character log limit for payment failures.
+    error:(_label,cause)=>console.error("[payment-telegram-worker]",String(cause?.message||cause).slice(0,300)),
+  });
   const run = () => {
     const task = gatedRun(() => processPaymentNotificationOutbox());
     activeRuns.add(task);
