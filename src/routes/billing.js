@@ -38,7 +38,10 @@ export const draftSchema=z.object({
   intent:z.enum(["ACTIVATE","RENEW","CHANGE_PLAN","EXTRA"]).optional(),
   selectedEndDate:z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/)
     .refine(value=>dateISO(value)===value,'Sana noto‘g‘ri').optional().nullable(),
-  extraStoreCount:z.coerce.number().int().min(0).max(20).default(0),
+  // Omitted count may default to 0, but explicit blank/null must never
+  // silently become a paid one-store EXTRA checkout.
+  extraStoreCount:z.union([z.number(),z.string().regex(/^\d+$/)])
+    .transform(Number).pipe(z.number().int().min(0).max(20)).default(0),
   extraDuration:z.enum(["UNTIL_LICENSE","MONTHLY","ANNUAL"]).default("UNTIL_LICENSE"),
   promoCode:z.string().trim().max(40).default(""),
   metadata:z.record(z.string(),z.any()).default({}),
@@ -217,7 +220,9 @@ router.get("/draft",requirePermission("moduleBilling"),asyncRoute(async(req,res)
     try{assertBillingDraftCurrent(row,await calculateDraft(client,req.user,draftRecalculationInput(row)));}
     catch(error){
       if(!(error instanceof HttpError)||![400,409].includes(error.status))throw error;
-      await client.query("UPDATE billing_drafts SET status='cancelled' WHERE id=$1 AND organization_id=$2",[row.id,req.user.organizationId]);
+      // A moduleBilling reader may not mutate draft state. POST /payments
+      // revalidates and rejects stale quotes; POST /draft cancels old drafts.
+      // Leave the stored quote untouched on a read-only request.
       return {draft:null,stale:true};
     }
     return {draft:publicDraft(row)};
