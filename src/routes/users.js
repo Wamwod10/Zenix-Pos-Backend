@@ -143,6 +143,9 @@ router.patch("/:id",requirePermission("settingsWrite"),asyncRoute(async(req,res)
 }));
 
 router.post("/:id/reset-password",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
+  // Privileged staff resets must never bypass the current-password check
+  // required for changing the actor's own credentials.
+  if(req.params.id===req.user.id)throw new HttpError(403,"O‘z parolingizni joriy parol bilan almashtiring","SELF_PASSWORD_RESET_FORBIDDEN");
   const input=passwordSchema.parse(req.body);
   const passwordHash=await bcrypt.hash(input.password,12);
   await withTransaction(async(client)=>{
@@ -168,6 +171,10 @@ router.post("/me/password",asyncRoute(async(req,res)=>{
   await withTransaction(async(client)=>{
     const target=(await client.query(`SELECT * FROM users WHERE id=$1 AND organization_id=$2 FOR UPDATE`,[req.user.id,req.user.organizationId])).rows[0];
     if(!target||!(await bcrypt.compare(input.currentPassword,target.password_hash)))throw new HttpError(400,"Joriy parol noto‘g‘ri","INVALID_PASSWORD");
+    // A forced first-login password change must actually rotate credentials.
+    // Otherwise submitting the old password twice clears must_change_password.
+    if(await bcrypt.compare(input.newPassword,target.password_hash))
+      throw new HttpError(400,"Yangi parol joriy paroldan farq qilishi kerak","PASSWORD_REUSE_FORBIDDEN");
     await client.query(`UPDATE users SET password_hash=$3,must_change_password=false,updated_at=now() WHERE id=$1 AND organization_id=$2`,[req.user.id,req.user.organizationId,passwordHash]);
     await client.query(`UPDATE auth_sessions SET revoked_at=now() WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL`,[req.user.id,req.user.sessionId]);
   });
