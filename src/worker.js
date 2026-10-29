@@ -4,10 +4,11 @@ import { assertDatabaseConnection } from "./db/startup.js";
 import { createShutdownController } from "./shutdown.js";
 import { startNotificationWorker } from "./services/notificationWorker.js";
 import { startPaymentNotificationWorker } from "./services/paymentNotificationWorker.js";
+import { startOutboxHealthMonitor } from "./services/outboxHealthMonitor.js";
 
 assertServerEnvironment();
 await assertDatabaseConnection(pool);
-const workers = [startNotificationWorker(), startPaymentNotificationWorker()];
+const workers = [startNotificationWorker(), startPaymentNotificationWorker(), startOutboxHealthMonitor()];
 console.log("Zenix notification workers started");
 
 const { shutdown } = createShutdownController({
