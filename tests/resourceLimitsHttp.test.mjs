@@ -60,11 +60,13 @@ test('resource HTTP: tenant scope, permissions, active employee login, POS regis
       expect(await request(`/api/registers/${register.id}`,owner,'PATCH',{name:'Read-only write'}),402);
       expect(await request('/api/stores',owner,'POST',{name:'Readonly'}),402);
     });
-    await t.test('restoring a stale quote cancels it before exposing transfer instructions',async()=>{
+    await t.test('reading a stale quote hides instructions but cannot cancel draft without billingWrite',async()=>{
       const draft=expect(await request('/api/billing/draft',owner,'POST',{type:'LICENSE',planCode:'START',billingInterval:'MONTHLY'}),201).draft;
       await pool.query('UPDATE organizations SET subscription_version=subscription_version+1 WHERE id=$1',[org]);
       const data=expect(await request('/api/billing/draft',owner),200);assert.equal(data.draft,null);assert.equal(data.stale,true);
-      assert.equal((await pool.query('SELECT status FROM billing_drafts WHERE id=$1',[draft.id])).rows[0].status,'cancelled');
+      assert.equal((await pool.query('SELECT status FROM billing_drafts WHERE id=$1',[draft.id])).rows[0].status,'open');
+      expect(await request('/api/billing/payments',owner,'POST',{draftId:draft.id}),409);
+      assert.equal((await pool.query('SELECT status FROM billing_drafts WHERE id=$1',[draft.id])).rows[0].status,'open');
     });
     await t.test('fractional credit plus 100% promo yields exactly zero and one approved paid term',async()=>{
       await pool.query('UPDATE organizations SET subscription_credit=249999.35 WHERE id=$1',[org]);
