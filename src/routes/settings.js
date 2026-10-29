@@ -29,10 +29,11 @@ router.get("/",asyncRoute(async(req,res)=>{
   });
 }));
 
-const workspaceSchema=z.object({
+export const workspaceSchema=z.object({
   workspaceSettings:z.record(z.string(),z.any()).optional(),
   businessFeatures:z.record(z.string(),z.any()).optional(),
-  rolePermissions:z.record(z.string(),z.any()).optional(),
+  // Permission values are booleans, never truthy JSON strings such as "false".
+  rolePermissions:z.record(z.string(),z.record(z.string(),z.boolean())).optional(),
 });
 router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
   const input=workspaceSchema.parse(req.body);
