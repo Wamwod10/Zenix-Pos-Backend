@@ -38,7 +38,7 @@ try{
   return {org,store,user,token,product,shift};
  };
  const f=await fixture('main'),other=await fixture('other');
- const payments={cash:[{method:'cash',amount:100}],card:[{method:'card',amount:100}],mixed:[{method:'cash',amount:40},{method:'card',amount:60}]};
+ const payments={cash:[{method:'cash',amount:100}],card:[{method:'card',amount:100}],transfer:[{method:'transfer',amount:100}],mixed:[{method:'cash',amount:40},{method:'card',amount:60}]};
  const body=(mode,ref=randomUUID())=>({storeId:f.store,shiftId:f.shift,clientReference:ref,items:[{productId:f.product,quantity:1,unitPrice:100}],payments:payments[mode]});
  const checkout=async(mode,label,record=true)=>{
   const result=await request('/api/sales',f.token,body(mode));
@@ -53,6 +53,7 @@ try{
   assert.equal(Number(result.data.return.amount),100);
   assert.equal(Number(result.data.return.refundBreakdown.cash),mode==='cash'?100:mode==='mixed'?40:0);
   assert.equal(Number(result.data.return.refundBreakdown.card),mode==='card'?100:mode==='mixed'?60:0);
+  assert.equal(Number(result.data.return.refundBreakdown.transfer||0),mode==='transfer'?100:0);
   returns.push(result.data.return.id);(samples[`refund_${mode}`]??=[]).push(result.ms);
  }
  for(const concurrency of [10,50]){
@@ -61,6 +62,9 @@ try{
  }
  const replayBody=body('mixed'),replies=await Promise.all(Array.from({length:10},()=>request('/api/sales',f.token,replayBody)));
  assert.equal(new Set(replies.map(r=>r.data.sale.id)).size,1);
+ // A later retry after a lost HTTP acknowledgement must still resolve to that sale.
+ const lateReplay=await request('/api/sales',f.token,replayBody);
+ assert.equal(lateReplay.data.sale.id,replies[0].data.sale.id);
  sales.push({id:replies[0].data.sale.id,mode:'mixed'});
  samples.duplicate_replay=replies.map(r=>r.ms);
  await request('/api/sales',f.token,{...replayBody,payments:payments.cash},409);
@@ -71,14 +75,14 @@ try{
  const totals=(await pool.query('SELECT count(*)::int count,sum(total) total,sum(returned_amount) returned FROM sales WHERE organization_id=$1',[f.org])).rows[0];
  assert.equal(totals.count,sales.length);assert.equal(Number(totals.total),sales.length*100);assert.equal(Number(totals.returned),returns.length*100);
  const savedPayments=(await pool.query('SELECT p.method,sum(p.amount) amount FROM sale_payments p JOIN sales s ON s.id=p.sale_id WHERE s.organization_id=$1 GROUP BY p.method',[f.org])).rows;
- for(const method of ['cash','card'])assert.equal(Number(savedPayments.find(p=>p.method===method)?.amount??0),sales.reduce((n,s)=>n+(payments[s.mode].find(p=>p.method===method)?.amount??0),0));
+ for(const method of ['cash','card','transfer'])assert.equal(Number(savedPayments.find(p=>p.method===method)?.amount??0),sales.reduce((n,s)=>n+(payments[s.mode].find(p=>p.method===method)?.amount??0),0));
  assert.equal(Number((await pool.query('SELECT count(*) count FROM sale_returns WHERE organization_id=$1',[f.org])).rows[0].count),returns.length);
  assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE organization_id=$1',[other.org])).rows[0].quantity),10000);
  assert.equal(Number((await pool.query('SELECT count(*) count FROM sales WHERE organization_id=$1',[other.org])).rows[0].count),0);
  const stats=Object.fromEntries(Object.entries(samples).map(([key,values])=>{const sorted=[...values].sort((a,b)=>a-b);return [key,{n:values.length,p50:sorted[Math.ceil(sorted.length*.5)-1],p95:sorted[Math.ceil(sorted.length*.95)-1],p99:sorted[Math.ceil(sorted.length*.99)-1]}]}));
  if(process.env.CHECKOUT_P95_BUDGET_MS){
   const budget=Number(process.env.CHECKOUT_P95_BUDGET_MS);assert.ok(Number.isFinite(budget)&&budget>0);
-  for(const mode of ['cash','card','mixed'])assert.ok(stats[`checkout_${mode}`].p95<budget,`${mode} checkout P95 exceeds ${budget}ms`);
+  for(const mode of ['cash','card','transfer','mixed'])assert.ok(stats[`checkout_${mode}`].p95<budget,`${mode} checkout P95 exceeds ${budget}ms`);
  }
  const {performanceMetrics}=await import('../src/lib/performanceMetrics.js');
  const result={timestamp:new Date().toISOString(),fixtureOrganization:f.org,stats,checks:{sales:sales.length,refunds:returns.length,stock:Number(stock.quantity),paymentTotals:savedPayments,duplicateReplay:true,tenantIsolation:true},environment:{node:process.version,availableParallelism:availableParallelism(),poolMax:pool.options.max,maxConnections,maxWaiting,elapsedMs:performance.now()-started,nodeCpuMicros:process.cpuUsage(cpuStart),note:'Local HTTP and disposable loopback PostgreSQL; one hot product/shift; CPU includes fixture setup; three bursts per concurrency; no production extrapolation'},diagnostics:performanceMetrics.snapshot(),samples};
