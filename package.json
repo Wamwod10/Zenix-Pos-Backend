@@ -16,6 +16,7 @@
     "check": "node scripts/checkSyntax.mjs",
     "telegram:webhook": "node scripts/setTelegramWebhook.js",
     "telegram:payment:webhook": "node scripts/setPaymentTelegramWebhook.js",
+    "telegram:alert:smoke": "node scripts/smokeTelegramAdminChannel.mjs --send-test",
     "platform:admin": "node scripts/createPlatformAdmin.js",
     "seed:zenix-market": "node scripts/seedZenixMarket.js",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
