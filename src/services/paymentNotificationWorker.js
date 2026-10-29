@@ -2,6 +2,7 @@ import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 import { enqueuePaymentReviewUpdate, paymentReviewSnapshot } from './paymentNotifications.js';
 import { derivePaymentReviewToken, hashPaymentReviewToken, sendPaymentReview, editPaymentReviewMessage, formatPaymentReviewMessage } from "./paymentTelegram.js";
+import { createWorkerMaintenanceGate } from "./workerMaintenanceGate.js";
 
 const batchSize = 10;
 let running = false;
@@ -104,8 +105,9 @@ export async function processPaymentNotificationOutbox({ db = pool, telegramSend
 
 export function startPaymentNotificationWorker() {
   const activeRuns = new Set();
+  const gatedRun = createWorkerMaintenanceGate({name:"payment-telegram-worker"});
   const run = () => {
-    const task = processPaymentNotificationOutbox().catch((error) => console.error("[payment-telegram-worker]", String(error?.message || error).slice(0, 300)));
+    const task = gatedRun(() => processPaymentNotificationOutbox());
     activeRuns.add(task);
     task.finally(() => activeRuns.delete(task));
     return task;
