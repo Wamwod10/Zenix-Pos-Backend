@@ -22,3 +22,11 @@ test("a scheduled report failure does not reject the real-time notification cycl
   ));
   assert.equal(reportedError, expectedError);
 });
+
+test("scheduled-report maintenance pause propagates to gate without retrying other events", async () => {
+  const { runScheduledReportsSafely } = await import("../src/services/notificationWorker.js");
+  await assert.rejects(() => runScheduledReportsSafely(
+    async () => { throw new Error("financial writes paused during deployment"); },
+    () => assert.fail("maintenance must go to worker gate, not ordinary reporting"),
+  ), /financial writes paused/);
+});
