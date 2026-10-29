@@ -10,12 +10,12 @@ import {errorHandler} from '../src/middleware/error.js';
 test('forced password rotation rejects reusing the current password and preserves sessions on rejection',async()=>{
  const originalQuery=pool.query,originalConnect=pool.connect;
  const userId='11111111-1111-4111-8111-111111111111',orgId='22222222-2222-4222-8222-222222222222';
- let passwordHash=await bcrypt.hash('OldPassword123!',4),forced=true,writes=0,sessionRevocations=0;
+ let passwordHash=await bcrypt.hash('OldPassword123!',4),forced=true,writes=0,sessionRevocations=0,actorRole='CASHIER';
  const app=express();app.use(express.json());
  app.use((req,_res,next)=>{req.cookies={[env.sessionCookieName]:'fake-session'};next()});
  app.use('/api/users',users);app.use(errorHandler);
  pool.query=async(sql)=>{
-  if(sql.includes('FROM auth_sessions s'))return {rows:[{id:userId,session_id:'33333333-3333-4333-8333-333333333333',organization_id:orgId,app_role:'CASHIER',active:true,license_status:'ACTIVE',subscription_writable:true,must_change_password:forced,last_seen_at:new Date()}]};
+  if(sql.includes('FROM auth_sessions s'))return {rows:[{id:userId,session_id:'33333333-3333-4333-8333-333333333333',organization_id:orgId,app_role:actorRole,active:true,license_status:'ACTIVE',subscription_writable:true,must_change_password:forced,last_seen_at:new Date()}]};
   return {rows:[],rowCount:0};
  };
  pool.connect=async()=>({release(){},async query(sql,args){
@@ -43,6 +43,17 @@ test('forced password rotation rejects reusing the current password and preserve
   assert.equal(sessionRevocations,1);
   assert.equal(forced,false);
   assert.equal(await bcrypt.compare('NewPassword456!',passwordHash),true);
+  // A privileged OWNER must use /me/password for self-rotation; the staff
+  // reset route cannot bypass verification of the current credential.
+  actorRole='OWNER';
+  const selfReset=await fetch('http://127.0.0.1:'+server.address().port+'/api/users/'+userId+'/reset-password',{
+   method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:'HijackedPassword789!'})
+  });
+  const selfBody=await selfReset.json();
+  assert.equal(selfReset.status,403,JSON.stringify(selfBody));
+  assert.equal(selfBody.error.code,'SELF_PASSWORD_RESET_FORBIDDEN');
+  assert.equal(writes,1,'self-reset must not mutate password hash');
+  assert.equal(sessionRevocations,1);
  }finally{
   pool.query=originalQuery;pool.connect=originalConnect;
   await new Promise(resolve=>server.close(resolve));
