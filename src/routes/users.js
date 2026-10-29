@@ -143,6 +143,9 @@ router.patch("/:id",requirePermission("settingsWrite"),asyncRoute(async(req,res)
 }));
 
 router.post("/:id/reset-password",requirePermission("settingsWrite"),asyncRoute(async(req,res)=>{
+  // Privileged staff resets must never bypass the current-password check
+  // required for changing the actor's own credentials.
+  if(req.params.id===req.user.id)throw new HttpError(403,"O‘z parolingizni joriy parol bilan almashtiring","SELF_PASSWORD_RESET_FORBIDDEN");
   const input=passwordSchema.parse(req.body);
   const passwordHash=await bcrypt.hash(input.password,12);
   await withTransaction(async(client)=>{
