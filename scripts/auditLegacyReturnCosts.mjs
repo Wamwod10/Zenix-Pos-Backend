@@ -1,6 +1,7 @@
 // Operator-run, read-only audit of legacy return movement cost provenance.
 // Run with an explicit audited database URL. No table changes or tenant output.
 import pg from 'pg';
+import {pathToFileURL} from 'node:url';
 
 export const LEGACY_RETURN_COST_SQL = `
 WITH legacy AS (
@@ -66,7 +67,7 @@ export async function auditLegacyReturnCosts(client) {
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const connectionString=process.env.RETURN_COST_AUDIT_DATABASE_URL;
   if (!connectionString) {
     console.error('Set RETURN_COST_AUDIT_DATABASE_URL securely. No database was accessed.');
