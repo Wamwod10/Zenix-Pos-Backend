@@ -25,6 +25,22 @@ test('transfer receiving enforces exact quantity precision and branch/tenant bou
   assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[stores[0],product])).rows[0].quantity),9.875);
   expectStatus(await post('/adjust',owner,{storeId:stores[0],productId:product,delta:'0.125',reason:'Reversed correction'}),200);
   assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[stores[0],product])).rows[0].quantity),10);
+  // Fractional reservation must use PostgreSQL NUMERIC(18,3) arithmetic.
+  // Previously 0.300 - 0.200 became 0.09999999999999998, rejecting 0.100.
+  const reservedProduct=(await pool.query("INSERT INTO products(organization_id,name,unit) VALUES($1,'Fractional reserved stock','kg') RETURNING id",[org])).rows[0].id;
+  await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity,avg_cost) VALUES($1,$2,$3,$4,2)',[org,stores[0],reservedProduct,'0.300']);
+  const pendingFractional=(quantity)=>post('/transfers',owner,{fromStoreId:stores[0],toStoreId:stores[1],needsApproval:true,items:[{productId:reservedProduct,quantity}]});
+  const firstReserved=expectStatus(await pendingFractional(0.200),201).transfer;
+  const secondReserved=expectStatus(await pendingFractional(0.100),201).transfer;
+  assert.notEqual(firstReserved.id,secondReserved.id);
+  const unavailable=await pendingFractional(0.001);
+  assert.equal(unavailable.status,409,JSON.stringify(unavailable));
+  assert.equal(unavailable.error.code,'INSUFFICIENT_AVAILABLE_STOCK');
+  const reservedSnapshot=(await pool.query(`SELECT COALESCE(sum(ti.sent_quantity),0)::text AS reserved,count(*)::int AS n FROM stock_transfers t JOIN stock_transfer_items ti ON ti.transfer_id=t.id WHERE t.organization_id=$1 AND t.from_store_id=$2 AND ti.product_id=$3 AND t.status='pending'`,[org,stores[0],reservedProduct])).rows[0];
+  assert.equal(Number(reservedSnapshot.reserved),0.3);
+  assert.equal(reservedSnapshot.n,2,'rejected third reservation must not write a transfer');
+  assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE store_id=$1 AND product_id=$2',[stores[0],reservedProduct])).rows[0].quantity),0.3);
+  assert.equal(Number((await pool.query('SELECT count(*)::int n FROM stock_movements WHERE organization_id=$1 AND product_id=$2',[org,reservedProduct])).rows[0].n),0);
   const create=async()=>expectStatus(await post('/transfers',owner,{fromStoreId:stores[0],toStoreId:stores[1],needsApproval:false,items:[{productId:product,quantity:1}]}),201).transfer.id;
   const id=await create(),path=`/transfers/${id}/receive`;
   expectStatus(await post(path,sourceWorker,{items:[]}),403);
