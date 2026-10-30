@@ -64,3 +64,10 @@ test("overlapping timer ticks cannot duplicate alert checks",async()=>{
   await first;
   assert.equal(reads,1);
 });
+
+test("stale detection respects retry due time and an active delivery",()=>{
+  assert.match(OUTBOX_HEALTH_SQL,/n\.next_attempt_at\s*<\s*now\(\)\s*-\s*interval '15 minutes'/);
+  assert.match(OUTBOX_HEALTH_SQL,/AND next_attempt_at\s*<\s*now\(\)\s*-\s*interval '15 minutes'/);
+  assert.match(OUTBOX_HEALTH_SQL,/n\.status = 'delivering'[\s\S]*NOT EXISTS[\s\S]*d\.status IN \('pending','retry','processing'\)/);
+  assert.doesNotMatch(OUTBOX_HEALTH_SQL,/FROM notification_deliveries\s+WHERE[\s\S]*AND created_at\s*<\s*now\(\)\s*-\s*interval '15 minutes'/);
+});
