@@ -7,12 +7,19 @@ export const OUTBOX_HEALTH_SQL = `
   SELECT
     (SELECT count(*)::int FROM notification_outbox WHERE status='failed') AS outbox_failed,
     (SELECT count(*)::int FROM notification_deliveries WHERE status='failed') AS delivery_failed,
-    (SELECT count(*)::int FROM notification_outbox
-      WHERE status IN ('pending','retry','processing','delivering')
-        AND created_at < now() - interval '15 minutes') AS stale_outbox,
+    (SELECT count(*)::int FROM notification_outbox n
+      WHERE (n.status IN ('pending','retry','processing')
+             AND n.next_attempt_at < now() - interval '15 minutes')
+         OR (n.status = 'delivering'
+             AND n.created_at < now() - interval '15 minutes'
+             AND NOT EXISTS (
+               SELECT 1 FROM notification_deliveries d
+               WHERE d.outbox_id = n.id
+                 AND d.status IN ('pending','retry','processing')
+             ))) AS stale_outbox,
     (SELECT count(*)::int FROM notification_deliveries
       WHERE status IN ('pending','retry','processing')
-        AND created_at < now() - interval '15 minutes') AS stale_deliveries
+        AND next_attempt_at < now() - interval '15 minutes') AS stale_deliveries
 `;
 
 const count = (value) => Math.max(0, Number(value) || 0);
