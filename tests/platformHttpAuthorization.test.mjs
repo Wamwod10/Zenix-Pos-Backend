@@ -16,6 +16,9 @@ test('HTTP platform boundaries reject tenant users even with forged permission o
   for(const path of ['/overview','/promos','/organizations/11111111-1111-4111-8111-111111111111/support','/audit-logs']){
    const response=await fetch(base+path);assert.equal(response.status,403);assert.equal((await response.json()).error.code,'FORBIDDEN');
   }
-  assert.equal(calls,4,'only authentication reads are allowed; no platform query is reached');
+  const smoke=await fetch(base+'/operations/telegram-alert-smoke',{method:'POST'});
+  assert.equal(smoke.status,403,'tenant must not send an admin Telegram alert');
+  assert.equal((await smoke.json()).error.code,'FORBIDDEN');
+  assert.equal(calls,5,'only authentication reads are allowed; no platform action is reached');
  }finally{pool.query=original;await new Promise(r=>server.close(r))}
 });

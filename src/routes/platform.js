@@ -1,4 +1,7 @@
 import { Router } from "express";
+import { env } from "../config/env.js";
+import {sendAdminChannelSmoke} from "../../scripts/smokeTelegramAdminChannel.mjs";
+import {createAdminAlertSmokeGate} from "../services/adminAlertSmokeGate.js";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { withTransaction } from "../db/tx.js";
@@ -20,6 +23,20 @@ import { organizationPageSchema, paymentPageSchema, organizationPageSql, payment
 
 const router=Router();
 router.use(requireAuth,requirePermission("platformAdmin"));
+const adminAlertTest=createAdminAlertSmokeGate({send:sendAdminChannelSmoke});
+
+// The Telegram API acknowledgement is NOT proof of receipt in the admin chat.
+// Explicit platform-admin action; no tenant data or database writes.
+router.post("/operations/telegram-alert-smoke",asyncRoute(async(_req,res)=>{
+  const result=await adminAlertTest({token:env.paymentBotToken,chatId:env.paymentAdminChatId});
+  if(!result.ok){
+    if(result.reason==="missing_configuration")throw new HttpError(503,"Admin Telegram kanali sozlanmagan","ADMIN_ALERT_NOT_CONFIGURED");
+    if(result.reason==="rate_limited")throw new HttpError(429,"Yangi test xabari uchun biroz kuting","ADMIN_ALERT_RATE_LIMITED");
+    throw new HttpError(502,"Telegram test xabarini qabul qilmadi","ADMIN_ALERT_DELIVERY_FAILED");
+  }
+  console.info("[worker-alerts] admin TEST ALERT accepted by Telegram API; human receipt pending");
+  ok(res,{telegramAccepted:true,receiptConfirmed:false});
+}));
 const n=(value)=>Number(value||0);
 const paymentView=(row)=>({
   id:row.id,orderId:row.order_id,organizationId:row.organization_id,organization:row.organization_name||"",draftId:row.draft_id,
