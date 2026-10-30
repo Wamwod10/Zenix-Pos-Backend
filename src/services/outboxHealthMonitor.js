@@ -55,6 +55,7 @@ export function createOutboxHealthMonitor({
   let lastAlertType = "";
   let unhealthy = false;
   let consecutiveFailures = 0;
+  let monitorUnavailable = false;
   let maintenanceLoggedAt = -Infinity;
   const alertOnce = async (type, message) => {
     if (type === lastAlertType && now() - lastAlertAt < cooldownMs) return;
@@ -78,6 +79,11 @@ export function createOutboxHealthMonitor({
     try {
       const result = await query(OUTBOX_HEALTH_SQL);
       consecutiveFailures = 0;
+      if (monitorUnavailable) {
+        monitorUnavailable = false;
+        warn("[worker-alerts] database monitoring recovered");
+        await alertOnce("monitor-recovered", "ZENIX POS: Telegram navbati monitoringi bilan baza ulanishi tiklandi.");
+      }
       const { failed, stale } = summarizeOutboxHealth(result.rows?.[0]);
       if (failed || stale) {
         unhealthy = true;
@@ -99,7 +105,8 @@ export function createOutboxHealthMonitor({
       }
       consecutiveFailures++;
       if (consecutiveFailures >= 2) {
-        error("[worker-alerts] outbox monitoring query failed repeatedly");
+        monitorUnavailable = true;
+        if (consecutiveFailures === 2) error("[worker-alerts] outbox monitoring query failed repeatedly");
         await alertOnce("monitor-unavailable", "ZENIX POS: Telegram xabarnoma navbatining monitoring so‘rovi ishlamayapti. Render/Neon ulanishini tekshiring.");
       }
       return false;
