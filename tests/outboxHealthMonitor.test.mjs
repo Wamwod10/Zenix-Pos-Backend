@@ -71,3 +71,28 @@ test("stale detection respects retry due time and an active delivery",()=>{
   assert.match(OUTBOX_HEALTH_SQL,/n\.status = 'delivering'[\s\S]*NOT EXISTS[\s\S]*d\.status IN \('pending','retry','processing'\)/);
   assert.doesNotMatch(OUTBOX_HEALTH_SQL,/FROM notification_deliveries\s+WHERE[\s\S]*AND created_at\s*<\s*now\(\)\s*-\s*interval '15 minutes'/);
 });
+
+test("monitoring reports successful database recovery after an outage, without repeated error log spam",async()=>{
+  const notices=[],errors=[],warnings=[];
+  let databaseDown=true;
+  const check=createOutboxHealthMonitor({
+    query:async()=>{
+      if(databaseDown)throw new Error("fixture database disconnected");
+      return {rows:[{outbox_failed:0,delivery_failed:0,stale_outbox:0,stale_deliveries:0}]};
+    },
+    send:async message=>{notices.push(message);return true},
+    warn:message=>warnings.push(message),
+    error:message=>errors.push(message),
+  });
+  for(let i=0;i<4;i++)await check();
+  assert.equal(notices.length,1,"one outage alert for repeated failures");
+  assert.equal(errors.length,1,"only first confirmed outage logs error");
+  assert.match(notices[0],/monitoring so‘rovi ishlamayapti/);
+  databaseDown=false;
+  await check();
+  assert.equal(notices.length,2,"recovery alert is delivered after database queries succeed");
+  assert.match(notices[1],/ulanishi tiklandi/);
+  assert.equal(warnings.filter(x=>x.includes("monitoring recovered")).length,1);
+  await check();
+  assert.equal(notices.length,2,"healthy polling does not duplicate recovery alert");
+});
