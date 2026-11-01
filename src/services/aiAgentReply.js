@@ -123,10 +123,12 @@ function improvementFallback(report){
 }
 // Keep a verified recovery answer aligned to the question instead of dumping
 // unrelated report facts. This is used only after a model response needs recovery.
-function focusedReportFallback(report,question){
+export function focusedVerifiedAnswer(report,question){
  const query=String(question||'').normalize('NFKC').toLocaleLowerCase('uz');
  if(!query.trim()||!report||!/qancha|nechta|soni|jami|eng ko[‘’ʻʼ']p|oxirgi savdo/iu.test(query))return null;
- if(/nega|nima sabab|sababi|nimaga|qanday yaxshila|tavsiya|solishtir|taqqosla/iu.test(query))return null;
+ // Single-metric shortcuts must never alter reports about other subjects,
+ // comparisons, individual products, causes, or historical periods.
+ if(/nega|nima sabab|sababi|nimaga|qanday yaxshila|tavsiya|solishtir|taqqosla|mahsulotdan|tovardan|dona sot|foyda|daromad|marja|qaysi filial|qaysi kun|eng katta xarajat/iu.test(query))return null;
  const fact=id=>(report.facts||[]).find(f=>f.id===id&&decimal(f.value));
  const scope=report.sellerScoped?' (faqat o‘z savdolaringiz bo‘yicha)':report.storeId?' (tanlangan filial bo‘yicha)':'';
  const answer=message=>({answerSource:'verified_fallback',answer:message});
@@ -135,7 +137,7 @@ function focusedReportFallback(report,question){
   if(f)return answer(`${count?'Bugungi savdolar soni':'Bugungi sof savdo'}: ${displayDecimal(f.value)} ${count?'ta':'so‘m'}${scope}.`);
  }
  if(report.topic==='today_sales'){
-  if(/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
+  if(!/savdo|chek|tranzaksiya/iu.test(query)||/mahsulot|tovar|kirim|qoldiq|qarz|xarajat|oxirgi savdo/iu.test(query)||/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
   const requested=/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
    /qaytarish/iu.test(query)?['today_refunds','Bugungi qaytarish summasi','so‘m']:
    /yalpi|brutto/iu.test(query)?['today_gross','Bugungi yalpi savdo','so‘m']:
@@ -175,13 +177,24 @@ function focusedReportFallback(report,question){
  return null;
 }
 
+// The model can return a technically valid but unnecessarily long answer.
+// For an unambiguous single-metric question, prefer the same verified facts
+// that power the recovery path. Full reports are retained separately by chat.
+export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
+ if(!report||!Array.isArray(toolResults)||!Array.isArray(actions)||actions.length||
+   toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))
+  return {answer,blocks};
+ const selected=focusedVerifiedAnswer(report,question);
+ return selected?{answer:selected.answer,blocks:[]}:{answer,blocks};
+}
+
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
  if(latestReport&&/nega|nima sabab|sababi nimada|nimaga/iu.test(String(question||''))&&
     ['today_sales','business_overview'].includes(latestReport.topic))
   return {answerSource:'clarification_fallback',answer:'Joriy savdo summasining o‘zi sababni ko‘rsatmaydi. Buni aniqlash uchun oldingi teng davr va mahsulotlar kesimidagi natijalarni solishtirish kerak.'};
  if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return improvementFallback(latestReport);
- const focused=focusedReportFallback(latestReport,question);
+ const focused=focusedVerifiedAnswer(latestReport,question);
  if(focused)return focused;
  const summary=latestReport?.topic==='business_overview'&&overviewSummary(latestReport);
  if(summary)return {answerSource:'verified_fallback',answer:summary};
