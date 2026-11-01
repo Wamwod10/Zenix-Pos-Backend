@@ -46,6 +46,21 @@ test('current debts and low stock are concise and numeric facts stay exact',()=>
   'Minimum yoki undan past qoldiqdagi mahsulotlar: 12 ta.');
 });
 
+test('top product answer is concise, preserving ties and compatible units',()=>{
+ const base={topic:'top_products',facts:[
+  {...fact('top_products_0','990.00'),productName:'Guruch 25 kg',qty:'12.000',quantityUnit:'dona'},
+  {...fact('top_products_1','1100.00'),productName:'Choy',qty:'8.000',quantityUnit:'dona'},
+ ]};
+ const winner=fallback(base,'Eng ko‘p qaysi mahsulot sotildi?').answer;
+ assert.match(winner,/Guruch 25 kg — 12 dona/);
+ assert.doesNotMatch(winner,/Choy|990 so‘m|1100 so‘m/);
+ const tied=fallback({...base,facts:[base.facts[0],{...base.facts[1],qty:'12'}]},'Eng ko‘p qaysi mahsulot sotildi?').answer;
+ assert.match(tied,/teng yetakchilar/);
+ assert.match(tied,/Guruch 25 kg, Choy/);
+ const mixed=fallback({...base,facts:[base.facts[0],{...base.facts[1],quantityUnit:'kg'}]},'Eng ko‘p qaysi mahsulot sotildi?').answer;
+ assert.match(mixed,/bevosita solishtirib bo‘lmaydi/);
+});
+
 test('a question requiring reasons is not reduced to a misleading sale amount',()=>{
  const report={topic:'today_sales',facts:[fact('today_net','2000.00')]};
  const reply=fallback(report,'Nega savdo ko‘paygan?').answer;
