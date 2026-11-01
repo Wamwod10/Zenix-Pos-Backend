@@ -130,6 +130,10 @@ function focusedReportFallback(report,question){
  const fact=id=>(report.facts||[]).find(f=>f.id===id&&decimal(f.value));
  const scope=report.sellerScoped?' (faqat o‘z savdolaringiz bo‘yicha)':report.storeId?' (tanlangan filial bo‘yicha)':'';
  const answer=message=>({answerSource:'verified_fallback',answer:message});
+ if(report.topic==='business_overview'&&/bugun/iu.test(query)&&/savdo/iu.test(query)&&!/foyda|xarajat|kecha|o[‘’ʻʼ']tgan/iu.test(query)){
+  const count=/nechta|soni/iu.test(query),f=fact(count?'today_sales_sales_count':'today_sales_today_net');
+  if(f)return answer(`${count?'Bugungi savdolar soni':'Bugungi sof savdo'}: ${displayDecimal(f.value)} ${count?'ta':'so‘m'}${scope}.`);
+ }
  if(report.topic==='today_sales'){
   if(/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
   const requested=/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
@@ -173,6 +177,9 @@ function focusedReportFallback(report,question){
 
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
+ if(latestReport&&/nega|nima sabab|sababi nimada|nimaga/iu.test(String(question||''))&&
+    ['today_sales','business_overview'].includes(latestReport.topic))
+  return {answerSource:'clarification_fallback',answer:'Joriy savdo summasining o‘zi sababni ko‘rsatmaydi. Buni aniqlash uchun oldingi teng davr va mahsulotlar kesimidagi natijalarni solishtirish kerak.'};
  if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return improvementFallback(latestReport);
  const focused=focusedReportFallback(latestReport,question);
  if(focused)return focused;
