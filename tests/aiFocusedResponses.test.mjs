@@ -61,10 +61,23 @@ test('top product answer is concise, preserving ties and compatible units',()=>{
  assert.match(mixed,/bevosita solishtirib bo‘lmaydi/);
 });
 
+test('overview fallback chooses one asked sales metric, not the other sections',()=>{
+ const overview={topic:'business_overview',from:'2026-10-26',to:'2026-11-01',facts:[
+  fact('today_sales_today_net','190000.00'),fact('today_sales_sales_count','3','count'),
+  fact('supplier_debt_supplier_debt','700000.00'),fact('expenses_expenses','80000.00'),
+ ]};
+ const amount=fallback(overview,'Bugun qancha savdo qildim?').answer;
+ assert.equal(amount,'Bugungi sof savdo: 190 000 so‘m.');
+ assert.doesNotMatch(amount,/qarz|xarajat|700 000/);
+ assert.equal(fallback(overview,'Bugun nechta savdo bo‘ldi?').answer,'Bugungi savdolar soni: 3 ta.');
+});
+
 test('a question requiring reasons is not reduced to a misleading sale amount',()=>{
  const report={topic:'today_sales',facts:[fact('today_net','2000.00')]};
  const reply=fallback(report,'Nega savdo ko‘paygan?').answer;
  assert.doesNotMatch(reply,/^Bugungi sof savdo: 2 000 so‘m/);
+ assert.match(reply,/o‘zi sababni ko‘rsatmaydi/);
+ assert.doesNotMatch(reply,/2 000 so‘m/);
 });
 
 test('provider instructs answer-first, minimum relevant detail and verified anchors',async()=>{
