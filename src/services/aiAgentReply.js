@@ -159,7 +159,14 @@ function focusedReportFallback(report,question){
  }
  if(report.topic==='top_products'&&/eng ko[‘’ʻʼ']p|qaysi mahsulot/iu.test(query)){
   const rows=(report.facts||[]).filter(f=>/^top_products_\d+$/.test(f.id)&&f.productName&&decimal(f.qty));
-  if(rows.length===1&&rows[0].quantityUnit)return answer(`Sof miqdor bo‘yicha eng ko‘p sotilgan mahsulot: ${rows[0].productName} — ${displayDecimal(rows[0].qty)} ${rows[0].quantityUnit}${scope}.`);
+  // A quantity winner is meaningful only for the same unit. Keep the fuller
+  // existing fallback for mixed units or unclear product quantities.
+  if(rows.length&&rows[0].quantityUnit&&rows.every(r=>r.quantityUnit===rows[0].quantityUnit)){
+   const key=value=>{const [whole,fraction='']=value.split('.');return BigInt(whole).toString()+'.'+fraction.replace(/0+$/,'')};
+   const top=rows.filter(r=>key(r.qty)===key(rows[0].qty));
+   const names=top.slice(0,3).map(r=>r.productName).join(', ');
+   return answer(`${top.length>1?'Sof miqdor bo‘yicha teng yetakchilar':'Sof miqdor bo‘yicha eng ko‘p sotilgan mahsulot'}: ${names} — ${displayDecimal(rows[0].qty)} ${rows[0].quantityUnit}${scope}.`);
+  }
  }
  return null;
 }
