@@ -121,9 +121,54 @@ function improvementFallback(report){
  const scope=report?`${report.storeId?'Tanlangan filial':'Ruxsat etilgan filiallar'}${report.sellerScoped?' — savdo va mahsulot foydasi faqat o‘z savdolaringiz bo‘yicha':''}. `:'';
  return {answerSource:facts.some(f=>decimal(f.value))?'verified_fallback':'clarification_fallback',answer:`Qisqa xulosa: avval pul oqimi, qoldiq va marjani dalil bilan tekshirib, keyin sinovli o‘zgarish qiling.\n\nAsosiy muammolar va ma’lumot chegarasi: ${scope}Sabablar, talab va o‘sishni bu ma’lumotlardan aniqlab bo‘lmaydi. Teng davrlar taqqoslovi, to‘liq tannarx va xarajat hujjatlari tekshirilishi kerak.\n\nEng muhim tavsiyalar:\n${steps.slice(0,3).map((step,i)=>`${i+1}. ${step}`).join('\n\n')}`};
 }
+// Keep a verified recovery answer aligned to the question instead of dumping
+// unrelated report facts. This is used only after a model response needs recovery.
+function focusedReportFallback(report,question){
+ const query=String(question||'').normalize('NFKC').toLocaleLowerCase('uz');
+ if(!query.trim()||!report||!/qancha|nechta|soni|jami|eng ko[‘’ʻʼ']p|oxirgi savdo/iu.test(query))return null;
+ if(/nega|nima sabab|sababi|nimaga|qanday yaxshila|tavsiya|solishtir|taqqosla/iu.test(query))return null;
+ const fact=id=>(report.facts||[]).find(f=>f.id===id&&decimal(f.value));
+ const scope=report.sellerScoped?' (faqat o‘z savdolaringiz bo‘yicha)':report.storeId?' (tanlangan filial bo‘yicha)':'';
+ const answer=message=>({answerSource:'verified_fallback',answer:message});
+ if(report.topic==='today_sales'){
+  if(/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
+  const requested=/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
+   /qaytarish/iu.test(query)?['today_refunds','Bugungi qaytarish summasi','so‘m']:
+   /yalpi|brutto/iu.test(query)?['today_gross','Bugungi yalpi savdo','so‘m']:
+   ['today_net','Bugungi sof savdo','so‘m'];
+  const found=fact(requested[0]);
+  if(found)return answer(`${requested[1]}: ${displayDecimal(found.value)} ${requested[2]}${scope}.`);
+ }
+ if(report.topic==='expenses'&&/xarajat/iu.test(query)){
+  if(/bugun|kecha|oy|bitta|shu kun/iu.test(query))return null;
+  const f=fact('expenses');
+  if(f)return answer(`Oxirgi 7 biznes kunidagi xarajatlar: ${displayDecimal(f.value)} so‘m${scope}.`);
+ }
+ if(['customer_debt','supplier_debt'].includes(report.topic)&&/qarz|nasiya|debitor|ta[‘’ʻʼ']minotchi/iu.test(query)){
+  const f=fact(report.topic);
+  if(f)return answer(`${report.topic==='customer_debt'?'Mijozlarning joriy qarzi':'Ta’minotchilarning joriy qarzi'}: ${displayDecimal(f.value)} so‘m${scope}.`);
+ }
+ if(['low_stock','dormant'].includes(report.topic)&&/nechta|soni|qancha/iu.test(query)){
+  const f=fact(report.topic+'_count');
+  if(f)return answer(`${report.topic==='low_stock'?'Minimum yoki undan past qoldiqdagi mahsulotlar':'Oxirgi 30 biznes kunida sotilmagan qoldiqli mahsulotlar'}: ${displayDecimal(f.value)} ta${scope}.`);
+ }
+ if(report.topic==='latest_sale'&&/qancha|summa/iu.test(query)){
+  const sale=report.sale;
+  if(sale===null)return answer('Savdo topilmadi.');
+  if(sale&&decimal(sale.total))return answer(`${report.selection==='by_id'?'Tanlangan savdo':'Oxirgi savdo'} (${sale.businessDate}): ${displayDecimal(sale.total)} so‘m${scope}.`);
+ }
+ if(report.topic==='top_products'&&/eng ko[‘’ʻʼ']p|qaysi mahsulot/iu.test(query)){
+  const rows=(report.facts||[]).filter(f=>/^top_products_\\d+$/.test(f.id)&&f.productName&&decimal(f.qty));
+  if(rows.length===1&&rows[0].quantityUnit)return answer(`Sof miqdor bo‘yicha eng ko‘p sotilgan mahsulot: ${rows[0].productName} — ${displayDecimal(rows[0].qty)} ${rows[0].quantityUnit}${scope}.`);
+ }
+ return null;
+}
+
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
  if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return improvementFallback(latestReport);
+ const focused=focusedReportFallback(latestReport,question);
+ if(focused)return focused;
  const summary=latestReport?.topic==='business_overview'&&overviewSummary(latestReport);
  if(summary)return {answerSource:'verified_fallback',answer:summary};
  const report=latestReport&&['top_products','latest_sale'].includes(latestReport.topic)?latestReport:null;
