@@ -47,6 +47,28 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
     const replay=await aiAgentChat(f.user,{requestId:response.requestId,question},{settings,provider:async()=>{throw Error('replay must not call provider')}});assert.deepEqual(replay,response);
    }
   });
+  await t.test('simple sale amount suppresses valid but irrelevant model blocks end-to-end',async()=>{
+   const f=await fixture();let step=0;
+   const report={kind:'report',report:{topic:'today_sales',storeId:f.store,from:'2026-11-01',to:'2026-11-01',
+    facts:[{id:'today_net',label:'Bugungi sof savdo',value:'2450000.00',unit:'UZS'},
+           {id:'today_gross',label:'Bugungi yalpi savdo',value:'2500000.00',unit:'UZS'},
+           {id:'sales_count',label:'Bugungi savdo soni',value:'5',unit:'count'}],tables:[],notes:[]}};
+   const response=await aiAgentChat(f.user,body('Bugun qancha savdo qildim?',{storeId:f.store}),{
+    settings,
+    provider:async(_history,{onDispatch})=>{
+     await onDispatch();
+     if(step++===0)return call('get_business_report',{topic:'today_sales',storeId:f.store});
+     return {...final(),reply:{kind:'results',reply:'Savdo natijalarini ko‘rib chiqamiz.',
+      blocks:[{type:'paragraph',text:'Barcha natijalar mavjud.',factIds:[]}]}};
+    },toolRunner:async()=>report,
+   });
+   assert.equal(response.answer,'Bugungi sof savdo: 2 450 000 so‘m (tanlangan filial bo‘yicha).');
+   assert.deepEqual(response.blocks,[]);
+   assert.equal(response.report.facts.length,3,'full report remains available in expanded details');
+   const stored=(await pool.query('SELECT messages FROM ai_conversations WHERE id=$1',[response.conversationId])).rows[0].messages;
+   assert.ok(stored.some(m=>m.role==='assistant'&&m.content.includes('2 450 000 so‘m')));
+   assert.ok(!stored.some(m=>m.role==='assistant'&&m.content.includes('Barcha natijalar mavjud.')));
+  });
   await t.test('typed memory carries verified identities without replaying receipt quantities',async()=>{
    const f=await fixture(),first=await aiAgentChat(f.user,body('Guruch qoldig‘ini tekshir',{storeId:f.store}),{settings,provider:providerFor([call('search_products',{query:'Guruch'}),call('get_product_stock',{productId:f.product,storeId:f.store,warehouseId:f.warehouse}),final()])});
    const second=await aiAgentChat(f.user,body('Undan kirim tayyorla',{storeId:f.store,conversationId:first.conversationId}),{settings,provider:async(_h,{onDispatch,memory})=>{await onDispatch();assert.equal(memory.product.id,f.product);assert.equal(memory.warehouse.id,f.warehouse);assert.equal(memory.product.unit,'kg');assert.ok(!JSON.stringify(memory).includes('costPrice'));return call('prepare_stock_receipt',{productId:memory.product.id,warehouseId:memory.warehouse.id,storeId:f.store,quantity:null,unit:memory.product.unit,costPrice:null,batchNo:null,expiryDate:null})}});
