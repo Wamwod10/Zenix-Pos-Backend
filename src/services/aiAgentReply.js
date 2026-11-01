@@ -158,7 +158,7 @@ function focusedReportFallback(report,question){
   if(sale&&decimal(sale.total))return answer(`${report.selection==='by_id'?'Tanlangan savdo':'Oxirgi savdo'} (${sale.businessDate}): ${displayDecimal(sale.total)} so‘m${scope}.`);
  }
  if(report.topic==='top_products'&&/eng ko[‘’ʻʼ']p|qaysi mahsulot/iu.test(query)){
-  const rows=(report.facts||[]).filter(f=>/^top_products_\\d+$/.test(f.id)&&f.productName&&decimal(f.qty));
+  const rows=(report.facts||[]).filter(f=>/^top_products_\d+$/.test(f.id)&&f.productName&&decimal(f.qty));
   if(rows.length===1&&rows[0].quantityUnit)return answer(`Sof miqdor bo‘yicha eng ko‘p sotilgan mahsulot: ${rows[0].productName} — ${displayDecimal(rows[0].qty)} ${rows[0].quantityUnit}${scope}.`);
  }
  return null;
