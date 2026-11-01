@@ -93,7 +93,10 @@ integration('complete customer directory and platform metadata through authentic
     return {status:response.status,body:await response.json(),cookie:response.headers.get('set-cookie')?.split(';')[0]};
   }
   try{
-    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date,settings) VALUES('Task 6 Directory','ACTIVE',CURRENT_DATE+30,$1) RETURNING id",[{billingHold:false,trialEndsAt:'2026-11-01T00:00:00Z'}])).rows[0].id;
+    // This directory test creates writes; keep its synthetic trial active
+    // rather than relying on a fixed date that expires on CI runners.
+    const trialEndsAt=new Date(Date.now()+30*24*60*60*1000).toISOString();
+    const org=(await db.query("INSERT INTO organizations(name,license_status,expiry_date,settings) VALUES('Task 6 Directory','ACTIVE',CURRENT_DATE+30,$1) RETURNING id",[{billingHold:false,trialEndsAt}])).rows[0].id;
     const foreign=(await db.query("INSERT INTO organizations(name,license_status,expiry_date) VALUES('Task 6 Foreign','ACTIVE',CURRENT_DATE+30) RETURNING id")).rows[0].id;
     const store=(await db.query("INSERT INTO stores(organization_id,name) VALUES($1,'Directory store') RETURNING id",[org])).rows[0].id;
     const password='DirectoryTask6!';const hash=await bcrypt.hash(password,4);
@@ -156,7 +159,7 @@ integration('complete customer directory and platform metadata through authentic
     const detail=await request(`/api/platform/organizations/${org}/detail`,adminLogin.cookie);
     assert.equal(list.status,200);assert.equal(detail.status,200);assert.equal(list.body.data.total,1);
     for(const key of ['billingHold','trialEndsAt'])assert.equal(list.body.data.items[0][key],detail.body.data.organization[key]);
-    assert.equal(list.body.data.items[0].billingHold,true);assert.equal(list.body.data.items[0].trialEndsAt,'2026-11-01T00:00:00Z');
+    assert.equal(list.body.data.items[0].billingHold,true);assert.equal(list.body.data.items[0].trialEndsAt,trialEndsAt);
     const foreignList=await request('/api/platform/organizations/page?q=Task%206%20Foreign',adminLogin.cookie);
     const foreignDetail=await request(`/api/platform/organizations/${foreign}/detail`,adminLogin.cookie);
     assert.equal(foreignList.body.data.items[0].billingHold,false);assert.equal(foreignDetail.body.data.organization.billingHold,false);
