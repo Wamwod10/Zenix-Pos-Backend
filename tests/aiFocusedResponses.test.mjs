@@ -81,6 +81,24 @@ test('a question requiring reasons is not reduced to a misleading sale amount',(
 });
 
 
+test('recovery never substitutes the wrong reporting period or ranking metric',()=>{
+ const today={topic:'today_sales',facts:[fact('today_net','3000.00'),fact('today_gross','3100.00')]};
+ const yesterday=fallback(today,'Kecha qancha savdo bo‘ldi?');
+ assert.equal(yesterday.answerSource,'clarification_fallback');
+ assert.match(yesterday.answer,/faqat bugungi savdoga/);
+ assert.doesNotMatch(yesterday.answer,/3 000|3 100/);
+ const expenses={topic:'expenses',facts:[fact('expenses','78000.00')]};
+ const perDay=fallback(expenses,'Bugungi xarajat qancha?');
+ assert.equal(perDay.answerSource,'clarification_fallback');
+ assert.match(perDay.answer,/7 biznes kunini/);
+ assert.doesNotMatch(perDay.answer,/78 000/);
+ const ranking={topic:'top_products',facts:[{...fact('top_products_0','9000.00'),productName:'Guruch',qty:'12',quantityUnit:'kg'}]};
+ const byRevenue=fallback(ranking,'Eng ko‘p daromad keltirgan mahsulot qaysi?');
+ assert.equal(byRevenue.answerSource,'clarification_fallback');
+ assert.match(byRevenue.answer,/miqdor bo‘yicha/);
+ assert.doesNotMatch(byRevenue.answer,/Guruch.*eng ko‘p/);
+});
+
 test('successful model reply cannot overwhelm short metric request with unrelated verified sections',()=>{
  const report={topic:'today_sales',from:'2026-11-01',to:'2026-11-01',facts:[
   fact('today_net','2450000.00'),fact('today_gross','2500000.00'),fact('sales_count','5','count'),fact('today_refunds','50000.00'),
