@@ -190,6 +190,15 @@ export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolR
 
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
+ const q=String(question||'').normalize('NFKC').toLocaleLowerCase('uz');
+ // Do not replace a requested daily/monthly/revenue fact with the wrong
+ // reporting period or quantity ranking when a model reply needs recovery.
+ if(latestReport?.topic==='today_sales'&&/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(q)&&/savdo|chek|tranzaksiya/iu.test(q))
+  return {answerSource:'clarification_fallback',answer:'Bu hisobot faqat bugungi savdoga tegishli. So‘ralgan davr summasini aniqlash uchun o‘sha davr bo‘yicha hisobot kerak.'};
+ if(latestReport?.topic==='expenses'&&/bugun|bugungi|kecha|shu kun|oylik|shu oy/iu.test(q)&&/xarajat/iu.test(q))
+  return {answerSource:'clarification_fallback',answer:'Mavjud hisobot oxirgi 7 biznes kunini qamrab oladi. So‘ralgan davr xarajatini alohida tekshirish kerak.'};
+ if(latestReport?.topic==='top_products'&&/foyda|daromad|tushum|pul/iu.test(q)&&/eng ko[‘’ʻʼ']p|qaysi/iu.test(q))
+  return {answerSource:'clarification_fallback',answer:'Ushbu ro‘yxat sotilgan miqdor bo‘yicha tuzilgan. Foyda yoki tushum bo‘yicha yetakchini alohida hisobotdan tekshirish kerak.'};
  if(latestReport&&/nega|nima sabab|sababi nimada|nimaga/iu.test(String(question||''))&&
     ['today_sales','business_overview'].includes(latestReport.topic))
   return {answerSource:'clarification_fallback',answer:'Joriy savdo summasining o‘zi sababni ko‘rsatmaydi. Buni aniqlash uchun oldingi teng davr va mahsulotlar kesimidagi natijalarni solishtirish kerak.'};
