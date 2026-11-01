@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {safeAgentFallback,buildAgentEvidence} from '../src/services/aiAgentReply.js';
+import {safeAgentFallback,buildAgentEvidence,prioritizeVerifiedAnswer} from '../src/services/aiAgentReply.js';
 import {createAiAgentProvider} from '../src/services/aiAgentProvider.js';
 import {aiSettings} from '../src/config/ai.js';
 
@@ -78,6 +78,36 @@ test('a question requiring reasons is not reduced to a misleading sale amount',(
  assert.doesNotMatch(reply,/^Bugungi sof savdo: 2 000 so‘m/);
  assert.match(reply,/o‘zi sababni ko‘rsatmaydi/);
  assert.doesNotMatch(reply,/2 000 so‘m/);
+});
+
+
+test('successful model reply cannot overwhelm short metric request with unrelated verified sections',()=>{
+ const report={topic:'today_sales',from:'2026-11-01',to:'2026-11-01',facts:[
+  fact('today_net','2450000.00'),fact('today_gross','2500000.00'),fact('sales_count','5','count'),fact('today_refunds','50000.00'),
+ ]};
+ const presentation=prioritizeVerifiedAnswer({
+  question:'Bugun qancha savdo qildim?',report,toolResults:[{result:{kind:'report',report}}],
+  answer:'Bugun sof savdo va qaytarishlar bo‘yicha uzun tahlil...',blocks:[{type:'facts',text:'Ortiqcha statistika',facts:[{id:'extra',text:'Qarz 9000'}]}],actions:[],
+ });
+ assert.deepEqual(presentation,{answer:'Bugungi sof savdo: 2 450 000 so‘m.',blocks:[]});
+});
+
+test('short-answers never change action confirmations, causal questions or unrelated topics',()=>{
+ const report={topic:'today_sales',facts:[fact('today_net','2000.00'),fact('sales_count','4','count')]};
+ const verbose={answer:'Asl savolga izoh.',blocks:[{type:'paragraph',text:'Batafsil',facts:[]}]};
+ const tools=[{result:{kind:'report',report}}];
+ for(const question of ['Nega savdo ko‘paydi?','Bugun qancha mahsulot sotdim?','Oxirgi savdo qancha?','Kechagi savdo qancha?','Bugun qancha foyda oldim?','Bugungi savdoni tushuntir']) {
+  assert.deepEqual(prioritizeVerifiedAnswer({question,report,toolResults:tools,actions:[],...verbose}),verbose,question);
+ }
+ assert.deepEqual(prioritizeVerifiedAnswer({question:'Bugun qancha savdo bo‘ldi?',report,toolResults:tools,actions:[{type:'stock_receipt'}],...verbose}),verbose);
+ assert.deepEqual(prioritizeVerifiedAnswer({question:'Bugun qancha savdo bo‘ldi?',report,toolResults:[...tools,{result:{kind:'clarification',message:'Birini tanlang'}}],actions:[],...verbose}),verbose);
+ assert.deepEqual(prioritizeVerifiedAnswer({question:'Bugun qancha savdo bo‘ldi?',report:null,toolResults:[],actions:[],...verbose}),verbose);
+});
+
+test('detailed user requests retain AI reasoning and optional report blocks',()=>{
+ const report={topic:'today_sales',facts:[fact('today_net','1234.56')]};
+ const full={answer:'Batafsil tahlil:',blocks:[{type:'paragraph',text:'Raqamlar izohi',facts:[]}]};
+ assert.deepEqual(prioritizeVerifiedAnswer({question:'Bugungi savdoni batafsil tahlil qilib ber',report,toolResults:[{result:{kind:'report',report}}],actions:[],...full}),full);
 });
 
 test('provider instructs answer-first, minimum relevant detail and verified anchors',async()=>{
