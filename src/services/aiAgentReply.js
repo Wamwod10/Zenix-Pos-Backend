@@ -137,7 +137,7 @@ export function focusedVerifiedAnswer(report,question){
   if(f)return answer(`${count?'Bugungi savdolar soni':'Bugungi sof savdo'}: ${displayDecimal(f.value)} ${count?'ta':'so‘m'}${scope}.`);
  }
  if(report.topic==='today_sales'){
-  if(!/savdo|chek|tranzaksiya/iu.test(query)||/mahsulot|tovar|kirim|qoldiq|qarz|xarajat|oxirgi savdo/iu.test(query)||/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
+  if(!/savdo|chek|tranzaksiya|qaytarish|yalpi|brutto/iu.test(query)||/mahsulot|tovar|kirim|qoldiq|qarz|xarajat|oxirgi savdo/iu.test(query)||/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
   const requested=/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
    /qaytarish/iu.test(query)?['today_refunds','Bugungi qaytarish summasi','so‘m']:
    /yalpi|brutto/iu.test(query)?['today_gross','Bugungi yalpi savdo','so‘m']:
