@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {simpleReportTopic,simpleLatestSaleQuestion,isSaleAssessmentQuestion} from '../src/services/aiQuestionRouting.js';
+import {simpleReportTopic,simpleLatestSaleQuestion,isSaleAssessmentQuestion,isTodaySalesExistenceQuestion} from '../src/services/aiQuestionRouting.js';
 import {createAiAgentProvider} from '../src/services/aiAgentProvider.js';
 import {aiSettings} from '../src/config/ai.js';
 
@@ -36,6 +36,21 @@ test('elliptical followups require verified same-day server memory, not guessed 
  }
  for(const q of ['Nega ko‘paydi?','Batafsil ayt','Qaytarish qabul qil','Qaytarishlarni taqqosla'])
   assert.equal(simpleReportTopic(q,same),null);
+});
+
+test('yes-no today-sales questions require a fresh scoped report in Latin and Cyrillic',()=>{
+ for(const q of ['Bugun savdo bo‘ldimi?','Bugun savdo boldimi?','Бугун савдо бўлдими?',
+  'Bugun savdo bormi?','Bugun nechta savdo bo‘ldi?']){
+  if(q.includes('nechta'))assert.equal(isTodaySalesExistenceQuestion(q),false);
+  else assert.equal(isTodaySalesExistenceQuestion(q),true,q);
+  assert.equal(simpleReportTopic(q),'today_sales',q);
+ }
+ for(const q of ['Kecha savdo bo‘ldimi?','Bugun savdo bo‘ldimi, nega?',
+  'Bugun savdo bo‘ldimi, kecha bilan solishtir','Bugun savdo bo‘ldimi, foyda qancha?',
+  'Bugun xarajat bo‘ldimi?','Bugun savdoni bekor qil']){
+  assert.equal(isTodaySalesExistenceQuestion(q),false,q);
+  assert.notEqual(simpleReportTopic(q),'today_sales',q);
+ }
 });
 
 const response=output=>Response.json({status:'completed',usage:{input_tokens:80,output_tokens:30},output});
