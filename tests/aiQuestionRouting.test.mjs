@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {simpleReportTopic} from '../src/services/aiQuestionRouting.js';
+import {simpleReportTopic,simpleLatestSaleQuestion} from '../src/services/aiQuestionRouting.js';
 import {createAiAgentProvider} from '../src/services/aiAgentProvider.js';
 import {aiSettings} from '../src/config/ai.js';
 
@@ -102,4 +102,47 @@ test('verified memory allows forced fresh read for short same-day followup',asyn
  });
  const answer=await provider([{role:'user',content:'Qaytarishlar-chi?'}],{tools:[report],memory,businessDate:'2026-11-02',onDispatch:async()=>{}});
  assert.equal(answer.calls[0].args.topic,'today_sales');
+});
+
+test('simple latest-sale intent is narrow and never routes history or writes',()=>{
+ for(const q of ['Oxirgi marta nima sotilgan?','Oxirgi savdoda nimalar sotilgan?','So‘nggi chekda qancha sotilgan?','Охирги марта нима сотилган?'])
+  assert.equal(simpleLatestSaleQuestion(q),true,q);
+ for(const q of ['Oxirgi 7 kunda nima sotilgan?','Oxirgi oyda sotuvlar qanday?',
+  'Oxirgi savdoni bekor qil','Oxirgi savdoda qaytarish qancha?',
+  'Oxirgi savdoni kechagi bilan solishtir','Omborda oxirgi qoldiq qancha?'])
+  assert.equal(simpleLatestSaleQuestion(q),false,q);
+});
+
+test('latest-sale provider uses a single read-only tool and a small first request',async()=>{
+ const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
+ const read={type:'function',name:'get_latest_sale',strict:true,description:'Read last sale',
+  parameters:{type:'object',properties:{storeId:{type:['string','null']},saleId:{type:['string','null']}},required:['storeId','saleId'],additionalProperties:false}};
+ const write={type:'function',name:'prepare_stock_receipt',strict:true,description:'Write inventory',
+  parameters:{type:'object',properties:{},required:[],additionalProperties:false}};
+ let calls=0;
+ const provider=createAiAgentProvider(settings,async(_url,{body})=>{
+  calls++;
+  const request=JSON.parse(body);
+  assert.ok(Buffer.byteLength(body)+256<settings.maxInputTokens);
+  assert.equal(request.tool_choice,'required');
+  assert.deepEqual(request.tools.map(t=>t.name),['get_latest_sale']);
+  assert.match(request.input[0].content,/saleId null/);
+  return response([{type:'function_call',status:'completed',call_id:'latest_only',
+   name:'get_latest_sale',arguments:JSON.stringify({storeId:null,saleId:null})}]);
+ });
+ const result=await provider([{role:'user',content:'Oxirgi marta nima sotilgan?'}],
+  {tools:[read,write],onDispatch:async()=>{}});
+ assert.equal(calls,1);
+ assert.deepEqual(result.calls.map(x=>x.name),['get_latest_sale']);
+});
+
+test('latest-sale tool cannot be redirected to a different sale id',async()=>{
+ const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
+ const read={type:'function',name:'get_latest_sale',strict:true,description:'Read last sale',
+  parameters:{type:'object',properties:{storeId:{type:['string','null']},saleId:{type:['string','null']}},required:['storeId','saleId'],additionalProperties:false}};
+ const provider=createAiAgentProvider(settings,async()=>response([{type:'function_call',status:'completed',call_id:'other_sale',
+  name:'get_latest_sale',arguments:JSON.stringify({storeId:null,saleId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'})}]));
+ await assert.rejects(
+  provider([{role:'user',content:'Oxirgi marta nima sotilgan?'}],{tools:[read],onDispatch:async()=>{}}),
+  error=>error.code==='AI_INVALID_RESPONSE'&&error.details?.reason==='wrong_latest_sale_id');
 });
