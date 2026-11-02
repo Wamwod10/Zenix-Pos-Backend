@@ -43,3 +43,18 @@ export function simpleLatestSaleQuestion(question){
  if(/(?:kecha|hafta|oy|kun(?:da|lar)|davr|oldingi|avvalgi|solishtir|taqqosla|batafsil|tahlil|nega|nimaga|sabab|kirim|qabul qil|yarat|o'chir|bekor qil|tasdiqla|qaytarish|qaytarilgan|ombor|qoldiq|foyda|xarajat)/iu.test(q))return false;
  return true;
 }
+
+/**
+ * A follow-up asking whether a specific receipt was "good" is an evaluation
+ * request, not permission to repeat its line items or claim profitability.
+ * It only resolves to a receipt when the server already has a verified sale ID.
+ */
+export function isSaleAssessmentQuestion(question){
+ const q=normalizeUzbekQuestion(question);
+ if(!q||q.length>1000)return false;
+ if(/nega|nimaga|nima sabab|sababini|taqqosla|solishtir|qaytar|bekor qil|o'chir|tasdiqla|kirim/iu.test(q))return false;
+ const intent=/yaxshi|yomon|qoniqarli|foydali|daromadli|arziydimi|arzigulik|bahola|baholab|ma'qulmi|zor(?:mi)?/iu.test(q);
+ const reference=/(?:bu|shu|ushbu|o'sha|mazkur|oxirgi|so'nggi|songgi|hozirgi)\s+(?:savdo|sotuv|chek)/iu.test(q)||
+    /(?:savdo|sotuv|chek)(?:ni|ning)?\s+(?:bahola|yaxshi|yomon|foydali)/iu.test(q);
+ return intent&&reference;
+}
