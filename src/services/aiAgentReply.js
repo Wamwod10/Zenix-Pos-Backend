@@ -132,11 +132,17 @@ export function focusedVerifiedAnswer(report,question){
  const fact=id=>(report.facts||[]).find(f=>f.id===id&&decimal(f.value));
  const scope=report.sellerScoped?' (faqat o‘z savdolaringiz bo‘yicha)':report.storeId?' (tanlangan filial bo‘yicha)':'';
  const answer=message=>({answerSource:'verified_fallback',answer:message});
- if(report.topic==='business_overview'&&/bugun/iu.test(query)&&/savdo/iu.test(query)&&!/foyda|xarajat|kecha|o[‘’ʻʼ']tgan/iu.test(query)){
-  const count=/nechta|soni/iu.test(query),f=fact(count?'today_sales_sales_count':'today_sales_today_net');
-  if(f)return answer(`${count?'Bugungi savdolar soni':'Bugungi sof savdo'}: ${displayDecimal(f.value)} ${count?'ta':'so‘m'}${scope}.`);
+ if(report.topic==='business_overview'&&/bugun/iu.test(query)&&/savdo|chek|qaytarish|yalpi|brutto/iu.test(query)&&!/foyda|xarajat|kecha|o[‘’ʻʼ']tgan|mahsulot|tovar|qarz/iu.test(query)){
+  if(/nechta|soni/iu.test(query)&&/qaytarish/iu.test(query))return null;
+  const metric=/nechta|soni/iu.test(query)?['today_sales_sales_count','Bugungi savdolar soni','ta']:
+   /qaytarish/iu.test(query)?['today_sales_today_refunds','Bugungi qaytarish summasi','so‘m']:
+   /yalpi|brutto/iu.test(query)?['today_sales_today_gross','Bugungi yalpi savdo','so‘m']:
+   ['today_sales_today_net','Bugungi sof savdo','so‘m'];
+  const f=fact(metric[0]);
+  if(f)return answer(`${metric[1]}: ${displayDecimal(f.value)} ${metric[2]}${scope}.`);
  }
  if(report.topic==='today_sales'){
+  if(/nechta|soni/iu.test(query)&&/qaytarish/iu.test(query))return null;
   if(!/savdo|chek|tranzaksiya|qaytarish|yalpi|brutto/iu.test(query)||/mahsulot|tovar|kirim|qoldiq|qarz|xarajat|oxirgi savdo/iu.test(query)||/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
   const requested=/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
    /qaytarish/iu.test(query)?['today_refunds','Bugungi qaytarish summasi','so‘m']:
@@ -155,6 +161,8 @@ export function focusedVerifiedAnswer(report,question){
   if(f)return answer(`${report.topic==='customer_debt'?'Mijozlarning joriy qarzi':'Ta’minotchilarning joriy qarzi'}: ${displayDecimal(f.value)} so‘m${scope}.`);
  }
  if(['low_stock','dormant'].includes(report.topic)&&/nechta|soni|qancha/iu.test(query)){
+  if(report.topic==='low_stock'&&!/minimum|minimal|kam qol|past qoldiq|tugab bor/iu.test(query))return null;
+  if(report.topic==='dormant'&&!/sotilmagan|sotilmay|harakatsiz|aylanmay/iu.test(query))return null;
   const f=fact(report.topic+'_count');
   if(f)return answer(`${report.topic==='low_stock'?'Minimum yoki undan past qoldiqdagi mahsulotlar':'Oxirgi 30 biznes kunida sotilmagan qoldiqli mahsulotlar'}: ${displayDecimal(f.value)} ta${scope}.`);
  }
