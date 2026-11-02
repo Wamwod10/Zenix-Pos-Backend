@@ -36,11 +36,13 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
       saleId:{type:'string',format:'uuid',enum:[assessmentSale.id]},storeId:{type:'string',format:'uuid',enum:[assessmentSale.storeId]}}}}:null;
     // Keep the original registry schema untouched. Only expose the exact
     // requested topic in this provider call; authorization remains server-side.
+    const improvement=isBusinessImprovementQuestion(currentQuestion);
+    const growthRead=improvement&&firstRead&&!targetTopic&&!latestTool&&!assessmentTool?
+      tools.find(tool=>tool.name==='get_business_overview'):null;
     const readTool=reportTool?{...reportTool,parameters:{...reportTool.parameters,
       properties:{...reportTool.parameters.properties,
-        topic:{...reportTool.parameters.properties.topic,enum:[targetTopic]}}}}:assessmentTool||latestTool||null;
-    const improvement=isBusinessImprovementQuestion(history.findLast(item=>item.role==='user')?.content);
-    const advice=improvement?' Business improvement: read get_business_overview first if no current tool evidence. Answer with a short conclusion, issues/data gaps, then 3 prioritized recommendation blocks, each with an action and next step. Link observations to verified factIds. Do not dump the overview or infer growth, loss, demand or causes from a snapshot. Missing comparisons/costs must be explicit. Use numbers only in verified anchors or list headings.':'';
+        topic:{...reportTool.parameters.properties.topic,enum:[targetTopic]}}}}:assessmentTool||latestTool||growthRead||null;
+    const advice=improvement?' For business growth, read authorized overview; prefer 3 concrete, prioritized steps from verified evidence, never a report dump, invented causes or profit.':'';
     const developer=INSTRUCTIONS+advice+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'');
     const request={
       model:settings.model,store:false,reasoning:{effort:'none'},max_output_tokens:Math.min(settings.maxOutputTokens,budget?.outputTokens??settings.maxOutputTokens),
@@ -50,7 +52,7 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     };
     if(readTool){
       names=new Set([readTool.name]);
-      request.input[0].content+=assessmentTool?' Evaluate the SAME previously verified receipt: call get_latest_sale with the verified saleId and its storeId. Do not repeat product rows. A single receipt total does not establish profit or whether it is good relative to normal sales; note the missing cost and average-check baseline.':latestTool?' Read ONLY the most recent sale across permitted dates: call get_latest_sale with saleId null and the authorized store scope. Answer just the requested receipt/items, not unrelated totals.':` This request is an unambiguous ${targetTopic} metric: use get_business_report(topic: ${targetTopic}) to retrieve fresh authorized facts, then answer ONLY the asked metric.`;
+      request.input[0].content+=growthRead?' Call get_business_overview for fresh authorized business facts.':assessmentTool?' Evaluate the SAME previously verified receipt: call get_latest_sale with the verified saleId and its storeId. Do not repeat product rows. A single receipt total does not establish profit or whether it is good relative to normal sales; note the missing cost and average-check baseline.':latestTool?' Read ONLY the most recent sale across permitted dates: call get_latest_sale with saleId null and the authorized store scope. Answer just the requested receipt/items, not unrelated totals.':` This request is an unambiguous ${targetTopic} metric: use get_business_report(topic: ${targetTopic}) to retrieve fresh authorized facts, then answer ONLY the asked metric.`;
     }
     const maxInput=Math.min(settings.maxInputTokens,budget?.inputTokens??settings.maxInputTokens);
     // Before any current-turn tool output, supplied facts are optional prior
