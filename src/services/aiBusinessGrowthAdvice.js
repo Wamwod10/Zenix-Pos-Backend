@@ -41,6 +41,6 @@ export function businessGrowthAdvice(report){
  if(steps.length<3)steps.push('Mahsulot tannarxi, qaytarishlar va operatsion xarajatlarni solishtiring. Mahsulot foydasini biznesning yakuniy sof foydasi deb qabul qilmang.');
  if(steps.length<3)steps.push('Bitta o‘lchanadigan savdo yoki assortiment tajribasini o‘tkazing va natijani oldingi teng davr bilan taqqoslang.');
  const answer='Biznesingizni rivojlantirish uchun hozir quyidagi ishlarni tavsiya qilaman:\n\n'+steps.slice(0,3).map((s,i)=>String(i+1)+'. '+s).join('\n\n')+
-  '\n\nEng birinchi qadam: savdoni teng davrlar bo‘yicha tekshiring. Shundan keyin qaysi o‘zgarish haqiqatan foyda berayotganini o‘lchash mumkin.';
+  '\n\nKeyingi qadam: savdoni teng davrlar bo‘yicha tekshiring. Shundan keyin qaysi o‘zgarish haqiqatan foyda berayotganini o‘lchash mumkin.';
  return {answerSource:facts.some(f=>decimal(f?.value))?'verified_fallback':'clarification_fallback',answer};
 }
