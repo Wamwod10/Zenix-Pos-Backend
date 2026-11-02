@@ -6,7 +6,7 @@ const hasQuantity=(answer,value)=>new RegExp('(?:^|[^0-9])'+value+'\\s*(?:ta|don
 const shortMetric=answer=>typeof answer==='string'&&answer.trim().length>0&&answer.trim().length<=260;
 const amount= (answer,value)=>new RegExp('(?:^|[^0-9])'+value+'(?:\\.00)?\\s*(?:so[‘’ʻʼ\u0027]m|UZS)(?:[^\\p{L}]|$)','iu').test(numeric(answer));
 const hasWord=(answer,re)=>typeof answer==='string'&&re.test(answer.normalize('NFKC'));
-const stockAmount=answer=>hasWord(answer,/(?:7(?:[.,]0+)?\s*kg|7\s*kilogram)/iu);
+const stockAmount=answer=>hasWord(answer,/(?:^|[^\d])7(?:[.,]0+)?\s*(?:kg|kilogram)(?:[^\d]|$)/iu);
 const unitCount=answer=>hasWord(answer,/(?:^|[^\d])2\s*dona(?:[^\p{L}]|$)/iu);
 const rules=Object.freeze({
  inventory_1:{
