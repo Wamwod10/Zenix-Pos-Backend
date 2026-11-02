@@ -55,6 +55,45 @@ test('latest-sale item question returns verified product names and quantities on
  const missing=fallback({...sale,sale:null},'Oxirgi marta nima sotilgan?');
  assert.equal(missing.answer,'Oxirgi savdo topilmadi.');
 });
+test('Bugun savdo bo‘ldimi? answers naturally with verified yes/no and no invented cause',()=>{
+ const report={topic:'today_sales',from:'2026-11-02',to:'2026-11-02',storeId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',facts:[
+  fact('sales_count','0','count'),fact('today_net','0.00'),fact('today_gross','0.00'),fact('today_refunds','0.00')]};
+ const answers=['Bugun savdo bo‘ldimi?','Bugun savdo boldimi?','Бугун савдо бўлдими?','Bugun savdo bormi?'];
+ for(const question of answers){
+  const got=fallback(report,question);
+  assert.equal(got.answerSource,'verified_fallback',question);
+  assert.equal(got.answer,'Yo‘q, bugun tanlangan filialda savdo qayd etilmagan. Sababini faqat savdo hisobotidan aniqlab bo‘lmaydi.',question);
+  assert.doesNotMatch(got.answer,/Hisobot davri|Qolgan ko‘rsatkichlar|Bugungi qaytarish|0 so‘m/);
+  const p=prioritizeVerifiedAnswer({question,report,toolResults:[{result:{kind:'report',report}}],actions:[],
+   answer:'Hisobot davri: ... Bugungi savdolar soni 0',blocks:[{type:'facts',text:'Ortiqcha raqamlar',facts:[]}]});
+  assert.equal(p.answer,got.answer);
+  assert.deepEqual(p.blocks,[]);
+ }
+});
+test('positive sales use count not just net; zero net may still mean sales',()=>{
+ const base={topic:'today_sales',sellerScoped:true,facts:[fact('sales_count','3','count'),fact('today_net','0.00')]};
+ assert.equal(fallback(base,'Bugun savdo bo‘ldimi?').answer,
+  'Ha, bugun sizning savdolaringiz bo‘yicha 3 ta savdo qayd etilgan. Sof tushum: 0 so‘m.');
+ const normal={...base,sellerScoped:false,storeId:null,facts:[fact('sales_count','2','count'),fact('today_net','180000.00')]};
+ assert.equal(fallback(normal,'Bugun savdo bo‘ldimi?').answer,
+  'Ha, bugun ruxsat etilgan filiallarda 2 ta savdo qayd etilgan. Sof tushum: 180 000 so‘m.');
+});
+test('missing count cannot be mistaken for no sales, even with zero net',()=>{
+ const report={topic:'today_sales',facts:[fact('today_net','0.00')]};
+ const answer=fallback(report,'Bugun savdo bo‘ldimi?');
+ assert.equal(answer.answerSource,'clarification_fallback');
+ assert.match(answer.answer,/tasdiqlay olmayman/);
+ assert.doesNotMatch(answer.answer,/Yo‘q, bugun|0 so‘m/);
+});
+test('today-sales existence works for business overview but not another report',()=>{
+ const report={topic:'business_overview',storeId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  facts:[fact('today_sales_sales_count','0','count'),fact('today_sales_today_net','0.00')]};
+ assert.match(fallback(report,'Bugun savdo bo‘ldimi?').answer,/^Yo‘q, bugun tanlangan filialda/);
+ const unrelated={topic:'expenses',facts:[fact('expenses','0.00')]};
+ const answer=fallback(unrelated,'Bugun savdo bo‘ldimi?');
+ assert.equal(answer.answerSource,'clarification_fallback');
+ assert.doesNotMatch(answer.answer,/Yo‘q, bugun savdo/);
+});
 test('short sales question receives only the requested verified net amount',()=>{
  const report={topic:'today_sales',from:'2026-11-01',to:'2026-11-01',facts:[
   fact('sales_count','5','count'),fact('today_gross','2500000.00'),
