@@ -124,7 +124,7 @@ function improvementFallback(report){
 }
 // Keep a verified recovery answer aligned to the question instead of dumping
 // unrelated report facts. This is used only after a model response needs recovery.
-export export function focusedVerifiedAnswer(report,question){
+export function focusedVerifiedAnswer(report,question){
  const query=normalizeUzbekQuestion(question);
  const followupGross=/^(?:yalpi(?:si)?|brutto)(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupRefund=/^qaytarish(?:lar)?(?:i)?(?:\s*[- ]?chi)?\??$/iu.test(query);
