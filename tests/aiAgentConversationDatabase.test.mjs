@@ -47,6 +47,29 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
     const replay=await aiAgentChat(f.user,{requestId:response.requestId,question},{settings,provider:async()=>{throw Error('replay must not call provider')}});assert.deepEqual(replay,response);
    }
   });
+  await t.test('latest sale from screenshot finishes after one model call without 413 or extra write',async()=>{
+   const f=await fixture();let providerCalls=0,readCalls=0;
+   const report={kind:'report',report:{topic:'latest_sale',selection:'latest',storeId:f.store,from:null,to:null,
+    sale:{businessDate:'2026-11-02',createdAt:'2026-11-02T10:00:00Z',total:'60000.00',items:[
+     {name:'Non',quantity:'2',unit:'dona',lineTotal:'10000.00'},
+     {name:'Sut',quantity:'1',unit:'dona',lineTotal:'50000.00'}],hasMoreItems:false},
+    facts:[],tables:[],notes:[]}};
+   const response=await aiAgentChat(f.user,body('Oxirgi marta nima sotilgan?',{storeId:f.store}),{
+    settings,provider:async(_history,{onDispatch})=>{
+     await onDispatch();providerCalls++;
+     if(providerCalls>1)throw new Error('verified last sale must not need another model request');
+     return call('get_latest_sale',{storeId:f.store,saleId:null});
+    },toolRunner:async(_user,name)=>{
+     assert.equal(name,'get_latest_sale');readCalls++;return report;
+    },
+   });
+   assert.equal(providerCalls,1);assert.equal(readCalls,1);
+   assert.equal(response.answer,'Oxirgi savdoda: Non — 2 dona; Sut — 1 dona (tanlangan filial bo‘yicha).');
+   assert.equal(response.report.topic,'latest_sale');
+   assert.deepEqual(response.actions,[]);
+   const saved=(await pool.query('SELECT status,error_code FROM ai_requests WHERE request_id=$1',[response.requestId])).rows[0];
+   assert.equal(saved.status,'SUCCEEDED');assert.equal(saved.error_code,null);
+  });
   await t.test('simple sale amount suppresses valid but irrelevant model blocks end-to-end',async()=>{
    const f=await fixture();let step=0;
    const report={kind:'report',report:{topic:'today_sales',storeId:f.store,from:'2026-11-01',to:'2026-11-01',
