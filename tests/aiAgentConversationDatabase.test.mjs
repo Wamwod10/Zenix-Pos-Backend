@@ -95,6 +95,43 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
    const row=(await pool.query('SELECT status,error_code FROM ai_requests WHERE request_id=$1',[response.requestId])).rows[0];
    assert.equal(row.status,'SUCCEEDED');assert.equal(row.error_code,null);
   });
+  await t.test('two-turn saved receipt context answers evaluative question without repeating goods',async()=>{
+   const f=await fixture();const saleId=randomUUID();let toolReads=0;
+   const sale={id:saleId,storeId:f.store,saleNumber:'S-15',businessDate:'2026-10-29'};
+   const report={kind:'report',report:{topic:'latest_sale',selection:'latest',storeId:f.store,
+    from:'2026-10-29',to:'2026-10-29',latestSale:sale,
+    sale:{total:'4906500.00',businessDate:'2026-10-29',createdAt:'2026-10-29T17:30:17Z',
+     items:[{name:'Qaymoq 200ml',quantity:'1',unit:'dona',lineTotal:'13500.00'}],hasMoreItems:false},
+    facts:[],tables:[],notes:[]}};
+   const runner=async(_user,name,args)=>{
+    assert.equal(name,'get_latest_sale');
+    assert.equal(args.storeId,f.store);
+    assert.equal(args.saleId,toolReads===0?null:saleId);
+    toolReads++;
+    return {...report,report:{...report.report,selection:args.saleId?'by_id':'latest'}};
+   };
+   const first=await aiAgentChat(f.user,body('Oxirgi marta nima sotilgan?',{storeId:f.store}),{
+    settings,provider:providerFor([call('get_latest_sale',{storeId:f.store,saleId:null})]),toolRunner:runner});
+   assert.match(first.answer,/Qaymoq 200ml/);
+   let followCalls=0;
+   const follow=await aiAgentChat(f.user,body('Bu savdo yaxshi hisoblanadimi?',{
+    storeId:f.store,conversationId:first.conversationId}),{
+    settings,provider:async(_history,{onDispatch,memory})=>{
+     followCalls++;await onDispatch();
+     assert.equal(memory.sale.id,saleId);
+     assert.equal(memory.sale.storeId,f.store);
+     return call('get_latest_sale',{storeId:f.store,saleId});
+    },toolRunner:runner,
+   });
+   assert.equal(followCalls,1);
+   assert.equal(toolReads,2);
+   assert.equal(follow.conversationId,first.conversationId);
+   assert.match(follow.answer,/4 906 500 so‘m/);
+   assert.match(follow.answer,/yaxshi yoki yomon/);
+   assert.doesNotMatch(follow.answer,/Qaymoq|13 500|Tanlangan savdo hujjati/);
+   assert.deepEqual(follow.actions,[]);
+   assert.equal((await pool.query('SELECT status FROM ai_requests WHERE request_id=$1',[follow.requestId])).rows[0].status,'SUCCEEDED');
+  });
   await t.test('simple sale amount suppresses valid but irrelevant model blocks end-to-end',async()=>{
    const f=await fixture();let step=0;
    const report={kind:'report',report:{topic:'today_sales',storeId:f.store,from:'2026-11-01',to:'2026-11-01',
