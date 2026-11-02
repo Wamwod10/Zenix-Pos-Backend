@@ -72,7 +72,7 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
     },
    });
    assert.equal(calls,2);
-   assert.match(response.answer,/1\\. Savdoni/);
+   assert.match(response.answer,/1\. Savdoni/);
    assert.match(response.answer,/Keks 250g/);
    assert.match(response.answer,/2 ta minimum/);
    assert.doesNotMatch(response.answer,/hisobotlardan tayyorlangan qisqa xulosa|ta’minotchi hujjatlaridagi to‘lov muddatlari/iu);
