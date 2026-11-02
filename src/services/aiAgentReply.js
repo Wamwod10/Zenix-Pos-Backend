@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {HttpError} from '../lib/http.js';
-import {normalizeUzbekQuestion,simpleLatestSaleQuestion,isSaleAssessmentQuestion} from './aiQuestionRouting.js';
+import {normalizeUzbekQuestion,simpleLatestSaleQuestion,isSaleAssessmentQuestion,isTodaySalesExistenceQuestion} from './aiQuestionRouting.js';
 
 export function assertAgentQuestion(value){
  const text=String(value||'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g,'').trim();
@@ -131,6 +131,19 @@ export function focusedVerifiedAnswer(report,question){
  const followupNet=/^sof savdo(?:si)?(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupCount=/^nechta (?:savdo|chek)(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followup=followupGross||followupRefund||followupNet||followupCount;
+ if(isTodaySalesExistenceQuestion(question)&&['today_sales','business_overview'].includes(report?.topic)){
+  const prefix=report.topic==='today_sales'?'':'today_sales_';
+  const fact=id=>(report.facts||[]).find(f=>f.id===prefix+id&&decimal(f.value));
+  const count=fact('sales_count');
+  const scope=report.sellerScoped?'sizning savdolaringiz bo‘yicha':report.storeId?'tanlangan filialda':'ruxsat etilgan filiallarda';
+  if(!count||!/^(?:0|[1-9]\\d*)(?:\\.0+)?$/.test(count.value))
+   return {answerSource:'clarification_fallback',answer:'Bugungi savdolar sonini ishonchli tekshira olmadim. Hozir savdo bo‘lgan yoki bo‘lmaganini tasdiqlay olmayman.'};
+  if(/^0(?:\\.0+)?$/.test(count.value))
+   return {answerSource:'verified_fallback',answer:`Yo‘q, bugun ${scope} savdo qayd etilmagan. Sababini faqat savdo hisobotidan aniqlab bo‘lmaydi.`};
+  const net=fact('today_net');
+  const netText=net?` Sof tushum: ${displayDecimal(net.value)} so‘m.`:'';
+  return {answerSource:'verified_fallback',answer:`Ha, bugun ${scope} ${displayDecimal(count.value)} ta savdo qayd etilgan.${netText}`};
+ }
  if(isSaleAssessmentQuestion(question)&&report?.topic==='latest_sale'){
   const sale=report.sale;
   if(sale===null)return {answerSource:'clarification_fallback',answer:'Bu savdo hujjati topilmadi. Baholash uchun qaysi savdoni nazarda tutganingizni aniqlashtiring.'};
@@ -218,6 +231,11 @@ export function focusedVerifiedAnswer(report,question){
 // For an unambiguous single-metric question, prefer the same verified facts
 // that power the recovery path. Full reports are retained separately by chat.
 export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
+ if(isTodaySalesExistenceQuestion(question)&&Array.isArray(toolResults)&&Array.isArray(actions)&&!actions.length&&
+    !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
+  const answerForStatus=focusedVerifiedAnswer(report,question);
+  return {answer:answerForStatus?.answer||'Bugungi savdolar sonini ishonchli tekshira olmadim. Savdo bo‘lgan yoki bo‘lmaganini hozir tasdiqlay olmayman.',blocks:[]};
+ }
  if(isSaleAssessmentQuestion(question)&&Array.isArray(toolResults)&&Array.isArray(actions)&&!actions.length&&
     !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
   const assessment=report?.topic==='latest_sale'?focusedVerifiedAnswer(report,question):null;
@@ -233,6 +251,10 @@ export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolR
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
  const q=normalizeUzbekQuestion(question);
+ if(isTodaySalesExistenceQuestion(question)){
+  const status=focusedVerifiedAnswer(latestReport,question);
+  return status||{answerSource:'clarification_fallback',answer:'Bugungi savdolar sonini ishonchli tekshira olmadim. Hozir savdo bo‘lgan yoki bo‘lmaganini tasdiqlay olmayman.'};
+ }
  // A qualitative question must never fall through to a receipt/item dump.
  // The known sale may be refreshed by a read tool; without an actual sale
  // or a profitability baseline, state the limitation rather than guess.
