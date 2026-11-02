@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {HttpError} from '../lib/http.js';
-import {normalizeUzbekQuestion,simpleLatestSaleQuestion} from './aiQuestionRouting.js';
+import {normalizeUzbekQuestion,simpleLatestSaleQuestion,isSaleAssessmentQuestion} from './aiQuestionRouting.js';
 
 export function assertAgentQuestion(value){
  const text=String(value||'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g,'').trim();
@@ -131,6 +131,14 @@ export function focusedVerifiedAnswer(report,question){
  const followupNet=/^sof savdo(?:si)?(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupCount=/^nechta (?:savdo|chek)(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followup=followupGross||followupRefund||followupNet||followupCount;
+ if(isSaleAssessmentQuestion(question)&&report?.topic==='latest_sale'){
+  const sale=report.sale;
+  if(sale===null)return {answerSource:'clarification_fallback',answer:'Bu savdo hujjati topilmadi. Baholash uchun qaysi savdoni nazarda tutganingizni aniqlashtiring.'};
+  if(!sale||!decimal(sale.total))return {answerSource:'clarification_fallback',answer:'Bu savdo haqida tasdiqlangan summa yetarli emas. Baholash uchun savdo hujjati va uning natijalari kerak.'};
+  const scope=report.sellerScoped?' (faqat o‘z savdolaringiz bo‘yicha)':report.storeId?' (tanlangan filial bo‘yicha)':'';
+  return {answerSource:'verified_fallback',
+   answer:`Bu savdoda ${displayDecimal(sale.total)} so‘mlik tushum bor${scope}, ammo faqat shu summaga qarab uni yaxshi yoki yomon deyish to‘g‘ri emas. Buning uchun mahsulotlarning tannarxi va odatdagi o‘rtacha chek bilan solishtirish kerak. Tushum — sof foyda emas.`};
+ }
  // The last receipt is a server-verified record. Short answers can be
  // rendered directly without another large model prompt or guessed quantities.
  if(report?.topic==='latest_sale'&&simpleLatestSaleQuestion(question)){
@@ -210,6 +218,11 @@ export function focusedVerifiedAnswer(report,question){
 // For an unambiguous single-metric question, prefer the same verified facts
 // that power the recovery path. Full reports are retained separately by chat.
 export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
+ if(isSaleAssessmentQuestion(question)&&Array.isArray(toolResults)&&Array.isArray(actions)&&!actions.length&&
+    !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
+  const assessment=report?.topic==='latest_sale'?focusedVerifiedAnswer(report,question):null;
+  return {answer:assessment?.answer||'Bu savdoni yaxshi yoki yomon deb baholash uchun oldingi tasdiqlangan chek, tannarx va odatdagi o‘rtacha chek summasi kerak. Hozir bu taqqoslash tasdiqlanmagan.',blocks:[]};
+ }
  if(!report||!Array.isArray(toolResults)||!Array.isArray(actions)||actions.length||
    toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))
   return {answer,blocks};
@@ -220,6 +233,16 @@ export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolR
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
  const q=normalizeUzbekQuestion(question);
+ // A qualitative question must never fall through to a receipt/item dump.
+ // The known sale may be refreshed by a read tool; without an actual sale
+ // or a profitability baseline, state the limitation rather than guess.
+ if(isSaleAssessmentQuestion(question)){
+  if(latestReport?.topic==='latest_sale'){
+   const assessment=focusedVerifiedAnswer(latestReport,question);
+   if(assessment)return assessment;
+  }
+  return {answerSource:'clarification_fallback',answer:'Savdo yaxshi yoki yomonligini aniq baholash uchun aynan qaysi chek ekanini, mahsulotlar tannarxini va odatdagi o‘rtacha chekni solishtirish kerak. Oldingi chekning mahsulotlarini qayta sanash buning javobi emas.'};
+ }
  // Do not replace a requested daily/monthly/revenue fact with the wrong
  // reporting period or quantity ranking when a model reply needs recovery.
  if(latestReport?.topic==='today_sales'&&/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(q)&&/savdo|chek|tranzaksiya/iu.test(q))

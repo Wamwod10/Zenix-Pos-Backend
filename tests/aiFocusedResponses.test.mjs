@@ -10,6 +10,35 @@ const fallback=(report,question)=>{
  return safeAgentFallback(buildAgentEvidence(toolResults),toolResults,{question});
 };
 
+
+test('repro: "Bu savdo yaxshi hisoblanadimi?" must never repeat receipt line items',()=>{
+ const report={topic:'latest_sale',selection:'by_id',storeId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  sale:{total:'4906500.00',businessDate:'2026-10-29',items:[
+   {name:'Qaymoq 200ml',quantity:'1',unit:'dona',lineTotal:'13500.00'},
+   {name:'Manna yormasi 800g',quantity:'1',unit:'dona',lineTotal:'22000.00'},
+   {name:'Nam salfetka 100 dona',quantity:'27',unit:'dona',lineTotal:'931500.00'}],hasMoreItems:true}};
+ const answer=fallback(report,'Bu savdo yaxshi hisoblanadimi?');
+ assert.equal(answer.answerSource,'verified_fallback');
+ assert.match(answer.answer,/4 906 500 so‘m/);
+ assert.match(answer.answer,/yaxshi yoki yomon/);
+ assert.match(answer.answer,/tannarx|o‘rtacha chek/);
+ assert.doesNotMatch(answer.answer,/Qaymoq|Nam salfetka|27 dona|Tanlangan savdo hujjati/);
+ const model=prioritizeVerifiedAnswer({
+  question:'Bu savdo yaxshi hisoblanadimi?',report,
+  toolResults:[{result:{kind:'report',report}}],actions:[],
+  answer:'Tanlangan savdo hujjati 4 906 500 so‘m. Qaymoq 200ml ...',
+  blocks:[{type:'paragraph',text:'Qolgan mahsulotlar',facts:[]}],
+ });
+ assert.equal(model.answer,answer.answer);
+ assert.deepEqual(model.blocks,[]);
+ const noSale=fallback({...report,sale:null},'Bu savdo yaxshi hisoblanadimi?');
+ assert.equal(noSale.answerSource,'clarification_fallback');
+ assert.doesNotMatch(noSale.answer,/Qaymoq|jami 4 906 500/);
+ const unrelated=fallback({topic:'today_sales',facts:[fact('today_net','900000.00')]},'Bu savdo yaxshi hisoblanadimi?');
+ assert.equal(unrelated.answerSource,'clarification_fallback');
+ assert.doesNotMatch(unrelated.answer,/900 000/);
+});
+
 test('latest-sale item question returns verified product names and quantities only',()=>{
  const sale={topic:'latest_sale',selection:'latest',storeId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   sale:{total:'70000.00',businessDate:'2026-11-02',items:[
