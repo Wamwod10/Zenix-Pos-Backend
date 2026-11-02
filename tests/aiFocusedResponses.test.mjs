@@ -152,6 +152,28 @@ test('refund count is not replaced with overall sales count',()=>{
  const report={topic:'today_sales',facts:[fact('sales_count','21','count'),fact('today_refunds','5000.00')]};
  assert.doesNotMatch(fallback(report,'Bugun nechta qaytarish bo‘ldi?').answer,/^Bugungi savdolar soni: 21 ta/);
 });
+test('Cyrillic and short same-day followups produce only the requested verified metric',()=>{
+ const report={topic:'today_sales',from:'2026-11-02',to:'2026-11-02',facts:[
+  fact('today_net','250000.00'),fact('today_gross','300000.00'),
+  fact('today_refunds','50000.00'),fact('sales_count','8','count'),
+ ]};
+ assert.equal(fallback(report,'Бугун қанча савдо бўлди?').answer,'Bugungi sof savdo: 250 000 so‘m.');
+ assert.equal(fallback(report,'Yalpisi-chi?').answer,'Bugungi yalpi savdo: 300 000 so‘m.');
+ assert.equal(fallback(report,'Qaytarishlar-chi?').answer,'Bugungi qaytarish summasi: 50 000 so‘m.');
+ assert.equal(fallback(report,'Нечта чек-чи?').answer,'Bugungi savdolar soni: 8 ta.');
+ assert.equal(fallback(report,'Sof savdosi-chi?').answer,'Bugungi sof savdo: 250 000 so‘m.');
+ const present=prioritizeVerifiedAnswer({question:'Yalpisi-chi?',report,
+  toolResults:[{result:{kind:'report',report}}],actions:[],
+  answer:'Juda uzun hisobot...',blocks:[{type:'paragraph',text:'Keraksiz',facts:[]}]});
+ assert.deepEqual(present,{answer:'Bugungi yalpi savdo: 300 000 so‘m.',blocks:[]});
+});
+test('cause and historical requests are not silently rewritten as same-day metric followups',()=>{
+ const report={topic:'today_sales',from:'2026-11-02',to:'2026-11-02',facts:[fact('today_net','45000.00')]};
+ const original={answer:'Farqni tekshirish kerak.',blocks:[{type:'paragraph',text:'Izoh',facts:[]}]};
+ for(const question of ['Nega?', 'Kecha qancha edi?', 'Sotuvni batafsil tahlil qilib ber']){
+  assert.deepEqual(prioritizeVerifiedAnswer({question,report,toolResults:[{result:{kind:'report',report}}],actions:[],...original}),original,question);
+ }
+});
 test('provider instructs answer-first, minimum relevant detail and verified anchors',async()=>{
  const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
  let inspected=false;
