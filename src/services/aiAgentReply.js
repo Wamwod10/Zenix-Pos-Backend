@@ -224,6 +224,12 @@ export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const report=latestReport&&['top_products','latest_sale'].includes(latestReport.topic)?latestReport:null;
  const direct=report&&reportSummary(report);
  if(direct)return {answerSource:'verified_fallback',answer:direct};
+ // A failed model reply must not turn a single-metric question into an
+ // unrelated multi-topic report. Prefer a precise limitation over fake certainty.
+ if(latestReport&&/qancha|nechta|jami|soni|miqdori/iu.test(q)&&
+    !/tahlil|batafsil|solishtir|taqqosla|maslahat|tavsiya|qanday yaxshila/iu.test(q))
+  return {answerSource:'clarification_fallback',
+   answer:'Bu hisobotdan aynan so‘ralgan ko‘rsatkichni ishonchli ajrata olmadim. Kerakli davr yoki ko‘rsatkichni aniqlashtiring.'};
  if(latestReport)evidence=buildAgentEvidence([{result:{kind:'report',report:latestReport}}]);
  return evidence.length?{answerSource:'verified_fallback',answer:'Tekshirilgan ma’lumotlar bo‘yicha qisqa xulosa:\n\n'+evidence.slice(0,3).map(f=>f.text).join('\n\n')+'\n\nQolgan ko‘rsatkichlar batafsil ma’lumotlarda berilgan.'}:
   {answerSource:'clarification_fallback',answer:'Javobni ishonchli ma’lumot bilan tasdiqlay olmadim. Savolni aniqlashtiring yoki kerakli hisobot, mahsulot va filialni ko‘rsating.'};
