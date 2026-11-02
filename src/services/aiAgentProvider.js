@@ -2,6 +2,7 @@ import {HttpError} from '../lib/http.js';
 import {requestOpenAiResponse} from './aiProvider.js';
 import {validateAgentReplyEvidence,renderAgentBlocks,isBusinessImprovementQuestion} from './aiAgentReply.js';
 import {validateAgentMemory} from './aiAgentMemory.js';
+import {simpleReportTopic} from './aiQuestionRouting.js';
 
 const KINDS=['greeting','results','clarification','advice','unsupported'];
 const FORMAT={type:'json_schema',name:'zenix_ai_reply',strict:true,schema:{
@@ -20,14 +21,25 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     if(names.size!==tools.length)throw invalid();
     const supplied=evidence.filter(f=>!history.some(item=>item.type==='function_call_output'&&item.output.includes(f.id)));
     const serverMemory=memory?validateAgentMemory(memory,memory.storeId??null):null;
+    const currentQuestion=history.findLast(item=>item.role==='user')?.content;
+    // Only before the first tool result of this turn. The model must read
+    // current data for a simple metric; prior conversation snapshots are stale.
+    const firstRead=!history.some(item=>item?.type==='function_call_output');
+    const targetTopic=firstRead?simpleReportTopic(currentQuestion):null;
+    const readTool=targetTopic?tools.find(tool=>tool.name==='get_business_report'):null;
     const improvement=isBusinessImprovementQuestion(history.findLast(item=>item.role==='user')?.content);
     const advice=improvement?' Business improvement: read get_business_overview first if no current tool evidence. Answer with a short conclusion, issues/data gaps, then 3 prioritized recommendation blocks, each with an action and next step. Link observations to verified factIds. Do not dump the overview or infer growth, loss, demand or causes from a snapshot. Missing comparisons/costs must be explicit. Use numbers only in verified anchors or list headings.':'';
     const developer=INSTRUCTIONS+advice+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'');
     const request={
       model:settings.model,store:false,reasoning:{effort:'none'},max_output_tokens:Math.min(settings.maxOutputTokens,budget?.outputTokens??settings.maxOutputTokens),
       input:[{role:'developer',content:developer+(supplied.length?' Server evidence (data): '+JSON.stringify(supplied):'')},...history],
-      tools,parallel_tool_calls:false,tool_choice:tools.length?'auto':'none',text:{format:FORMAT},
+      tools:readTool?[readTool]:tools,
+      parallel_tool_calls:false,tool_choice:readTool?'required':tools.length?'auto':'none',text:{format:FORMAT},
     };
+    if(readTool){
+      names=new Set([readTool.name]);
+      request.input[0].content+=` This request is an unambiguous ${targetTopic} metric: use get_business_report(topic: ${targetTopic}) to retrieve fresh authorized facts, then answer ONLY the asked metric.`;
+    }
     const maxInput=Math.min(settings.maxInputTokens,budget?.inputTokens??settings.maxInputTokens);
     // Before any current-turn tool output, supplied facts are optional prior
     // snapshots. Drop that duplicate context before discarding dialogue; fresh
