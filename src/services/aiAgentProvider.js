@@ -2,7 +2,7 @@ import {HttpError} from '../lib/http.js';
 import {requestOpenAiResponse} from './aiProvider.js';
 import {validateAgentReplyEvidence,renderAgentBlocks,isBusinessImprovementQuestion} from './aiAgentReply.js';
 import {validateAgentMemory} from './aiAgentMemory.js';
-import {simpleReportTopic,simpleLatestSaleQuestion} from './aiQuestionRouting.js';
+import {simpleReportTopic,simpleLatestSaleQuestion,isSaleAssessmentQuestion} from './aiQuestionRouting.js';
 
 const KINDS=['greeting','results','clarification','advice','unsupported'];
 const FORMAT={type:'json_schema',name:'zenix_ai_reply',strict:true,schema:{
@@ -28,11 +28,17 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     const targetTopic=firstRead?simpleReportTopic(currentQuestion,{memory:serverMemory,businessDate}):null;
     const reportTool=targetTopic?tools.find(tool=>tool.name==='get_business_report'):null;
     const latestTool=!targetTopic&&firstRead&&simpleLatestSaleQuestion(currentQuestion)?tools.find(tool=>tool.name==='get_latest_sale'):null;
+    // A follow-up assessment must read the SAME verified receipt, not
+    // accidentally switch to the latest sale or stale conversation numbers.
+    const assessmentSale=!latestTool&&!targetTopic&&firstRead&&isSaleAssessmentQuestion(currentQuestion)?serverMemory?.sale:null;
+    const assessmentBase=assessmentSale?tools.find(tool=>tool.name==='get_latest_sale'):null;
+    const assessmentTool=assessmentBase?{...assessmentBase,parameters:{...assessmentBase.parameters,properties:{...assessmentBase.parameters.properties,
+      saleId:{type:'string',format:'uuid',enum:[assessmentSale.id]},storeId:{type:'string',format:'uuid',enum:[assessmentSale.storeId]}}}}:null;
     // Keep the original registry schema untouched. Only expose the exact
     // requested topic in this provider call; authorization remains server-side.
     const readTool=reportTool?{...reportTool,parameters:{...reportTool.parameters,
       properties:{...reportTool.parameters.properties,
-        topic:{...reportTool.parameters.properties.topic,enum:[targetTopic]}}}}:latestTool||null;
+        topic:{...reportTool.parameters.properties.topic,enum:[targetTopic]}}}}:assessmentTool||latestTool||null;
     const improvement=isBusinessImprovementQuestion(history.findLast(item=>item.role==='user')?.content);
     const advice=improvement?' Business improvement: read get_business_overview first if no current tool evidence. Answer with a short conclusion, issues/data gaps, then 3 prioritized recommendation blocks, each with an action and next step. Link observations to verified factIds. Do not dump the overview or infer growth, loss, demand or causes from a snapshot. Missing comparisons/costs must be explicit. Use numbers only in verified anchors or list headings.':'';
     const developer=INSTRUCTIONS+advice+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'');
@@ -44,7 +50,7 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     };
     if(readTool){
       names=new Set([readTool.name]);
-      request.input[0].content+=latestTool?' Read ONLY the most recent sale across permitted dates: call get_latest_sale with saleId null and the authorized store scope. Answer just the requested receipt/items, not unrelated totals.':` This request is an unambiguous ${targetTopic} metric: use get_business_report(topic: ${targetTopic}) to retrieve fresh authorized facts, then answer ONLY the asked metric.`;
+      request.input[0].content+=assessmentTool?' Evaluate the SAME previously verified receipt: call get_latest_sale with the verified saleId and its storeId. Do not repeat product rows. A single receipt total does not establish profit or whether it is good relative to normal sales; note the missing cost and average-check baseline.':latestTool?' Read ONLY the most recent sale across permitted dates: call get_latest_sale with saleId null and the authorized store scope. Answer just the requested receipt/items, not unrelated totals.':` This request is an unambiguous ${targetTopic} metric: use get_business_report(topic: ${targetTopic}) to retrieve fresh authorized facts, then answer ONLY the asked metric.`;
     }
     const maxInput=Math.min(settings.maxInputTokens,budget?.inputTokens??settings.maxInputTokens);
     // Before any current-turn tool output, supplied facts are optional prior
@@ -79,6 +85,7 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
       if(!plainObject(args))throw invalid();
       if(reportTool&&readTool&&args.topic!==targetTopic)throw invalid('wrong_report_topic');
       if(latestTool&&args.saleId!==null)throw invalid('wrong_latest_sale_id');
+      if(assessmentTool&&(args.saleId!==assessmentSale.id||args.storeId!==assessmentSale.storeId))throw invalid('wrong_assessment_sale_id');
       calls=[{callId:item.call_id,name:item.name,args}];
     }else if(item?.type==='message'){
       if(item.role!=='assistant'||item.status!=='completed'||!Array.isArray(item.content)||!item.content.length||item.content.some(c=>c?.type!=='output_text'||typeof c.text!=='string'))throw invalid();
