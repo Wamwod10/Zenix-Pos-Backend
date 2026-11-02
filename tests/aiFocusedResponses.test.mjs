@@ -10,6 +10,22 @@ const fallback=(report,question)=>{
  return safeAgentFallback(buildAgentEvidence(toolResults),toolResults,{question});
 };
 
+test('latest-sale item question returns verified product names and quantities only',()=>{
+ const sale={topic:'latest_sale',selection:'latest',storeId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  sale:{total:'70000.00',businessDate:'2026-11-02',items:[
+   {name:'Non',quantity:'2',unit:'dona',lineTotal:'10000.00'},
+   {name:'Sut',quantity:'1',unit:'dona',lineTotal:'60000.00'}],hasMoreItems:false}};
+ const got=fallback(sale,'Oxirgi marta nima sotilgan?');
+ assert.equal(got.answerSource,'verified_fallback');
+ assert.equal(got.answer,'Oxirgi savdoda: Non — 2 dona; Sut — 1 dona (tanlangan filial bo‘yicha).');
+ assert.doesNotMatch(got.answer,/70 000|foyda|tavsiya|qarz/);
+ const sum=fallback(sale,'Oxirgi savdoda jami qancha sotilgan?');
+ assert.equal(sum.answer,'Oxirgi savdo summasi: 70 000 so‘m (tanlangan filial bo‘yicha).');
+ const omitted=fallback({...sale,sale:{...sale.sale,items:[...sale.sale.items,{name:'Choy',quantity:'1',unit:'dona'},{name:'Shakar',quantity:'3',unit:'kg'}]}},'Oxirgi marta nima sotilgan?');
+ assert.match(omitted.answer,/Qolgan mahsulotlar batafsil ma’lumotlarda/);
+ const missing=fallback({...sale,sale:null},'Oxirgi marta nima sotilgan?');
+ assert.equal(missing.answer,'Oxirgi savdo topilmadi.');
+});
 test('short sales question receives only the requested verified net amount',()=>{
  const report={topic:'today_sales',from:'2026-11-01',to:'2026-11-01',facts:[
   fact('sales_count','5','count'),fact('today_gross','2500000.00'),
