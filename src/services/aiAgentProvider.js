@@ -42,7 +42,7 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     const readTool=reportTool?{...reportTool,parameters:{...reportTool.parameters,
       properties:{...reportTool.parameters.properties,
         topic:{...reportTool.parameters.properties.topic,enum:[targetTopic]}}}}:assessmentTool||latestTool||growthRead||null;
-    const advice=improvement?' For business growth, read authorized overview; prefer 3 concrete, prioritized steps from verified evidence, never a report dump, invented causes or profit.':'';
+    const advice=improvement?' For business growth, read authorized overview; synthesize 3 prioritized recommendation blocks with action and next step from verified facts, never a report dump, invented causes or profit.':'';
     const developer=INSTRUCTIONS+advice+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'');
     const request={
       model:settings.model,store:false,reasoning:{effort:'none'},max_output_tokens:Math.min(settings.maxOutputTokens,budget?.outputTokens??settings.maxOutputTokens),
