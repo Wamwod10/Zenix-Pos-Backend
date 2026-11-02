@@ -128,6 +128,26 @@ test('simple latest-sale intent is narrow and never routes history or writes',()
   assert.equal(simpleLatestSaleQuestion(q),false,q);
 });
 
+test('business growth request starts with only the permitted overview tool',async()=>{
+ const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
+ const read={type:'function',name:'get_business_overview',strict:true,description:'Read overview',
+  parameters:{type:'object',properties:{storeId:{type:['string','null']}},required:['storeId'],additionalProperties:false}};
+ const write={type:'function',name:'prepare_stock_receipt',strict:true,description:'Prepare write',
+  parameters:{type:'object',properties:{},required:[],additionalProperties:false}};
+ let n=0;
+ const provider=createAiAgentProvider(settings,async(_url,{body})=>{
+  n++;const q=JSON.parse(body);
+  assert.equal(q.tool_choice,'required');
+  assert.deepEqual(q.tools.map(x=>x.name),['get_business_overview']);
+  assert.match(q.input[0].content,/business growth|business improvement/i);
+  return response([{type:'function_call',status:'completed',call_id:'overview_1',name:'get_business_overview',
+   arguments:JSON.stringify({storeId:null})}]);
+ });
+ const result=await provider([{role:'user',content:'Nimalar qilsam biznesim rivojlanadi?'}],
+  {tools:[read,write],onDispatch:async()=>{}});
+ assert.equal(n,1);
+ assert.equal(result.calls[0].name,'get_business_overview');
+});
 test('latest-sale provider uses a single read-only tool and a small first request',async()=>{
  const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
  const read={type:'function',name:'get_latest_sale',strict:true,description:'Read last sale',
