@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {simpleReportTopic,simpleLatestSaleQuestion} from '../src/services/aiQuestionRouting.js';
+import {simpleReportTopic,simpleLatestSaleQuestion,isSaleAssessmentQuestion} from '../src/services/aiQuestionRouting.js';
 import {createAiAgentProvider} from '../src/services/aiAgentProvider.js';
 import {aiSettings} from '../src/config/ai.js';
 
@@ -145,4 +145,52 @@ test('latest-sale tool cannot be redirected to a different sale id',async()=>{
  await assert.rejects(
   provider([{role:'user',content:'Oxirgi marta nima sotilgan?'}],{tools:[read],onDispatch:async()=>{}}),
   error=>error.code==='AI_INVALID_RESPONSE'&&error.details?.reason==='wrong_latest_sale_id');
+});
+
+test('evaluative sales questions differ from receipt listing and writes',()=>{
+ for(const q of ['Bu savdo yaxshi hisoblanadimi?','Shu chek foydalimi?','Ushbu sotuv yomonmi?',
+  'Oxirgi savdoni baholab ber','Бу савдо яхши ҳисобланадими?'])
+  assert.equal(isSaleAssessmentQuestion(q),true,q);
+ for(const q of ['Oxirgi savdoda nima sotilgan?','Bugungi barcha savdolar yaxshimi?',
+  'Nega bu savdo yaxshi?','Bu savdoni bekor qil','Oxirgi savdoni boshqa sana bilan solishtir'])
+  assert.equal(isSaleAssessmentQuestion(q),false,q);
+});
+
+test('follow-up sale assessment forces exact verified receipt and branch, never latest unrelated sale',async()=>{
+ const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
+ const saleId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+ const storeId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+ const memory={storeId:null,sale:{id:saleId,storeId,saleNumber:'SALE-15',businessDate:'2026-10-29'},product:null,warehouse:null,period:null};
+ const read={type:'function',name:'get_latest_sale',strict:true,description:'Read permitted sale',
+  parameters:{type:'object',properties:{storeId:{type:['string','null'],format:'uuid'},saleId:{type:['string','null'],format:'uuid'}},required:['storeId','saleId'],additionalProperties:false}};
+ const write={type:'function',name:'prepare_stock_receipt',strict:true,description:'Prepare write',
+  parameters:{type:'object',properties:{},required:[],additionalProperties:false}};
+ let called=0;
+ const provider=createAiAgentProvider(settings,async(_url,{body})=>{
+  const payload=JSON.parse(body);called++;
+  assert.equal(payload.tool_choice,'required');
+  assert.deepEqual(payload.tools.map(t=>t.name),['get_latest_sale']);
+  assert.deepEqual(payload.tools[0].parameters.properties.saleId.enum,[saleId]);
+  assert.deepEqual(payload.tools[0].parameters.properties.storeId.enum,[storeId]);
+  assert.match(payload.input[0].content,/Do not repeat product rows/);
+  return response([{type:'function_call',status:'completed',call_id:'same_sale',
+   name:'get_latest_sale',arguments:JSON.stringify({saleId,storeId})}]);
+ });
+ const result=await provider([{role:'user',content:'Bu savdo yaxshi hisoblanadimi?'}],
+  {memory,tools:[read,write],onDispatch:async()=>{}});
+ assert.equal(called,1);
+ assert.deepEqual(result.calls.map(c=>c.args),[{saleId,storeId}]);
+});
+
+test('model cannot redirect evaluative question to a different sale ID',async()=>{
+ const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
+ const storeId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+ const saleId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+ const memory={storeId:null,sale:{id:saleId,storeId,saleNumber:'SALE-15',businessDate:'2026-10-29'}};
+ const read={type:'function',name:'get_latest_sale',strict:true,description:'Read permitted sale',
+  parameters:{type:'object',properties:{storeId:{type:['string','null'],format:'uuid'},saleId:{type:['string','null'],format:'uuid'}},required:['storeId','saleId'],additionalProperties:false}};
+ const provider=createAiAgentProvider(settings,async()=>response([{type:'function_call',status:'completed',call_id:'wrong_sale',
+  name:'get_latest_sale',arguments:JSON.stringify({saleId:null,storeId})}]));
+ await assert.rejects(()=>provider([{role:'user',content:'Bu savdo yaxshi hisoblanadimi?'}],
+  {memory,tools:[read],onDispatch:async()=>{}}),e=>e.code==='AI_INVALID_RESPONSE'&&e.details?.reason==='wrong_assessment_sale_id');
 });
