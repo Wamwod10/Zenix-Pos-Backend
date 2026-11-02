@@ -77,7 +77,8 @@ function overviewSummary(report){
  if(profit.length)parts.push(`Mahsulot foydasi (${profit[0].from||report.from} — ${profit[0].to||report.to}):\n${profit.map(f=>`• ${f.label}: ${money(f)}`).join('\n')}\nBu tanlangan mahsulotlar foydasi, biznesning jami sof foydasi emas.`);
  if(facts.some(f=>/^profit_profit_\d+$/.test(f.id)&&f.value===null))parts.push('Ayrim mahsulotlarning tarixiy tannarxi yetarli emas, shu sabab ularning foydasi hisoblanmagan.');
  if(parts.length===1)return null;
- parts.push(supplier?'Keyingi qadam: ta’minotchi hujjatlaridagi to‘lov muddatlarini tekshiring. Umumiy sof foydani baholash uchun to‘liq tannarx va xarajat ma’lumotlari kerak.':sales?'Keyingi qadam: savdoni oldingi teng davr bilan solishtiring. Shundan keyingina o‘sish yoki pasayishni baholash mumkin.':'Keyingi qadam: kerakli bo‘limning batafsil hisobotini tekshiring.');
+ const hasBalance=f=>f&&typeof f.value==='string'&&!f.value.startsWith('-')&&!/^0(?:\.0+)?$/.test(f.value);
+ parts.push(hasBalance(supplier)?'Keyingi qadam: to‘lanadigan qarzning haqiqiy muddatlarini ta’minotchi hujjatlaridan tekshiring. Umumiy sof foyda uchun tannarx va xarajatlar to‘liq bo‘lishi kerak.':sales?'Keyingi qadam: savdoni oldingi teng davr bilan solishtiring. Shundan keyingina o‘sish yoki pasayishni baholash mumkin.':hasBalance(customer)?'Keyingi qadam: mijozlardan olinadigan qarzning muddati kelgan qismini aniqlang; hammasini kechikkan deb hisoblamang.':'Keyingi qadam: kerakli bo‘limning batafsil hisobotini tekshiring.');
  return parts.join('\n\n');
 }
 const decimal=value=>typeof value==='string'&&/^-?\d+(?:\.\d+)?$/.test(value);
