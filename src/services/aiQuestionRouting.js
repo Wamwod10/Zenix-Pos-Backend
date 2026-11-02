@@ -28,3 +28,18 @@ export function simpleReportTopic(question,{memory=null,businessDate=null}={}){
  if(/ta[‘’ʻʼ']minotch|supplier/iu.test(q)&&/qarz|nasiya/iu.test(q)&&!/mijoz|debitor/iu.test(q))return 'supplier_debt';
  return null;
 }
+
+/**
+ * A narrow read-only route for questions about the single most recent sale.
+ * Do not interpret "last 7 days", comparisons or inventory actions as
+ * requests for the latest receipt. Dates and product identifiers are not
+ * inferred from conversational text.
+ */
+export function simpleLatestSaleQuestion(question){
+ const q=normalizeUzbekQuestion(question);
+ if(!q||q.length>1000)return false;
+ if(!/(?:oxirgi|so'nggi|songgi)/iu.test(q)||
+    !/(?:savdo|chek|sotil|sotg|sotuv|marta)/iu.test(q))return false;
+ if(/(?:kecha|hafta|oy|kun(?:da|lar)|davr|oldingi|avvalgi|solishtir|taqqosla|batafsil|tahlil|nega|nimaga|sabab|kirim|qabul qil|yarat|o'chir|tasdiqla|qaytarish|qaytarilgan|ombor|qoldiq|foyda|xarajat)/iu.test(q))return false;
+ return true;
+}
