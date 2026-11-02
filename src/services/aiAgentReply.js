@@ -114,7 +114,6 @@ function improvementFallback(report){return businessGrowthAdvice(report);}
 // Keep a verified recovery answer aligned to the question instead of dumping
 // unrelated report facts. This is used only after a model response needs recovery.
 export function focusedVerifiedAnswer(report,question){
- if(isBusinessImprovementQuestion(question)&&report?.topic==='business_overview')return improvementFallback(report);
  const query=normalizeUzbekQuestion(question);
  const followupGross=/^(?:yalpi(?:si)?|brutto)(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupRefund=/^qaytarish(?:lar)?(?:i)?(?:\s*[- ]?chi)?\??$/iu.test(query);
@@ -223,8 +222,18 @@ export function focusedVerifiedAnswer(report,question){
 export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
  if(isBusinessImprovementQuestion(question)&&Array.isArray(actions)&&actions.length===0&&Array.isArray(toolResults)&&
     !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
-  const plan=report?.topic==='business_overview'?improvementFallback(report):null;
-  return {answer:plan?.answer||'Biznesni rivojlantirish bo‘yicha aniq ustuvor reja uchun savdo, assortiment va xarajat hisobotlarini tekshirish kerak. Bitta ko‘rsatkichdan o‘sish sababi aniqlanmaydi.',blocks:[]};
+  const plan=improvementFallback(report?.topic==='business_overview'?report:null);
+  const recommendationBlocks=Array.isArray(blocks)?blocks.filter(b=>b?.type==='recommendation'):[];
+  const supplier=(report?.facts||[]).find(f=>f.id==='supplier_debt_supplier_debt');
+  const zeroPayable=supplier&&/^0(?:\\.0+)?$/.test(supplier.value);
+  const irrelevantSupplier=zeroPayable&&/ta[‘’ʻʼ']minotch|yetkazib beruvchiga qarz/iu.test(
+    [answer,...recommendationBlocks.map(b=>b.text)].join(' '));
+  // Keep a genuinely useful, independently evidence-validated model plan.
+  // A copy of the overview (or prioritizing a zero debt) is not advice.
+  const dump=/hisobotlardan tayyorlangan qisqa xulosa|qoldiqning joriy holati|joriy qarzlar:|xarajat yozuvlari/iu.test(answer||'');
+  if(report?.topic==='business_overview'&&recommendationBlocks.length>=2&&!dump&&!irrelevantSupplier)
+   return {answer,blocks};
+  return {answer:plan.answer,blocks:[]};
  }
  if(isTodaySalesExistenceQuestion(question)&&Array.isArray(toolResults)&&Array.isArray(actions)&&!actions.length&&
     !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
@@ -271,7 +280,7 @@ export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  if(latestReport&&/nega|nima sabab|sababi nimada|nimaga/iu.test(String(question||''))&&
     ['today_sales','business_overview'].includes(latestReport.topic))
   return {answerSource:'clarification_fallback',answer:'Joriy savdo summasining o‘zi sababni ko‘rsatmaydi. Buni aniqlash uchun oldingi teng davr va mahsulotlar kesimidagi natijalarni solishtirish kerak.'};
- if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return latestReport?.topic==='business_overview'?improvementFallback(latestReport):{answerSource:'clarification_fallback',answer:'Aniq o‘sish rejasini tuzish uchun biznesning savdo, qoldiq va xarajat ma’lumotlarini tekshirish kerak. Qaysi filialni tahlil qilamiz?'};
+ if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return improvementFallback(latestReport?.topic==='business_overview'?latestReport:null);
  const focused=focusedVerifiedAnswer(latestReport,question);
  if(focused)return focused;
  const summary=latestReport?.topic==='business_overview'&&overviewSummary(latestReport);
