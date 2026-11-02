@@ -1,6 +1,8 @@
 import {createHash} from 'node:crypto';
 import {HttpError} from '../lib/http.js';
 import {normalizeUzbekQuestion,simpleLatestSaleQuestion,isSaleAssessmentQuestion,isTodaySalesExistenceQuestion} from './aiQuestionRouting.js';
+import {isBusinessGrowthAdviceQuestion} from './aiQuestionRouting.js';
+import {businessGrowthAdvice} from './aiBusinessGrowthAdvice.js';
 
 export function assertAgentQuestion(value){
  const text=String(value||'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g,'').trim();
@@ -107,24 +109,12 @@ function reportSummary(report){
  if(mixed)parts.push('Turli o‘lchov birliklaridagi miqdorlarni bevosita solishtirib bo‘lmaydi.');
  return parts.join('\n');
 }
-export const isBusinessImprovementQuestion=question=>/biznes|savdo|foyda|daromad/iu.test(question||'')&&/qanday|maslahat|tavsiya|nima/iu.test(question||'')&&/yaxshila|rivojlantir|oshir|ko[‘’ʻʼ']paytir/iu.test(question||'');
-function improvementFallback(report){
- const facts=report?.facts||[],pick=id=>facts.find(f=>f.id===id&&decimal(f.value));
- const positive=f=>f&&!f.value.startsWith('-')&&!/^0(?:\.0+)?$/.test(f.value);
- const show=(f,label)=>`${label}: ${displayDecimal(f.value)} ${f.unit==='UZS'?'so‘m':'ta'}${f.from&&f.to?` (${f.from} — ${f.to})`:''}.`;
- const supplier=pick('supplier_debt_supplier_debt'),customer=pick('customer_debt_customer_debt'),low=pick('inventory_warehouse_low_stock_count');
- const steps=[];
- if(positive(supplier)||positive(customer))steps.push(`${[positive(customer)&&show(customer,'Olinadigan qarz'),positive(supplier)&&show(supplier,'To‘lanadigan qarz')].filter(Boolean).join(' ')} To‘lov muddatlari tekshirilmagan. Amal: hujjatlarni muddat va kontragent bo‘yicha solishtiring. Keyingi qadam: muddatlarni tasdiqlab, undirish va to‘lov rejasini tuzing; to‘lov avtomatik bajarilmaydi.`);
- if(positive(low))steps.push(`${show(low,'Minimum yoki undan past qoldiqdagi mahsulot turlari')} Talab o‘zgarishi bu qoldiqdan aniqlanmaydi. Amal: mahsulot kesimida qoldiq, sof sotuv va yetkazish muddatini tekshiring. Keyingi qadam: shundan keyin kerakli kirim rejasini alohida tasdiqlang.`);
- steps.push('Amal: mahsulot kesimida tarixiy tannarx, qaytarish va xarajat yozuvlarini solishtiring. Keyingi qadam: yetishmayotgan hujjatlarni to‘ldirib, marjani qayta tekshiring; biznesning jami sof foydasini mahsulot foydasiga tenglashtirmang.');
- steps.push('Amal: savdoni oldingi teng davr bilan mahsulot va filial kesimida solishtiring. Keyingi qadam: farq ko‘ringandan keyin kichik sinov tanlang va natijani yana o‘lchang; o‘sish kafolatlanmaydi.');
- steps.push('Amal: ruxsat etilgan qoldiq va xarajat hisobotlarini tekshiring. Keyingi qadam: yozuvlarni hujjatlar bilan solishtirib, ustuvor ishni mas’ulga biriktiring.');
- const scope=report?`${report.storeId?'Tanlangan filial':'Ruxsat etilgan filiallar'}${report.sellerScoped?' — savdo va mahsulot foydasi faqat o‘z savdolaringiz bo‘yicha':''}. `:'';
- return {answerSource:facts.some(f=>decimal(f.value))?'verified_fallback':'clarification_fallback',answer:`Qisqa xulosa: avval pul oqimi, qoldiq va marjani dalil bilan tekshirib, keyin sinovli o‘zgarish qiling.\n\nAsosiy muammolar va ma’lumot chegarasi: ${scope}Sabablar, talab va o‘sishni bu ma’lumotlardan aniqlab bo‘lmaydi. Teng davrlar taqqoslovi, to‘liq tannarx va xarajat hujjatlari tekshirilishi kerak.\n\nEng muhim tavsiyalar:\n${steps.slice(0,3).map((step,i)=>`${i+1}. ${step}`).join('\n\n')}`};
-}
+export const isBusinessImprovementQuestion=isBusinessGrowthAdviceQuestion;
+function improvementFallback(report){return businessGrowthAdvice(report);}
 // Keep a verified recovery answer aligned to the question instead of dumping
 // unrelated report facts. This is used only after a model response needs recovery.
 export function focusedVerifiedAnswer(report,question){
+ if(isBusinessImprovementQuestion(question)&&report?.topic==='business_overview')return improvementFallback(report);
  const query=normalizeUzbekQuestion(question);
  const followupGross=/^(?:yalpi(?:si)?|brutto)(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupRefund=/^qaytarish(?:lar)?(?:i)?(?:\s*[- ]?chi)?\??$/iu.test(query);
@@ -231,6 +221,11 @@ export function focusedVerifiedAnswer(report,question){
 // For an unambiguous single-metric question, prefer the same verified facts
 // that power the recovery path. Full reports are retained separately by chat.
 export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
+ if(isBusinessImprovementQuestion(question)&&Array.isArray(actions)&&actions.length===0&&Array.isArray(toolResults)&&
+    !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
+  const plan=report?.topic==='business_overview'?improvementFallback(report):null;
+  return {answer:plan?.answer||'Biznesni rivojlantirish bo‘yicha aniq ustuvor reja uchun savdo, assortiment va xarajat hisobotlarini tekshirish kerak. Bitta ko‘rsatkichdan o‘sish sababi aniqlanmaydi.',blocks:[]};
+ }
  if(isTodaySalesExistenceQuestion(question)&&Array.isArray(toolResults)&&Array.isArray(actions)&&!actions.length&&
     !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
   const answerForStatus=focusedVerifiedAnswer(report,question);
@@ -276,7 +271,7 @@ export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  if(latestReport&&/nega|nima sabab|sababi nimada|nimaga/iu.test(String(question||''))&&
     ['today_sales','business_overview'].includes(latestReport.topic))
   return {answerSource:'clarification_fallback',answer:'Joriy savdo summasining o‘zi sababni ko‘rsatmaydi. Buni aniqlash uchun oldingi teng davr va mahsulotlar kesimidagi natijalarni solishtirish kerak.'};
- if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return improvementFallback(latestReport);
+ if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return latestReport?.topic==='business_overview'?improvementFallback(latestReport):{answerSource:'clarification_fallback',answer:'Aniq o‘sish rejasini tuzish uchun biznesning savdo, qoldiq va xarajat ma’lumotlarini tekshirish kerak. Qaysi filialni tahlil qilamiz?'};
  const focused=focusedVerifiedAnswer(latestReport,question);
  if(focused)return focused;
  const summary=latestReport?.topic==='business_overview'&&overviewSummary(latestReport);
