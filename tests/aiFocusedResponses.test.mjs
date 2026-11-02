@@ -174,6 +174,17 @@ test('cause and historical requests are not silently rewritten as same-day metri
   assert.deepEqual(prioritizeVerifiedAnswer({question,report,toolResults:[{result:{kind:'report',report}}],actions:[],...original}),original,question);
  }
 });
+test('unrelated metrics are not dumped if the model cannot give a focused answer',()=>{
+ const report={topic:'low_stock',from:'2026-11-02',to:'2026-11-02',facts:[
+  fact('low_stock_count','3','count'),fact('warehouse_available_products','120','count')]};
+ const answer=fallback(report,'Omborda jami nechta mahsulot bor?');
+ assert.equal(answer.answerSource,'clarification_fallback');
+ assert.match(answer.answer,/so‘ralgan ko‘rsatkichni/);
+ assert.doesNotMatch(answer.answer,/120|3 ta|Hisobot davri/);
+ const detailed=fallback(report,'Ombor haqida batafsil tahlil ber');
+ assert.notEqual(detailed.answerSource,'clarification_fallback');
+});
+
 test('provider instructs answer-first, minimum relevant detail and verified anchors',async()=>{
  const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
  let inspected=false;
