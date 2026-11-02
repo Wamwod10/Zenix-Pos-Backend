@@ -54,7 +54,7 @@ When an approved **nonproduction** API credential is available in the process en
 ZENIX_AI_LIVE_EVAL=true node scripts/aiConversationEval.mjs
 ```
 
-The model is selected using the configured, priced `ZENIX_AI_MODEL`; the script enforces request and total-cost limits, stops at 40 cases, and requires manual review. It reports a **conservative deterministic relevance rubric** for four unambiguous questions (catalog count, low-stock count, net sales and latest-sale amount). Other 36 cases remain unscored by that rubric pending human annotation. This is *not* a claim of 90% AI accuracy or a complete language benchmark.
+The model is selected using the configured, priced `ZENIX_AI_MODEL`; the script enforces request and total-cost limits, stops at 40 cases, and requires manual review. It reports a **conservative deterministic relevance rubric** for 11 selected synthetic questions (catalog and low-stock counts, follow-up stock, net/gross semantics, period difference, latest-sale items, product quantity ranking and confirmation safety). The other 29 cases remain unscored by that rubric pending human annotation. This is *not* a claim of 90% AI accuracy or a complete language benchmark.
 
 For each case examine (a) whether the requested metric was answered, (b) whether unnecessary data appeared, (c) whether the date and authorized store scope match, (d) whether follow-ups use the correct verified entity and do not invent a cause, and (e) whether a restricted or sensitive operation was properly refused or confirmed. Review incorrect answers before choosing a model or promoting a deployment.
 
