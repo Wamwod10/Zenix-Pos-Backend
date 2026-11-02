@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {HttpError} from '../lib/http.js';
+import {normalizeUzbekQuestion} from './aiQuestionRouting.js';
 
 export function assertAgentQuestion(value){
  const text=String(value||'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g,'').trim();
@@ -121,14 +122,114 @@ function improvementFallback(report){
  const scope=report?`${report.storeId?'Tanlangan filial':'Ruxsat etilgan filiallar'}${report.sellerScoped?' — savdo va mahsulot foydasi faqat o‘z savdolaringiz bo‘yicha':''}. `:'';
  return {answerSource:facts.some(f=>decimal(f.value))?'verified_fallback':'clarification_fallback',answer:`Qisqa xulosa: avval pul oqimi, qoldiq va marjani dalil bilan tekshirib, keyin sinovli o‘zgarish qiling.\n\nAsosiy muammolar va ma’lumot chegarasi: ${scope}Sabablar, talab va o‘sishni bu ma’lumotlardan aniqlab bo‘lmaydi. Teng davrlar taqqoslovi, to‘liq tannarx va xarajat hujjatlari tekshirilishi kerak.\n\nEng muhim tavsiyalar:\n${steps.slice(0,3).map((step,i)=>`${i+1}. ${step}`).join('\n\n')}`};
 }
+// Keep a verified recovery answer aligned to the question instead of dumping
+// unrelated report facts. This is used only after a model response needs recovery.
+export function focusedVerifiedAnswer(report,question){
+ const query=normalizeUzbekQuestion(question);
+ const followupGross=/^(?:yalpi(?:si)?|brutto)(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followupRefund=/^qaytarish(?:lar)?(?:i)?(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followupNet=/^sof savdo(?:si)?(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followupCount=/^nechta (?:savdo|chek)(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followup=followupGross||followupRefund||followupNet||followupCount;
+ if(!query.trim()||!report||(!followup&&!/qancha|nechta|soni|jami|eng ko[‘’ʻʼ']p|oxirgi savdo/iu.test(query)))return null;
+ // Single-metric shortcuts must never alter reports about other subjects,
+ // comparisons, individual products, causes, or historical periods.
+ if(/nega|nima sabab|sababi|nimaga|qanday yaxshila|tavsiya|solishtir|taqqosla|mahsulotdan|tovardan|dona sot|foyda|daromad|marja|qaysi filial|qaysi kun|eng katta xarajat/iu.test(query))return null;
+ const fact=id=>(report.facts||[]).find(f=>f.id===id&&decimal(f.value));
+ const scope=report.sellerScoped?' (faqat o‘z savdolaringiz bo‘yicha)':report.storeId?' (tanlangan filial bo‘yicha)':'';
+ const answer=message=>({answerSource:'verified_fallback',answer:message});
+ if(report.topic==='business_overview'&&/bugun/iu.test(query)&&/savdo|chek|qaytarish|yalpi|brutto/iu.test(query)&&!/foyda|xarajat|kecha|o[‘’ʻʼ']tgan|mahsulot|tovar|qarz/iu.test(query)){
+  if(/nechta|soni/iu.test(query)&&/qaytarish/iu.test(query))return null;
+  const metric=/nechta|soni/iu.test(query)?['today_sales_sales_count','Bugungi savdolar soni','ta']:
+   /qaytarish/iu.test(query)?['today_sales_today_refunds','Bugungi qaytarish summasi','so‘m']:
+   /yalpi|brutto/iu.test(query)?['today_sales_today_gross','Bugungi yalpi savdo','so‘m']:
+   ['today_sales_today_net','Bugungi sof savdo','so‘m'];
+  const f=fact(metric[0]);
+  if(f)return answer(`${metric[1]}: ${displayDecimal(f.value)} ${metric[2]}${scope}.`);
+ }
+ if(report.topic==='today_sales'){
+  if(/nechta|soni/iu.test(query)&&/qaytarish/iu.test(query))return null;
+  if((!followup&&!/savdo|chek|tranzaksiya|qaytarish|yalpi|brutto/iu.test(query))||/mahsulot|tovar|kirim|qoldiq|qarz|xarajat|oxirgi savdo/iu.test(query)||/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
+  const requested=followupCount||/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
+   followupRefund||/qaytarish/iu.test(query)?['today_refunds','Bugungi qaytarish summasi','so‘m']:
+   followupGross||/yalpi|brutto/iu.test(query)?['today_gross','Bugungi yalpi savdo','so‘m']:
+   ['today_net','Bugungi sof savdo','so‘m'];
+  const found=fact(requested[0]);
+  if(found)return answer(`${requested[1]}: ${displayDecimal(found.value)} ${requested[2]}${scope}.`);
+ }
+ if(report.topic==='expenses'&&/xarajat/iu.test(query)){
+  if(/bugun|kecha|oy|bitta|shu kun/iu.test(query))return null;
+  const f=fact('expenses');
+  if(f)return answer(`Oxirgi 7 biznes kunidagi xarajatlar: ${displayDecimal(f.value)} so‘m${scope}.`);
+ }
+ if(['customer_debt','supplier_debt'].includes(report.topic)&&/qarz|nasiya|debitor|ta[‘’ʻʼ']minotchi/iu.test(query)){
+  const f=fact(report.topic);
+  if(f)return answer(`${report.topic==='customer_debt'?'Mijozlarning joriy qarzi':'Ta’minotchilarning joriy qarzi'}: ${displayDecimal(f.value)} so‘m${scope}.`);
+ }
+ if(['low_stock','dormant'].includes(report.topic)&&/nechta|soni|qancha/iu.test(query)){
+  if(report.topic==='low_stock'&&!/minimum|minimal|kam qol|past qoldiq|tugab bor/iu.test(query))return null;
+  if(report.topic==='dormant'&&!/sotilmagan|sotilmay|harakatsiz|aylanmay/iu.test(query))return null;
+  const f=fact(report.topic+'_count');
+  if(f)return answer(`${report.topic==='low_stock'?'Minimum yoki undan past qoldiqdagi mahsulotlar':'Oxirgi 30 biznes kunida sotilmagan qoldiqli mahsulotlar'}: ${displayDecimal(f.value)} ta${scope}.`);
+ }
+ if(report.topic==='latest_sale'&&/qancha|summa/iu.test(query)){
+  const sale=report.sale;
+  if(sale===null)return answer('Savdo topilmadi.');
+  if(sale&&decimal(sale.total))return answer(`${report.selection==='by_id'?'Tanlangan savdo':'Oxirgi savdo'} (${sale.businessDate}): ${displayDecimal(sale.total)} so‘m${scope}.`);
+ }
+ if(report.topic==='top_products'&&/eng ko[‘’ʻʼ']p|qaysi mahsulot/iu.test(query)){
+  const rows=(report.facts||[]).filter(f=>/^top_products_\d+$/.test(f.id)&&f.productName&&decimal(f.qty));
+  // A quantity winner is meaningful only for the same unit. Keep the fuller
+  // existing fallback for mixed units or unclear product quantities.
+  if(rows.length&&rows[0].quantityUnit&&rows.every(r=>r.quantityUnit===rows[0].quantityUnit)){
+   const key=value=>{const [whole,fraction='']=value.split('.');return BigInt(whole).toString()+'.'+fraction.replace(/0+$/,'')};
+   const top=rows.filter(r=>key(r.qty)===key(rows[0].qty));
+   const names=top.slice(0,3).map(r=>r.productName).join(', ');
+   return answer(`${top.length>1?'Sof miqdor bo‘yicha teng yetakchilar':'Sof miqdor bo‘yicha eng ko‘p sotilgan mahsulot'}: ${names} — ${displayDecimal(rows[0].qty)} ${rows[0].quantityUnit}${scope}.`);
+  }
+ }
+ return null;
+}
+
+// The model can return a technically valid but unnecessarily long answer.
+// For an unambiguous single-metric question, prefer the same verified facts
+// that power the recovery path. Full reports are retained separately by chat.
+export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
+ if(!report||!Array.isArray(toolResults)||!Array.isArray(actions)||actions.length||
+   toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))
+  return {answer,blocks};
+ const selected=focusedVerifiedAnswer(report,question);
+ return selected?{answer:selected.answer,blocks:[]}:{answer,blocks};
+}
+
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
+ const q=normalizeUzbekQuestion(question);
+ // Do not replace a requested daily/monthly/revenue fact with the wrong
+ // reporting period or quantity ranking when a model reply needs recovery.
+ if(latestReport?.topic==='today_sales'&&/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(q)&&/savdo|chek|tranzaksiya/iu.test(q))
+  return {answerSource:'clarification_fallback',answer:'Bu hisobot faqat bugungi savdoga tegishli. So‘ralgan davr summasini aniqlash uchun o‘sha davr bo‘yicha hisobot kerak.'};
+ if(latestReport?.topic==='expenses'&&/bugun|bugungi|kecha|shu kun|oylik|shu oy/iu.test(q)&&/xarajat/iu.test(q))
+  return {answerSource:'clarification_fallback',answer:'Mavjud hisobot oxirgi 7 biznes kunini qamrab oladi. So‘ralgan davr xarajatini alohida tekshirish kerak.'};
+ if(latestReport?.topic==='top_products'&&/foyda|daromad|tushum|pul/iu.test(q)&&/eng ko[‘’ʻʼ']p|qaysi/iu.test(q))
+  return {answerSource:'clarification_fallback',answer:'Ushbu ro‘yxat sotilgan miqdor bo‘yicha tuzilgan. Foyda yoki tushum bo‘yicha yetakchini alohida hisobotdan tekshirish kerak.'};
+ if(latestReport&&/nega|nima sabab|sababi nimada|nimaga/iu.test(String(question||''))&&
+    ['today_sales','business_overview'].includes(latestReport.topic))
+  return {answerSource:'clarification_fallback',answer:'Joriy savdo summasining o‘zi sababni ko‘rsatmaydi. Buni aniqlash uchun oldingi teng davr va mahsulotlar kesimidagi natijalarni solishtirish kerak.'};
  if(isBusinessImprovementQuestion(question)&&!toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))return improvementFallback(latestReport);
+ const focused=focusedVerifiedAnswer(latestReport,question);
+ if(focused)return focused;
  const summary=latestReport?.topic==='business_overview'&&overviewSummary(latestReport);
  if(summary)return {answerSource:'verified_fallback',answer:summary};
  const report=latestReport&&['top_products','latest_sale'].includes(latestReport.topic)?latestReport:null;
  const direct=report&&reportSummary(report);
  if(direct)return {answerSource:'verified_fallback',answer:direct};
+ // A failed model reply must not turn a single-metric question into an
+ // unrelated multi-topic report. Prefer a precise limitation over fake certainty.
+ if(latestReport&&/qancha|nechta|jami|soni|miqdori/iu.test(q)&&
+    !/tahlil|batafsil|solishtir|taqqosla|maslahat|tavsiya|qanday yaxshila/iu.test(q))
+  return {answerSource:'clarification_fallback',
+   answer:'Bu hisobotdan aynan so‘ralgan ko‘rsatkichni ishonchli ajrata olmadim. Kerakli davr yoki ko‘rsatkichni aniqlashtiring.'};
  if(latestReport)evidence=buildAgentEvidence([{result:{kind:'report',report:latestReport}}]);
  return evidence.length?{answerSource:'verified_fallback',answer:'Tekshirilgan ma’lumotlar bo‘yicha qisqa xulosa:\n\n'+evidence.slice(0,3).map(f=>f.text).join('\n\n')+'\n\nQolgan ko‘rsatkichlar batafsil ma’lumotlarda berilgan.'}:
   {answerSource:'clarification_fallback',answer:'Javobni ishonchli ma’lumot bilan tasdiqlay olmadim. Savolni aniqlashtiring yoki kerakli hisobot, mahsulot va filialni ko‘rsating.'};

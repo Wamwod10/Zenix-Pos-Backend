@@ -2,6 +2,7 @@
 import {aiSettings} from '../src/config/ai.js';
 import {createAiAgentProvider} from '../src/services/aiAgentProvider.js';
 import {buildAgentEvidence,renderAgentAnswer} from '../src/services/aiAgentReply.js';
+import {assessSyntheticAnswer,summarizeQualityChecks} from './aiResponseQuality.mjs';
 
 // Synthetic fixtures only. This module deliberately never imports app/DB/registry.
 const groups=[
@@ -63,13 +64,13 @@ export async function runAiConversationEval({source=process.env,fetchImpl=fetch,
     }
    }
   }catch(error){account(error.aiUsage);status='error';errorCode=safeCodes.has(error.code)?error.code:'EVAL_FAILED';}
-  const item={id:entry.id,question:entry.question,expectedCapabilities:entry.expectedCapabilities,status,answer,errorCode,verifiedEvidence:buildAgentEvidence([...currentResults,...priorResults]),metrics:{...usage,syntheticToolTopics:used,evidenceCount:buildAgentEvidence([...currentResults,...priorResults]).length},needsHumanReview:true};
+  const item={id:entry.id,question:entry.question,expectedCapabilities:entry.expectedCapabilities,status,answer,errorCode,verifiedEvidence:buildAgentEvidence([...currentResults,...priorResults]),metrics:{...usage,syntheticToolTopics:used,evidenceCount:buildAgentEvidence([...currentResults,...priorResults]).length},quality:assessSyntheticAnswer({id:entry.id,status,answer}),needsHumanReview:true};
   results.push(item);write(JSON.stringify(item));
   if(answer){previous=[{role:'user',content:entry.question},{role:'assistant',content:JSON.stringify({answer,verifiedResults:currentResults})}];if(Buffer.byteLength(JSON.stringify(previous))>2500)previous=[];}
   priorResults=[...currentResults,...priorResults].slice(0,3);
   if(totals.costMicros>=maxTotalCostMicros)break;
  }
- const summary={synthetic:true,needsHumanReview:true,caseCount:results.length,answered:results.filter(r=>r.status==='answered').length,totals,maxTotalCostMicros};
+ const summary={synthetic:true,needsHumanReview:true,caseCount:results.length,answered:results.filter(r=>r.status==='answered').length,quality:summarizeQualityChecks(results),totals,maxTotalCostMicros};
  write(JSON.stringify(summary));return {results,summary};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)runAiConversationEval().catch(()=>{console.error('AI synthetic evaluation failed');process.exitCode=1});

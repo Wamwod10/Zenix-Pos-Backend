@@ -11,7 +11,7 @@ import {acquireConversation,releaseConversation} from './aiConversationStore.js'
 import {toolsFor,executeAgentTool,modelToolResult} from './aiAgentRegistry.js';
 import {recordAgentProgress} from './aiAgentProgress.js';
 import {deriveAgentMemory as deriveMemory} from './aiAgentMemory.js';
-import {assertAgentQuestion,renderAgentAnswer as renderAnswer,renderAgentBlocks as renderBlocks,buildAgentEvidence as buildEvidence,repairableAgentReply,safeAgentFallback as fallbackReply} from './aiAgentReply.js';
+import {assertAgentQuestion,renderAgentAnswer as renderAnswer,renderAgentBlocks as renderBlocks,buildAgentEvidence as buildEvidence,repairableAgentReply,safeAgentFallback as fallbackReply,prioritizeVerifiedAnswer} from './aiAgentReply.js';
 import {measurePerformance} from '../lib/performanceTimer.js';
 
 const deriveAgentMemory=(...args)=>measurePerformance('ai.memory',()=>deriveMemory(...args));
@@ -112,7 +112,11 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   stage='evidence';progress('verifying');
   const report=toolResults.findLast(t=>t.result.kind==='report')?.result.report||null;
   const evidence=buildAgentEvidence([...toolResults,...priorResults]);
-  const response={requestId:input.requestId,conversationId:conversation.id,...(fallback||{answer:renderAgentAnswer(reply,toolResults,{evidence})}),blocks:fallback?[]:renderAgentBlocks(reply,evidence),report,insights:[],toolResults,actions,generatedAt:new Date().toISOString()};
+  const presentation=fallback?{...fallback,blocks:[]}:prioritizeVerifiedAnswer({
+   question,report,answer:renderAgentAnswer(reply,toolResults,{evidence}),
+   blocks:renderAgentBlocks(reply,evidence),toolResults,actions,
+  });
+  const response={requestId:input.requestId,conversationId:conversation.id,...presentation,report,insights:[],toolResults,actions,generatedAt:new Date().toISOString()};
   // Per-call rounding is conservative; accounting boundary uses the same whole-turn total.
   const totalCost=tokenCostMicros(inputTokens,outputTokens);
   if(totalCost>settings.maxRequestMicros)throw new HttpError(502,'AI xarajat limiti','AI_COST_LIMIT');

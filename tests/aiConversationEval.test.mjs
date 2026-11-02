@@ -31,6 +31,10 @@ test('isolated adapter accepts app enabled, executes synthetic evidence and reta
  assert.deepEqual(source,before);assert.equal(calls,3);assert.equal(result.results.length,2);
  assert.match(result.results[0].answer,/Jami faol katalog mahsulotlari: 2/);
  assert.equal(result.summary.totals.requests,3);assert.equal(result.summary.needsHumanReview,true);
+ assert.deepEqual(result.summary.quality,{automatedChecks:2,passed:1,failed:1,requiresHumanReview:2,coverage:1});
+ assert.equal(result.results[0].quality.status,'pass');
+ assert.equal(result.results[1].quality.status,'fail','second answer repeats total instead of minimum-stock quantity');
+ assert.ok(result.results.every(entry=>entry.needsHumanReview));
  assert.ok(writes.every(w=>!JSON.stringify(w).includes('test-only')));
 });
 test('provider failures are sanitized and bounded per case',async()=>{
