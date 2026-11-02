@@ -40,6 +40,6 @@ export function simpleLatestSaleQuestion(question){
  if(!q||q.length>1000)return false;
  if(!/(?:oxirgi|so'nggi|songgi)/iu.test(q)||
     !/(?:savdo|chek|sotil|sotg|sotuv|marta)/iu.test(q))return false;
- if(/(?:kecha|hafta|oy|kun(?:da|lar)|davr|oldingi|avvalgi|solishtir|taqqosla|batafsil|tahlil|nega|nimaga|sabab|kirim|qabul qil|yarat|o'chir|tasdiqla|qaytarish|qaytarilgan|ombor|qoldiq|foyda|xarajat)/iu.test(q))return false;
+ if(/(?:kecha|hafta|oy|kun(?:da|lar)|davr|oldingi|avvalgi|solishtir|taqqosla|batafsil|tahlil|nega|nimaga|sabab|kirim|qabul qil|yarat|o'chir|bekor qil|tasdiqla|qaytarish|qaytarilgan|ombor|qoldiq|foyda|xarajat)/iu.test(q))return false;
  return true;
 }
