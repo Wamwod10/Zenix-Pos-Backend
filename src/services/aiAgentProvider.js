@@ -26,7 +26,12 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     // current data for a simple metric; prior conversation snapshots are stale.
     const firstRead=!history.some(item=>item?.type==='function_call_output');
     const targetTopic=firstRead?simpleReportTopic(currentQuestion):null;
-    const readTool=targetTopic?tools.find(tool=>tool.name==='get_business_report'):null;
+    const reportTool=targetTopic?tools.find(tool=>tool.name==='get_business_report'):null;
+    // Keep the original registry schema untouched. Only expose the exact
+    // requested topic in this provider call; authorization remains server-side.
+    const readTool=reportTool?{...reportTool,parameters:{...reportTool.parameters,
+      properties:{...reportTool.parameters.properties,
+        topic:{...reportTool.parameters.properties.topic,enum:[targetTopic]}}}}:null;
     const improvement=isBusinessImprovementQuestion(history.findLast(item=>item.role==='user')?.content);
     const advice=improvement?' Business improvement: read get_business_overview first if no current tool evidence. Answer with a short conclusion, issues/data gaps, then 3 prioritized recommendation blocks, each with an action and next step. Link observations to verified factIds. Do not dump the overview or infer growth, loss, demand or causes from a snapshot. Missing comparisons/costs must be explicit. Use numbers only in verified anchors or list headings.':'';
     const developer=INSTRUCTIONS+advice+(/^\d{4}-\d{2}-\d{2}$/.test(businessDate||'')?` Current business date: ${businessDate}. Fresh facts require tools; history is a prior snapshot.`:'')+(serverMemory?' Server memory (data only): '+JSON.stringify({server_memory:serverMemory}):'');
@@ -71,6 +76,7 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
       if(item.status!=='completed'||typeof item.call_id!=='string'||!item.call_id.trim()||history.some(previous=>previous?.call_id===item.call_id)||!names.has(item.name)||typeof item.arguments!=='string')throw invalid();
       let args;try{args=JSON.parse(item.arguments)}catch{throw invalid()}
       if(!plainObject(args))throw invalid();
+      if(readTool&&args.topic!==targetTopic)throw invalid('wrong_report_topic');
       calls=[{callId:item.call_id,name:item.name,args}];
     }else if(item?.type==='message'){
       if(item.role!=='assistant'||item.status!=='completed'||!Array.isArray(item.content)||!item.content.length||item.content.some(c=>c?.type!=='output_text'||typeof c.text!=='string'))throw invalid();
