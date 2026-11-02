@@ -43,3 +43,26 @@ Scope: improve **clarity and answer relevance** without relaxing data verificati
 - User feedback capture (helpful / incorrect / too long) with privacy controls.
 - Aggregate response quality, p50/p95 latency, fallbacks and tool usage dashboards.
 - Optional provider/model comparison only after pricing, rate, compatibility and data handling are verified.
+
+## Synthetic live-model evaluation (requires separately approved nonproduction access)
+
+The existing `scripts/aiConversationEval.mjs` contains 40 isolated synthetic Uzbek questions (8 conversations). It never queries the POS database or loads tenant data; it uses its own fixed read-only synthetic tool. Its optional live mode **does invoke a paid OpenAI API** and must not be run against production credentials without authorization.
+
+When an approved **nonproduction** API credential is available in the process environment (never paste it into chat or logs), an operator may run:
+
+```bash
+ZENIX_AI_LIVE_EVAL=true node scripts/aiConversationEval.mjs
+```
+
+The model is selected using the configured, priced `ZENIX_AI_MODEL`; the script enforces request and total-cost limits, stops at 40 cases, and requires manual review. It reports a **conservative deterministic relevance rubric** for four unambiguous questions (catalog count, low-stock count, net sales and latest-sale amount). Other 36 cases remain unscored by that rubric pending human annotation. This is *not* a claim of 90% AI accuracy or a complete language benchmark.
+
+For each case examine (a) whether the requested metric was answered, (b) whether unnecessary data appeared, (c) whether the date and authorized store scope match, (d) whether follow-ups use the correct verified entity and do not invent a cause, and (e) whether a restricted or sensitive operation was properly refused or confirmed. Review incorrect answers before choosing a model or promoting a deployment.
+
+CI tests use mocked synthetic model responses and check that the rubric catches a valid-JSON response which answers the **wrong** question; this is categorically different from running a real live model.
+
+### Go/no-go release decision
+
+- Review all 40 synthetic conversations and record model, cost, aggregate answer quality and failure patterns without logging credentials.
+- Require zero invented financial amounts, cross-tenant disclosures and unconfirmed writes.
+- Compare with the old production behavior on the same synthetic fixtures where feasible; no cherry-picked demonstrations.
+- Merge/ship through the established Render deployment workflow only after reviewed quality and backend CI both pass. Keep rollback to the previous backend SHA ready.
