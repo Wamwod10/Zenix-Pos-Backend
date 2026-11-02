@@ -11,9 +11,25 @@ export function normalizeUzbekQuestion(question){
   .replace(/\s+/g,' ').trim();
 }
 
+
+/**
+ * "Bugun savdo bo‘ldimi?" asks whether any transactions were recorded.
+ * Avoid redirecting profitability, trend, comparison or write requests.
+ * This classifies intent only. The authorized report decides the answer.
+ */
+export function isTodaySalesExistenceQuestion(question){
+ const q=normalizeUzbekQuestion(question);
+ if(!q||q.length>1000||!/(?:^|\s)bugun(?:gi)?(?:\s|$)/u.test(q))return false;
+ if(!/(?:^|\s)(?:savdo|sotuv|chek|tranzaksiya)(?:\s|$)/u.test(q))return false;
+ if(!/\b(?:bo'?ldimi|boldimi|bo'?lganmi|bolganmi|bo'?lmadimi|bolmadimi|bormi|qayd etildimi|qilindimi|qildimmi)\b/u.test(q))return false;
+ if(/nega|nimaga|sabab|nima uchun|qanday|tahlil|batafsil|solishtir|taqqosla|foyda|tannarx|qarz|qaytarish|xarajat|mahsulot|tovar|kecha|hafta|oy|avvalgi|oldingi|kirim|bekor qil|o'chir|tasdiqla/iu.test(q))return false;
+ return true;
+}
+
 export function simpleReportTopic(question,{memory=null,businessDate=null}={}){
  const q=normalizeUzbekQuestion(question);
  if(!q||q.length>1000)return null;
+ if(isTodaySalesExistenceQuestion(q))return 'today_sales';
  // Elliptical follow-ups are resolved only from verified today-sales report
  // identity for this exact business date, never a stale amount or guessed topic.
  const period=memory?.period;
