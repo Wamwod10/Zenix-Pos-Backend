@@ -136,9 +136,9 @@ export function focusedVerifiedAnswer(report,question){
   const fact=id=>(report.facts||[]).find(f=>f.id===prefix+id&&decimal(f.value));
   const count=fact('sales_count');
   const scope=report.sellerScoped?'sizning savdolaringiz bo‘yicha':report.storeId?'tanlangan filialda':'ruxsat etilgan filiallarda';
-  if(!count||!/^(?:0|[1-9]\\d*)(?:\\.0+)?$/.test(count.value))
+  if(!count||!/^(?:0|[1-9]\d*)(?:\.0+)?$/.test(count.value))
    return {answerSource:'clarification_fallback',answer:'Bugungi savdolar sonini ishonchli tekshira olmadim. Hozir savdo bo‘lgan yoki bo‘lmaganini tasdiqlay olmayman.'};
-  if(/^0(?:\\.0+)?$/.test(count.value))
+  if(/^0(?:\.0+)?$/.test(count.value))
    return {answerSource:'verified_fallback',answer:`Yo‘q, bugun ${scope} savdo qayd etilmagan. Sababini faqat savdo hisobotidan aniqlab bo‘lmaydi.`};
   const net=fact('today_net');
   const netText=net?` Sof tushum: ${displayDecimal(net.value)} so‘m.`:'';
