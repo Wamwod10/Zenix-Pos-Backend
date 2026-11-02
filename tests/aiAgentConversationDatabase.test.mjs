@@ -47,6 +47,44 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
     const replay=await aiAgentChat(f.user,{requestId:response.requestId,question},{settings,provider:async()=>{throw Error('replay must not call provider')}});assert.deepEqual(replay,response);
    }
   });
+  await t.test('growth request after overview returns a prioritized plan, not a valid-schema report dump',async()=>{
+   const f=await fixture();let calls=0;
+   const report={kind:'report',report:{topic:'business_overview',storeId:f.store,from:'2026-10-27',to:'2026-11-02',
+    facts:[
+     {id:'today_sales_sales_count',value:'0',unit:'count',label:'Bugungi savdolar soni'},
+     {id:'today_sales_today_net',value:'0.00',unit:'UZS',label:'Bugungi sof savdo'},
+     {id:'inventory_warehouse_low_stock_count',value:'2',unit:'count',label:'Minimum qoldiq'},
+     {id:'customer_debt_customer_debt',value:'150000.00',unit:'UZS',label:'Mijoz qarzi'},
+     {id:'supplier_debt_supplier_debt',value:'0.00',unit:'UZS',label:'Ta’minotchi qarzi'},
+     {id:'profit_profit_0',value:'404000.00',unit:'UZS',label:'Keks 250g: foyda',productName:'Keks 250g'}],
+    tables:[],notes:[]}};
+   const response=await aiAgentChat(f.user,body('Nimalar qilsam biznesim rivojlanadi?',{storeId:f.store}),{
+    settings,
+    provider:async(_h,{onDispatch})=>{
+     await onDispatch();calls++;
+     if(calls===1)return call('get_business_overview',{storeId:f.store});
+     return {...final(),reply:{kind:'advice',reply:'Tanlangan filial bo‘yicha hisobotlardan tayyorlangan qisqa xulosa:',blocks:[]}};
+    },
+    toolRunner:async(_user,name,args)=>{
+     assert.equal(name,'get_business_overview');
+     assert.equal(args.storeId,f.store);
+     return report;
+    },
+   });
+   assert.equal(calls,2);
+   assert.match(response.answer,/1\\. Savdoni/);
+   assert.match(response.answer,/Keks 250g/);
+   assert.match(response.answer,/2 ta minimum/);
+   assert.doesNotMatch(response.answer,/hisobotlardan tayyorlangan qisqa xulosa|ta’minotchi hujjatlaridagi to‘lov muddatlari/iu);
+   assert.deepEqual(response.blocks,[]);
+   assert.deepEqual(response.actions,[]);
+   assert.equal(response.report.topic,'business_overview');
+   const saved=(await pool.query('SELECT messages FROM ai_conversations WHERE id=$1',[response.conversationId])).rows[0].messages;
+   assert.ok(saved.some(m=>m.role==='assistant'&&m.content.includes('Keks 250g')));
+   assert.ok(!saved.some(m=>m.role==='assistant'&&m.content.includes('hisobotlardan tayyorlangan qisqa xulosa')));
+   const request=(await pool.query('SELECT status FROM ai_requests WHERE request_id=$1',[response.requestId])).rows[0];
+   assert.equal(request.status,'SUCCEEDED');
+  });
   await t.test('latest sale from screenshot finishes after one model call without 413 or extra write',async()=>{
    const f=await fixture();let providerCalls=0,readCalls=0;
    const report={kind:'report',report:{topic:'latest_sale',selection:'latest',storeId:f.store,from:null,to:null,
