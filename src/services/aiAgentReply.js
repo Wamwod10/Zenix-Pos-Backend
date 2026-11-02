@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {HttpError} from '../lib/http.js';
-import {normalizeUzbekQuestion} from './aiQuestionRouting.js';
+import {normalizeUzbekQuestion,simpleLatestSaleQuestion} from './aiQuestionRouting.js';
 
 export function assertAgentQuestion(value){
  const text=String(value||'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g,'').trim();
@@ -124,13 +124,28 @@ function improvementFallback(report){
 }
 // Keep a verified recovery answer aligned to the question instead of dumping
 // unrelated report facts. This is used only after a model response needs recovery.
-export function focusedVerifiedAnswer(report,question){
+export export function focusedVerifiedAnswer(report,question){
  const query=normalizeUzbekQuestion(question);
  const followupGross=/^(?:yalpi(?:si)?|brutto)(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupRefund=/^qaytarish(?:lar)?(?:i)?(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupNet=/^sof savdo(?:si)?(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followupCount=/^nechta (?:savdo|chek)(?:\s*[- ]?chi)?\??$/iu.test(query);
  const followup=followupGross||followupRefund||followupNet||followupCount;
+ // The last receipt is a server-verified record. Short answers can be
+ // rendered directly without another large model prompt or guessed quantities.
+ if(report?.topic==='latest_sale'&&simpleLatestSaleQuestion(question)){
+  const sale=report.sale;
+  if(sale===null)return {answerSource:'verified_fallback',answer:'Oxirgi savdo topilmadi.'};
+  if(!sale||!Array.isArray(sale.items))return null;
+  const scope=report.sellerScoped?' (faqat o‘z savdolaringiz bo‘yicha)':report.storeId?' (tanlangan filial bo‘yicha)':'';
+  if(/qancha|summa|jami|pul/iu.test(query)&&!/(?:nima|qaysi|nimalar)/iu.test(query)&&decimal(sale.total))
+   return {answerSource:'verified_fallback',answer:`Oxirgi savdo summasi: ${displayDecimal(sale.total)} so‘m${scope}.`};
+  const items=sale.items.slice(0,3).filter(item=>typeof item.name==='string'&&item.name.trim()&&decimal(item.quantity)&&typeof item.unit==='string'&&item.unit.trim());
+  if(!items.length)return null;
+  const names=items.map(item=>`${item.name} — ${displayDecimal(item.quantity)} ${item.unit}`).join('; ');
+  const more=sale.hasMoreItems||sale.items.length>3?' Qolgan mahsulotlar batafsil ma’lumotlarda.':'';
+  return {answerSource:'verified_fallback',answer:`Oxirgi savdoda: ${names}${scope}.${more}`};
+ }
  if(!query.trim()||!report||(!followup&&!/qancha|nechta|soni|jami|eng ko[‘’ʻʼ']p|oxirgi savdo/iu.test(query)))return null;
  // Single-metric shortcuts must never alter reports about other subjects,
  // comparisons, individual products, causes, or historical periods.
