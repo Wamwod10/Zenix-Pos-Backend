@@ -132,6 +132,39 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
    assert.deepEqual(follow.actions,[]);
    assert.equal((await pool.query('SELECT status FROM ai_requests WHERE request_id=$1',[follow.requestId])).rows[0].status,'SUCCEEDED');
   });
+  await t.test('Bugun savdo bo‘ldimi uses one current read and gives honest no instead of report dump',async()=>{
+   const f=await fixture();let calls=0;
+   const report={kind:'report',report:{topic:'today_sales',storeId:f.store,from:'2026-11-02',to:'2026-11-02',
+    facts:[{id:'sales_count',label:'Bugungi savdo soni',value:'0',unit:'count'},
+           {id:'today_net',label:'Bugungi sof savdo',value:'0.00',unit:'UZS'},
+           {id:'today_refunds',label:'Bugungi qaytarish',value:'0.00',unit:'UZS'}],
+    tables:[],notes:[]}};
+   const response=await aiAgentChat(f.user,body('Bugun savdo boldimi?',{storeId:f.store}),{
+    settings,
+    provider:async(_history,{onDispatch})=>{
+     await onDispatch();calls++;
+     if(calls>1)throw new Error('a simple yes-no answer must not call the model twice');
+     return call('get_business_report',{topic:'today_sales',storeId:f.store});
+    },
+    toolRunner:async(_user,name,args)=>{
+     assert.equal(name,'get_business_report');
+     assert.equal(args.topic,'today_sales');
+     assert.equal(args.storeId,f.store);
+     return report;
+    },
+   });
+   assert.equal(calls,1);
+   assert.equal(response.answer,'Yo‘q, bugun tanlangan filialda savdo qayd etilmagan. Sababini faqat savdo hisobotidan aniqlab bo‘lmaydi.');
+   assert.deepEqual(response.blocks,[]);
+   assert.equal(response.report.topic,'today_sales');
+   assert.equal(response.report.facts.length,3);
+   assert.deepEqual(response.actions,[]);
+   const stored=(await pool.query('SELECT messages FROM ai_conversations WHERE id=$1',[response.conversationId])).rows[0].messages;
+   assert.ok(stored.some(m=>m.role==='assistant'&&m.content.includes('Yo‘q, bugun tanlangan filialda')));
+   assert.ok(!stored.some(m=>m.role==='assistant'&&m.content.includes('Tekshirilgan ma’lumotlar bo‘yicha qisqa xulosa')));
+   const row=(await pool.query('SELECT status FROM ai_requests WHERE request_id=$1',[response.requestId])).rows[0];
+   assert.equal(row.status,'SUCCEEDED');
+  });
   await t.test('simple sale amount suppresses valid but irrelevant model blocks end-to-end',async()=>{
    const f=await fixture();let step=0;
    const report={kind:'report',report:{topic:'today_sales',storeId:f.store,from:'2026-11-01',to:'2026-11-01',
