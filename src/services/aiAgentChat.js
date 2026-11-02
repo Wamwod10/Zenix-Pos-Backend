@@ -62,7 +62,10 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
      if(result.reply){const evidence=buildAgentEvidence([...toolResults,...priorResults]);renderAgentAnswer(result.reply,toolResults,{evidence});renderAgentBlocks(result.reply,evidence)}
      break;
     }catch(error){
-     const preflight=repairing&&!callDispatched&&error instanceof HttpError&&error.status===413&&['AI_TOKEN_LIMIT','AI_COST_LIMIT'].includes(error.code);
+     // A follow-up model call can exhaust the remaining safe input budget
+     // after a successful report read. Use the verified report instead of
+     // returning HTTP 413 to the user. Never bypass a first-call preflight.
+     const preflight=toolResults.length>0&&!callDispatched&&error instanceof HttpError&&error.status===413&&['AI_TOKEN_LIMIT','AI_COST_LIMIT'].includes(error.code);
      if(!preflight&&!repairableAgentReply(error))throw error;
      if(providerPending&&!preflight&&!addUsage(error.aiUsage))throw error;
      providerPending=false;
