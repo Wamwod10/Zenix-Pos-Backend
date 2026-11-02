@@ -218,6 +218,11 @@ export function focusedVerifiedAnswer(report,question){
 // For an unambiguous single-metric question, prefer the same verified facts
 // that power the recovery path. Full reports are retained separately by chat.
 export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
+ if(isSaleAssessmentQuestion(question)&&Array.isArray(toolResults)&&Array.isArray(actions)&&!actions.length&&
+    !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
+  const assessment=report?.topic==='latest_sale'?focusedVerifiedAnswer(report,question):null;
+  return {answer:assessment?.answer||'Bu savdoni yaxshi yoki yomon deb baholash uchun oldingi tasdiqlangan chek, tannarx va odatdagi o‘rtacha chek summasi kerak. Hozir bu taqqoslash tasdiqlanmagan.',blocks:[]};
+ }
  if(!report||!Array.isArray(toolResults)||!Array.isArray(actions)||actions.length||
    toolResults.some(t=>['action','clarification'].includes(t.result?.kind)))
   return {answer,blocks};
