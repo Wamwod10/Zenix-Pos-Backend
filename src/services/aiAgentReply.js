@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {HttpError} from '../lib/http.js';
+import {normalizeUzbekQuestion} from './aiQuestionRouting.js';
 
 export function assertAgentQuestion(value){
  const text=String(value||'').normalize('NFKC').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g,'').trim();
@@ -124,8 +125,13 @@ function improvementFallback(report){
 // Keep a verified recovery answer aligned to the question instead of dumping
 // unrelated report facts. This is used only after a model response needs recovery.
 export function focusedVerifiedAnswer(report,question){
- const query=String(question||'').normalize('NFKC').toLocaleLowerCase('uz');
- if(!query.trim()||!report||!/qancha|nechta|soni|jami|eng ko[‘’ʻʼ']p|oxirgi savdo/iu.test(query))return null;
+ const query=normalizeUzbekQuestion(question);
+ const followupGross=/^(?:yalpi(?:si)?|brutto)(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followupRefund=/^qaytarish(?:lar)?(?:i)?(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followupNet=/^sof savdo(?:si)?(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followupCount=/^nechta (?:savdo|chek)(?:\s*[- ]?chi)?\??$/iu.test(query);
+ const followup=followupGross||followupRefund||followupNet||followupCount;
+ if(!query.trim()||!report||(!followup&&!/qancha|nechta|soni|jami|eng ko[‘’ʻʼ']p|oxirgi savdo/iu.test(query)))return null;
  // Single-metric shortcuts must never alter reports about other subjects,
  // comparisons, individual products, causes, or historical periods.
  if(/nega|nima sabab|sababi|nimaga|qanday yaxshila|tavsiya|solishtir|taqqosla|mahsulotdan|tovardan|dona sot|foyda|daromad|marja|qaysi filial|qaysi kun|eng katta xarajat/iu.test(query))return null;
@@ -143,10 +149,10 @@ export function focusedVerifiedAnswer(report,question){
  }
  if(report.topic==='today_sales'){
   if(/nechta|soni/iu.test(query)&&/qaytarish/iu.test(query))return null;
-  if(!/savdo|chek|tranzaksiya|qaytarish|yalpi|brutto/iu.test(query)||/mahsulot|tovar|kirim|qoldiq|qarz|xarajat|oxirgi savdo/iu.test(query)||/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
-  const requested=/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
-   /qaytarish/iu.test(query)?['today_refunds','Bugungi qaytarish summasi','so‘m']:
-   /yalpi|brutto/iu.test(query)?['today_gross','Bugungi yalpi savdo','so‘m']:
+  if((!followup&&!/savdo|chek|tranzaksiya|qaytarish|yalpi|brutto/iu.test(query))||/mahsulot|tovar|kirim|qoldiq|qarz|xarajat|oxirgi savdo/iu.test(query)||/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(query))return null;
+  const requested=followupCount||/nechta|soni/iu.test(query)?['sales_count','Bugungi savdolar soni','ta']:
+   followupRefund||/qaytarish/iu.test(query)?['today_refunds','Bugungi qaytarish summasi','so‘m']:
+   followupGross||/yalpi|brutto/iu.test(query)?['today_gross','Bugungi yalpi savdo','so‘m']:
    ['today_net','Bugungi sof savdo','so‘m'];
   const found=fact(requested[0]);
   if(found)return answer(`${requested[1]}: ${displayDecimal(found.value)} ${requested[2]}${scope}.`);
@@ -198,7 +204,7 @@ export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolR
 
 export function safeAgentFallback(evidence,toolResults=[],{question}={}){
  const latestReport=toolResults.findLast(t=>t.result?.kind==='report')?.result.report;
- const q=String(question||'').normalize('NFKC').toLocaleLowerCase('uz');
+ const q=normalizeUzbekQuestion(question);
  // Do not replace a requested daily/monthly/revenue fact with the wrong
  // reporting period or quantity ranking when a model reply needs recovery.
  if(latestReport?.topic==='today_sales'&&/kecha|o[‘’ʻʼ']tgan|hafta|oy|ertaga|oldingi|avvalgi/iu.test(q)&&/savdo|chek|tranzaksiya/iu.test(q))
