@@ -28,6 +28,7 @@ test('short first-turn sale question forces an authorized current read, never an
   const q=JSON.parse(body);requests++;
   assert.equal(q.tool_choice,'required');
   assert.deepEqual(q.tools.map(t=>t.name),['get_business_report']);
+  assert.deepEqual(q.tools[0].parameters.properties.topic.enum,['today_sales']);
   assert.match(q.input[0].content,/unambiguous today_sales metric/);
   return response([{type:'function_call',status:'completed',call_id:'read_once',name:'get_business_report',
     arguments:JSON.stringify({topic:'today_sales',storeId:null})}]);
@@ -48,4 +49,20 @@ test('follow-up with a current tool result can finish naturally, no forced extra
   {type:'function_call_output',call_id:'first_read',output:'{}'}],
  {tools:[tool],evidence:[{id:'f_verified',text:'Bugungi sof savdo: 10 000 so‘m'}],onDispatch:async()=>{}});
  assert.equal(result.reply.reply,'{{f_verified}}');
+});
+
+test('a model cannot substitute an unrelated report topic for a forced read',async()=>{
+ const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
+ const tool={type:'function',name:'get_business_report',strict:true,description:'Read report',
+  parameters:{type:'object',properties:{topic:{type:'string',enum:['today_sales','expenses','customer_debt']},storeId:{type:['string','null']}},required:['topic','storeId'],additionalProperties:false}};
+ const original=JSON.stringify(tool);
+ const provider=createAiAgentProvider(settings,async(_url,{body})=>{
+  const q=JSON.parse(body);
+  assert.deepEqual(q.tools[0].parameters.properties.topic.enum,['today_sales']);
+  return response([{type:'function_call',status:'completed',call_id:'wrong_topic',
+   name:'get_business_report',arguments:JSON.stringify({topic:'expenses',storeId:null})}]);
+ });
+ await assert.rejects(()=>provider([{role:'user',content:'Bugun qancha savdo qildim?'}],
+  {tools:[tool],onDispatch:async()=>{}}),error=>error.code==='AI_INVALID_RESPONSE'&&error.details?.reason==='wrong_report_topic');
+ assert.equal(JSON.stringify(tool),original,'shared registry schema must not be mutated');
 });
