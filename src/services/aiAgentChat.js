@@ -11,7 +11,7 @@ import {acquireConversation,releaseConversation} from './aiConversationStore.js'
 import {toolsFor,executeAgentTool,modelToolResult} from './aiAgentRegistry.js';
 import {recordAgentProgress} from './aiAgentProgress.js';
 import {deriveAgentMemory as deriveMemory} from './aiAgentMemory.js';
-import {assertAgentQuestion,renderAgentAnswer as renderAnswer,renderAgentBlocks as renderBlocks,buildAgentEvidence as buildEvidence,repairableAgentReply,safeAgentFallback as fallbackReply,prioritizeVerifiedAnswer} from './aiAgentReply.js';
+import {assertAgentQuestion,renderAgentAnswer as renderAnswer,renderAgentBlocks as renderBlocks,buildAgentEvidence as buildEvidence,repairableAgentReply,safeAgentFallback as fallbackReply,prioritizeVerifiedAnswer,focusedVerifiedAnswer} from './aiAgentReply.js';
 import {measurePerformance} from '../lib/performanceTimer.js';
 
 const deriveAgentMemory=(...args)=>measurePerformance('ai.memory',()=>deriveMemory(...args));
@@ -102,6 +102,14 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
    }
    toolResults.push({name:call.name,result:output});
    if(output.kind==='action')actions.push(output.action);
+   // A narrow, read-only query already has the verified answer. Do not force
+   // another model request containing long receipt lines and tool schemas,
+   // which can exhaust the remaining 8k input budget and return HTTP 413.
+   // Actions and ambiguous reads never use this path.
+   if(output.kind==='report'&&['get_latest_sale','get_business_report'].includes(call.name)&&
+      focusedVerifiedAnswer(output.report,question)){
+    reply=null;complete=true;break;
+   }
    const safeOutput=output.kind==='report'?{kind:'report',topic:output.report.topic,from:output.report.from,to:output.report.to,evidence:buildAgentEvidence([{name:call.name,result:output}])}:modelToolResult(output);
    // Keep protocol call/output pairs only within this turn; history stores summaries.
    history.push(...result.items,{type:'function_call_output',call_id:call.callId,output:JSON.stringify(safeOutput)});
