@@ -128,6 +128,30 @@ test('detailed user requests retain AI reasoning and optional report blocks',()=
  assert.deepEqual(prioritizeVerifiedAnswer({question:'Bugungi savdoni batafsil tahlil qilib ber',report,toolResults:[{result:{kind:'report',report}}],actions:[],...full}),full);
 });
 
+test('overview gross and refunds never get mislabeled as net sales',()=>{
+ const overview={topic:'business_overview',facts:[
+  fact('today_sales_today_net','2450000.00'),fact('today_sales_today_gross','2500000.00'),
+  fact('today_sales_today_refunds','50000.00'),fact('today_sales_sales_count','5','count')]};
+ const reported=(question)=>fallback(overview,question).answer;
+ assert.equal(reported('Bugungi yalpi savdo qancha?'),'Bugungi yalpi savdo: 2 500 000 so‘m.');
+ assert.equal(reported('Bugun qaytarish summasi qancha?'),'Bugungi qaytarish summasi: 50 000 so‘m.');
+ assert.equal(reported('Bugun nechta savdo bo‘ldi?'),'Bugungi savdolar soni: 5 ta.');
+ assert.equal(reported('Bugun qancha savdo qildim?'),'Bugungi sof savdo: 2 450 000 so‘m.');
+});
+test('stock/fallback must not substitute low-stock count for total catalog count',()=>{
+ const lowStock={topic:'low_stock',facts:[fact('low_stock_count','3','count')]};
+ assert.equal(fallback(lowStock,'Minimumdan past nechta mahsulot bor?').answer,
+  'Minimum yoki undan past qoldiqdagi mahsulotlar: 3 ta.');
+ assert.doesNotMatch(fallback(lowStock,'Omborda jami nechta mahsulot bor?').answer,/^Minimum yoki undan past qoldiqdagi mahsulotlar: 3 ta/);
+ const dormant={topic:'dormant',facts:[fact('dormant_count','7','count')]};
+ assert.equal(fallback(dormant,'Sotilmagan mahsulotlar soni nechta?').answer,
+  'Oxirgi 30 biznes kunida sotilmagan qoldiqli mahsulotlar: 7 ta.');
+ assert.doesNotMatch(fallback(dormant,'Jami mahsulotlar soni nechta?').answer,/^Oxirgi 30 biznes kunida sotilmagan/);
+});
+test('refund count is not replaced with overall sales count',()=>{
+ const report={topic:'today_sales',facts:[fact('sales_count','21','count'),fact('today_refunds','5000.00')]};
+ assert.doesNotMatch(fallback(report,'Bugun nechta qaytarish bo‘ldi?').answer,/^Bugungi savdolar soni: 21 ta/);
+});
 test('provider instructs answer-first, minimum relevant detail and verified anchors',async()=>{
  const settings={...aiSettings(),enabled:true,apiKey:'test-only'};
  let inspected=false;
