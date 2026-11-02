@@ -225,7 +225,7 @@ export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolR
   const plan=improvementFallback(report?.topic==='business_overview'?report:null);
   const recommendationBlocks=Array.isArray(blocks)?blocks.filter(b=>b?.type==='recommendation'):[];
   const supplier=(report?.facts||[]).find(f=>f.id==='supplier_debt_supplier_debt');
-  const zeroPayable=supplier&&/^0(?:\\.0+)?$/.test(supplier.value);
+  const zeroPayable=supplier&&/^0(?:\.0+)?$/.test(supplier.value);
   const irrelevantSupplier=zeroPayable&&/ta[‘’ʻʼ']minotch|yetkazib beruvchiga qarz/iu.test(
     [answer,...recommendationBlocks.map(b=>b.text)].join(' '));
   // Keep a genuinely useful, independently evidence-validated model plan.
