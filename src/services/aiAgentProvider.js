@@ -25,7 +25,7 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
     // Only before the first tool result of this turn. The model must read
     // current data for a simple metric; prior conversation snapshots are stale.
     const firstRead=!history.some(item=>item?.type==='function_call_output');
-    const targetTopic=firstRead?simpleReportTopic(currentQuestion):null;
+    const targetTopic=firstRead?simpleReportTopic(currentQuestion,{memory:serverMemory,businessDate}):null;
     const reportTool=targetTopic?tools.find(tool=>tool.name==='get_business_report'):null;
     // Keep the original registry schema untouched. Only expose the exact
     // requested topic in this provider call; authorization remains server-side.
