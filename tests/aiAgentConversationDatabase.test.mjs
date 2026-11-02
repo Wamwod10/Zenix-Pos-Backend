@@ -70,6 +70,31 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
    const saved=(await pool.query('SELECT status,error_code FROM ai_requests WHERE request_id=$1',[response.requestId])).rows[0];
    assert.equal(saved.status,'SUCCEEDED');assert.equal(saved.error_code,null);
   });
+  await t.test('post-read input token 413 recovers with scoped verified facts instead of failing chat',async()=>{
+   const f=await fixture();let attempts=0;
+   const {HttpError}=await import('../src/lib/http.js');
+   const report={kind:'report',report:{topic:'business_overview',storeId:f.store,
+    facts:[{id:'today_sales_today_net',label:'Bugungi sof savdo',value:'10000.00',unit:'UZS'}],
+    tables:[],notes:[]}};
+   const logs=[],oldWarn=console.warn;
+   let response;
+   try{
+    console.warn=message=>{if(typeof message==='string'&&message.includes('ai_reply_recovery'))logs.push(JSON.parse(message))};
+    response=await aiAgentChat(f.user,body('Biznesimni qanday yaxshilashim mumkin?',{storeId:f.store}),{
+     settings,provider:async(_history,{onDispatch})=>{
+      attempts++;
+      if(attempts===1){await onDispatch();return call('get_business_overview',{storeId:f.store})}
+      throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
+     },toolRunner:async()=>report,
+    });
+   }finally{console.warn=oldWarn}
+   assert.equal(attempts,2);
+   assert.equal(response.answerSource,'verified_fallback');
+   assert.match(response.answer,/keyingi qadam|Keyingi qadam/iu);
+   assert.ok(logs.some(l=>l.aiReason==='repair_budget_limit'));
+   const row=(await pool.query('SELECT status,error_code FROM ai_requests WHERE request_id=$1',[response.requestId])).rows[0];
+   assert.equal(row.status,'SUCCEEDED');assert.equal(row.error_code,null);
+  });
   await t.test('simple sale amount suppresses valid but irrelevant model blocks end-to-end',async()=>{
    const f=await fixture();let step=0;
    const report={kind:'report',report:{topic:'today_sales',storeId:f.store,from:'2026-11-01',to:'2026-11-01',
