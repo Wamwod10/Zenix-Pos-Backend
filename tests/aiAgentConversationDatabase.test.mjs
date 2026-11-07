@@ -351,11 +351,11 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
    const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];
    assert.equal(usage.successes,0);assert.equal(usage.reserved,0);assert.equal(Number(usage.input_tokens),300);assert.equal(Number(usage.output_tokens),40);assert.equal(Number(usage.spent_micros),tokenCostMicros(300,40));
   });
-  await t.test('several tools produce a natural anchored reply and preserve evidence for follow-up',async()=>{
+  await t.test('several tools produce a natural anchored reply while follow-ups refresh evidence',async()=>{
    const f=await fixture();let stage=0;
    const result=await aiAgentChat(f.user,body('Omborda ko‘p mahsulot bo‘lsa, nega kamayganlar nol?'),{settings,provider:async(_h,{onDispatch,evidence})=>{await onDispatch();if(stage++===0)return call('get_business_report',{topic:'low_stock',storeId:null});assert.ok(evidence.length);return {...final(),reply:{kind:'results',reply:`Jami mahsulotlar bilan minimal qoldiq boshqa ko‘rsatkichlar. {{${evidence[0].id}}}`}}},toolRunner:async()=>({kind:'report',report:{from:'2026-10-15',to:'2026-10-15',facts:[{id:'low_stock_count',label:'Minimal qoldiqdagi mahsulotlar',value:'0',unit:'count'}],tables:[],notes:[]}})});
    assert.match(result.answer,/boshqa ko‘rsatkichlar/);assert.match(result.answer,/0 ta/);
-   await aiAgentChat(f.user,body('Nega?',{conversationId:result.conversationId}),{settings,provider:async(history,{onDispatch,evidence})=>{await onDispatch();assert.ok(history.some(m=>m.role==='assistant'));assert.ok(evidence.some(e=>e.text.includes('Minimal qoldiq')));return final()}});
+   await aiAgentChat(f.user,body('Nega?',{conversationId:result.conversationId}),{settings,provider:async(history,{onDispatch,evidence})=>{await onDispatch();assert.ok(history.some(m=>m.role==='assistant'));assert.deepEqual(evidence,[],'old report evidence must not validate a new user turn');return final()}});
   });
   await t.test('free conversation stores context, replay charges once, no client history',async()=>{
    const f=await fixture(),input=body('Biznesimni qanday yaxshilasam bo‘ladi?',{storeId:f.store});
