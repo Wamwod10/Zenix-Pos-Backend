@@ -220,6 +220,26 @@ export function focusedVerifiedAnswer(report,question){
 // The model can return a technically valid but unnecessarily long answer.
 // For an unambiguous single-metric question, prefer the same verified facts
 // that power the recovery path. Full reports are retained separately by chat.
+// A useful, evidence-validated growth reply can be written as structured
+// recommendation blocks or as a concise numbered plan. Count only distinct,
+// concrete POS actions; two generic recommendation headings are not a plan.
+function actionableGrowthStep(text){
+ const q=normalizeUzbekQuestion(text);
+ if(q.length<18||q.length>700)return false;
+ const focus=/savdo|sotuv|mahsulot|ombor|qoldiq|tannarx|xarajat|mijoz|qarz|to'lov|yetkaz|ta'minot|chek|marja|aksiya|davr|narx|hisobot|foyda|sotilish|buyurtma/iu.test(q);
+ const action=/tekshir|solishtir|taqqosla|kuzat|tahlil|sinab|o'lcha|aniqla|rejalashtir|nazorat|hisobla|tuzing|tuzish|sarala|belgila/iu.test(q);
+ return focus&&action;
+}
+function usefulGrowthPlan(answer,blocks){
+ const recommendations=(Array.isArray(blocks)?blocks:[])
+  .filter(block=>block?.type==='recommendation'&&actionableGrowthStep(block.text))
+  .map(block=>normalizeUzbekQuestion(block.text));
+ if(new Set(recommendations).size>=2)return true;
+ const numbered=[...String(answer||'').matchAll(/(?:^|\n)\s*\d{1,2}[.)]\s+([^\n]+)/gu)]
+  .map(match=>match[1]).filter(actionableGrowthStep).map(normalizeUzbekQuestion);
+ return new Set(numbered).size>=2;
+}
+
 export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolResults=[],actions=[]}={}){
  if(isBusinessImprovementQuestion(question)&&Array.isArray(actions)&&actions.length===0&&Array.isArray(toolResults)&&
     !toolResults.some(t=>['action','clarification'].includes(t.result?.kind))){
@@ -232,7 +252,7 @@ export function prioritizeVerifiedAnswer({question,report,answer,blocks=[],toolR
   // Keep a genuinely useful, independently evidence-validated model plan.
   // A copy of the overview (or prioritizing a zero debt) is not advice.
   const dump=/hisobotlardan tayyorlangan qisqa xulosa|qoldiqning joriy holati|joriy qarzlar:|xarajat yozuvlari/iu.test(answer||'');
-  if(report?.topic==='business_overview'&&recommendationBlocks.length>=2&&!dump&&!irrelevantSupplier)
+  if(report?.topic==='business_overview'&&!dump&&!irrelevantSupplier&&usefulGrowthPlan(answer,blocks))
    return {answer,blocks};
   return {answer:plan.answer,blocks:[]};
  }
