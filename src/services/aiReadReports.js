@@ -89,7 +89,7 @@ export async function readAgentReport(db,user,name,input,{organization=null}={})
     {storeId:store,from,to:today,comparisonFrom,comparisonTo},{organization:org});
    const needed=['period_current_net','period_comparison_net','period_delta_net'];
    const values=needed.map(id=>comparison.facts.find(f=>f.id===id));
-   if(values.every(f=>f&&typeof f.value==='string'&&/^-?\\d+(?:\\.\\d+)?$/.test(f.value))){
+   if(values.every(f=>f&&typeof f.value==='string'&&/^-?\d+(?:\.\d+)?$/.test(f.value))){
     const trends=values.map(f=>({...f,id:'trend_'+f.id,from:f.from||from,to:f.to||today}));
     const firstOther=facts.findIndex(f=>!f.id.startsWith('today_sales_'));
     facts.splice(firstOther===-1?facts.length:firstOther,0,...trends);
