@@ -104,3 +104,27 @@ test('successful model report dump gets replaced; substantiated model plan remai
  });
  assert.doesNotMatch(misplaced.answer,/Ta’minotchilar qarzini birinchi/);
 });
+
+
+test('practical colloquial growth questions are classified without routing causes or writes',()=>{
+ for(const q of ['Savdom yurishmayapti, qanday yaxshilayman?', 'Mijoz jalb qilish uchun nima qilay?', 'Savdo sust, qanday maslahat berasan?']){
+  assert.equal(isBusinessGrowthAdviceQuestion(q),true,q);
+ }
+ for(const q of ['Nega savdo sust?', 'Mijoz qarzini o‘chir', 'Savdo tarixini batafsil hisobot qil']){
+  assert.equal(isBusinessGrowthAdviceQuestion(q),false,q);
+ }
+});
+test('useful verified numbered model plan is preserved without recommendation blocks',()=>{
+ const r=screenshot(),toolResults=[{result:{kind:'report',report:r}}];
+ const answer='Biznesni yaxshilash uchun:\\n1. Savdo davrlarini solishtiring va o‘zgarishni tekshiring.\\n2. Ombor qoldig‘ini nazorat qiling, yetishmayotgan mahsulotlarni aniqlang.\\n3. Mijozlar qarzini tekshiring va to‘lov rejasini tuzing.';
+ const result=prioritizeVerifiedAnswer({question:'Biznesimni qanday rivojlantirsam bo‘ladi?',report:r,toolResults,actions:[],answer,blocks:[]});
+ assert.equal(result.answer,answer);
+ assert.deepEqual(result.blocks,[]);
+});
+test('generic recommendation headings are not considered a useful growth plan',()=>{
+ const r=screenshot(),toolResults=[{result:{kind:'report',report:r}}];
+ const weak=prioritizeVerifiedAnswer({question:'Biznesimni qanday yaxshilasam bo‘ladi?',report:r,toolResults,actions:[],
+  answer:'Umumiy tavsiyalar',blocks:[{type:'recommendation',text:'Biznesni yaxshi yuriting.',facts:[]},{type:'recommendation',text:'Ko‘proq harakat qiling.',facts:[]}]});
+ assert.match(weak.answer,/Savdoni|sotilish|qoldiq|qarz/iu);
+ assert.deepEqual(weak.blocks,[]);
+});
