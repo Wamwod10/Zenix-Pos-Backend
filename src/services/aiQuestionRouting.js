@@ -85,7 +85,7 @@ export function isBusinessGrowthAdviceQuestion(question){
  if(!q||q.length>1000)return false;
  if(/nega|nimaga|nima sabab|bekor qil|o'chir|tasdiqla|kirim qil|to'lovni bajar|solishtir|taqqosla|batafsil hisobot/iu.test(q))return false;
  const subject=/biznes|savdo|sotuv|do'kon|foyda|daromad|mijoz|ishim|tijorat/iu.test(q);
- const action=/rivojlan|rivojlantir|yaxshila|oshir|ko'paytir|kopaytir|o'stir|o'sish|kengaytir|o'stiri|ko'tar|rivoj/iu.test(q);
+ const action=/rivojlan|rivojlantir|yaxshila|oshir|ko'paytir|kopaytir|o'stir|o'sish|kengaytir|o'stiri|ko'tar|rivoj|jalb qil|yurishmayapti|savdo sust/iu.test(q);
  const request=/nima|nimalar|qanday|qaysi|maslahat|tavsiya|usul|reja|strategiya|yo'l|kerak|uchun|bo'ladimi/iu.test(q);
  return subject&&action&&request;
 }
