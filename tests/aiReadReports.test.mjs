@@ -102,7 +102,7 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
    await pool.query("UPDATE users SET app_role='SALES' WHERE id=$1",[a.user.id]);
    const seller={...a.user,appRole:'SALES'};
    const overview=(await executeAgentTool(seller,'get_business_overview',{storeId:null},context)).report;
-   assert.equal(overview.sellerScoped,true);assert.equal(overview.storeId,a.store);assert.ok(overview.facts.every(f=>f.id.startsWith('today_sales_')));
+   assert.equal(overview.sellerScoped,true);assert.equal(overview.storeId,a.store);assert.ok(overview.facts.every(f=>f.id.startsWith('today_sales_')||f.id.startsWith('trend_period_')));assert.ok(overview.facts.some(f=>f.id==='trend_period_current_net'),'seller-scoped comparison uses permitted own sales only');
    await assert.rejects(()=>executeAgentTool(seller,'get_warehouse_summary',{storeId:null},context),e=>e.code==='AI_FORBIDDEN');
    await assert.rejects(()=>executeAgentTool(seller,'compare_sales_periods',{storeId:b.store,from:'2026-02-01',to:'2026-02-28',comparisonFrom:'2026-01-01',comparisonTo:'2026-01-31'},context),e=>e.code==='STORE_FORBIDDEN');
    const r=await executeAgentTool(seller,'get_product_sales_report',{storeId:null,ranking:'top',from:'2026-02-01',to:'2026-02-28'},context);assert.equal(r.report.sellerScoped,true);assert.equal(r.report.storeId,a.store);
