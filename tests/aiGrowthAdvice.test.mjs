@@ -116,7 +116,7 @@ test('practical colloquial growth questions are classified without routing cause
 });
 test('useful verified numbered model plan is preserved without recommendation blocks',()=>{
  const r=screenshot(),toolResults=[{result:{kind:'report',report:r}}];
- const answer='Biznesni yaxshilash uchun:\\n1. Savdo davrlarini solishtiring va o‘zgarishni tekshiring.\\n2. Ombor qoldig‘ini nazorat qiling, yetishmayotgan mahsulotlarni aniqlang.\\n3. Mijozlar qarzini tekshiring va to‘lov rejasini tuzing.';
+ const answer='Biznesni yaxshilash uchun:\n1. Savdo davrlarini solishtiring va o‘zgarishni tekshiring.\n2. Ombor qoldig‘ini nazorat qiling, yetishmayotgan mahsulotlarni aniqlang.\n3. Mijozlar qarzini tekshiring va to‘lov rejasini tuzing.';
  const result=prioritizeVerifiedAnswer({question:'Biznesimni qanday rivojlantirsam bo‘ladi?',report:r,toolResults,actions:[],answer,blocks:[]});
  assert.equal(result.answer,answer);
  assert.deepEqual(result.blocks,[]);
