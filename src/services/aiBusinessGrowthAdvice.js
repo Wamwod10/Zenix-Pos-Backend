@@ -15,6 +15,24 @@ export function businessGrowthAdvice(report){
  const profitable=facts.filter(f=>/^profit_profit_\d+$/.test(f?.id||'')&&positive(f.value)&&safeName(f.productName||String(f.label||'').split(':')[0])).slice(0,2);
  const scope=report?.sellerScoped?'sizga ruxsat etilgan savdolar':report?.storeId?'tanlangan filial':'ruxsat etilgan filiallar';
  const steps=[];
+ const trendCurrent=get('trend_period_current_net'),trendPrevious=get('trend_period_comparison_net');
+ const trendDelta=get('trend_period_delta_net');
+ // The difference is computed by the existing read-only sales comparison tool.
+ // Its exact decimal strings and explicit dates are preserved, never converted
+ // to floating-point and never misrepresented as gross profit or causation.
+ if(trendCurrent&&trendPrevious&&trendDelta&&
+    trendCurrent.from&&trendCurrent.to&&trendPrevious.from&&trendPrevious.to){
+  const decrease=trendDelta.value.startsWith('-')&&!zero(trendDelta.value);
+  const direction=decrease?'kam':positive(trendDelta.value)?'ko‘p':'teng';
+  const difference=decrease?trendDelta.value.slice(1):trendDelta.value;
+  const next=decrease?
+   'Qaytarishlar va mahsulotlar kesimidagi tushumni alohida tekshiring; sababini bu farqning o‘zi isbotlamaydi.':
+   'Qaysi mahsulotlar va qaytarishlar ta’sir qilganini alohida tekshiring; bu sof foyda oshganini isbotlamaydi.';
+  steps.push('Teng davrlarni solishtiring: '+trendCurrent.from+' — '+trendCurrent.to+
+   ' sof savdo '+fmt(trendCurrent.value)+' so‘m; '+trendPrevious.from+' — '+trendPrevious.to+
+   ' sof savdo '+fmt(trendPrevious.value)+' so‘m. Joriy davr farqi '+
+   (direction==='teng'?'0 so‘m':fmt(difference)+' so‘mga '+direction)+'. '+next);
+ }
  if(count&&zero(count.value)){
   steps.push('Savdoni oldingi teng davrlar bilan solishtiring. Bugun '+scope+' bo‘yicha savdo qayd etilmagan, ammo bitta kun sabab yoki trendni isbotlamaydi. Oxirgi 7–30 kundagi kunlar va sotilgan mahsulotlarni tekshirib, keyin kichik aksiya sinab ko‘ring.');
  }else if(count&&positive(count.value)){
