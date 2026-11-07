@@ -59,6 +59,15 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
    await pool.query(`INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,line_total,metadata) VALUES($1,$2,'Rice',2,100,200,'{"unitCost":50}')`,[sale,a.products[0]]);
    const live=(await executeAgentTool(a.user,'get_business_overview',{storeId:a.store},context)).report;
    assert.equal(live.facts.find(f=>f.id==='today_sales_today_net').value,'200.00');
+   assert.equal(live.facts.find(f=>f.id==='trend_period_current_net').value,'200.00');
+   assert.equal(live.facts.find(f=>f.id==='trend_period_comparison_net').value,'0');
+   assert.equal(live.facts.find(f=>f.id==='trend_period_delta_net').value,'200.00');
+   const trendCurrent=live.facts.find(f=>f.id==='trend_period_current_net');
+   const trendPrevious=live.facts.find(f=>f.id==='trend_period_comparison_net');
+   assert.ok(trendCurrent.from&&trendCurrent.to&&trendPrevious.from&&trendPrevious.to);
+   assert.ok(trendPrevious.to<trendCurrent.from,'periods must not overlap');
+   assert.ok(live.notes.some(note=>note.includes('7 tadan kalendar biznes sanasi')));
+
    const profit=live.facts.find(f=>f.id==='profit_profit_0');assert.equal(profit.value,'100.00');assert.match(profit.label,/Rice/);assert.notEqual(profit.from,report.to);
    await assert.rejects(()=>executeAgentTool(a.user,'get_business_overview',{storeId:b.store},context),e=>e.code==='STORE_NOT_FOUND');
   });
