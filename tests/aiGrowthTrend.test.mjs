@@ -20,7 +20,9 @@ test('verified 7-day comparison appears in the first concrete recommendation wit
  assert.match(result.answer,/90 071 992 547 409.91 so‘m/);
  assert.match(result.answer,/0.12 so‘mga ko‘p/);
  assert.match(result.answer,/qaytarishlar/i);
- assert.doesNotMatch(result.answer,/sof foyda oshgan|bu farq sababni isbotlaydi/i);
+ assert.match(result.answer,/bu sof foyda oshganini isbotlamaydi/i);
+ assert.doesNotMatch(result.answer,/sof foyda oshdi|bu farq sababni isbotlaydi/i);
+ assert.doesNotMatch(result.answer,/Savdoni oldingi teng davrlar bilan solishtiring/);
 });
 
 test('negative growth delta is described as an exact smaller net-sales difference, not a presumed cause',()=>{
