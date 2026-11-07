@@ -24,6 +24,35 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
  const call=(name,args)=>{const callId=randomUUID();return {...final(),reply:null,calls:[{callId,name,args}],items:[{type:'function_call',status:'completed',name,call_id:callId,arguments:JSON.stringify(args)}]}};
  const providerFor=responses=>async(_history,{onDispatch})=>{await onDispatch();return responses.shift()};
  try{
+  await t.test('a later user turn cannot cite stale report numbers as fresh evidence',async()=>{
+   const f=await fixture();
+   const oldReport={kind:'report',report:{topic:'today_sales',from:'2026-11-06',to:'2026-11-06',storeId:f.store,
+    facts:[{id:'sales_count',label:'Savdo soni',value:'3',unit:'count'}],tables:[],notes:[]}};
+   let calls=0;
+   const first=await aiAgentChat(f.user,body('Savdoni tekshir',{storeId:f.store}),{
+    settings,provider:async(_history,{onDispatch})=>{
+     await onDispatch();calls++;
+     return calls===1?call('get_business_report',{topic:'today_sales',storeId:f.store}):final();
+    },toolRunner:async(_user,name)=>{
+     assert.equal(name,'get_business_report');
+     return oldReport;
+    },
+   });
+   assert.equal(calls,2);
+   let checked=false;
+   const next=await aiAgentChat(f.user,body('Oldingi hisobotni izohla',{storeId:f.store,conversationId:first.conversationId}),{
+    settings,provider:async(_history,{onDispatch,evidence,memory})=>{
+     await onDispatch();
+     checked=true;
+     assert.deepEqual(evidence,[],'historical numerical facts must not validate a new answer');
+     assert.equal(memory.period?.topic,'today_sales','server-verified topic memory should remain');
+     return final();
+    },
+    toolRunner:async()=>{throw new Error('new turn did not request a read tool')},
+   });
+   assert.equal(checked,true);
+   assert.equal(next.conversationId,first.conversationId);
+  });
   await t.test('business improvement question returns actionable advice or safe intent-aware recovery',async()=>{
    const question='Biznesimni qanday yaxshilasam bo‘ladi?';
    const report={kind:'report',report:{topic:'business_overview',storeId:null,facts:[{id:'supplier_debt_supplier_debt',label:'To‘lanadigan qarz',value:'125000',unit:'UZS'}],tables:[],notes:[]}};
