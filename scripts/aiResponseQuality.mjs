@@ -1,7 +1,8 @@
 // Pure, deterministic rubric for synthetic Zenix AI eval cases.
 // Heuristics are guardrails, not a replacement for human answer-quality review.
 // Never execute tools or read user, tenant, provider or database state here.
-const numeric=value=>String(value||'').normalize('NFKC').replace(/[\u00a0\u202f\s,_]/g,'');
+// Normalize grouped digits without erasing the word boundary after "so‘m".
+const numeric=value=>String(value||'').normalize('NFKC').replace(/[\u00a0\u202f,_]/g,'').replace(/(?<=\d)\s+(?=\d)/g,'');
 const hasQuantity=(answer,value)=>new RegExp('(?:^|[^0-9])'+value+'\\s*(?:ta|dona|mahsulot)(?:[^\\p{L}]|$)','iu').test(answer);
 const shortMetric=answer=>typeof answer==='string'&&answer.trim().length>0&&answer.trim().length<=260;
 const amount= (answer,value)=>new RegExp('(?:^|[^0-9])'+value+'(?:\\.00)?\\s*(?:so[‘’ʻʼ\u0027]m|UZS)(?:[^\\p{L}]|$)','iu').test(numeric(answer));
