@@ -65,10 +65,31 @@ export function createAiAgentProvider(settings,fetchImpl=fetch){
       if(request.input[1]?.role!=='user'||request.input[2]?.role!=='assistant'||!request.input.slice(3).some(item=>item?.role==='user'))break;
       request.input.splice(1,2);
     }
-    // End tool exploration before exhausting a bounded turn. The final answer
-    // still uses the exact evidence; no higher token or money limit is granted.
-    if(Buffer.byteLength(JSON.stringify(request))+256>maxInput&&history.some(item=>item.type==='function_call_output')){
+    // When a verified read overflows the *strict* serialized-byte reservation,
+    // first remove optional tool schemas. The remaining turn may only answer
+    // from the current authorized report, never issue another write/read.
+    const reservedBytes=()=>Buffer.byteLength(JSON.stringify(request))+256;
+    if(reservedBytes()>maxInput&&history.some(item=>item.type==='function_call_output')){
       request.tools=[];request.tool_choice='none';names=new Set();
+      // The server retains full current-turn evidence for validation and the
+      // user response. Only compact the *model-visible* report evidence list;
+      // never cut numeric strings, change dates or alter call/output pairing.
+      // Unsupported/raw tool outputs still fail closed at transport preflight.
+      for(let index=1;index<request.input.length&&reservedBytes()>maxInput;index++){
+        const item=request.input[index];
+        if(item?.type!=='function_call_output'||typeof item.output!=='string')continue;
+        let parsed;
+        try{parsed=JSON.parse(item.output)}catch{continue}
+        if(parsed?.kind!=='report'||!Array.isArray(parsed.evidence)||parsed.evidence.length<2)continue;
+        const originalEvidence=parsed.evidence;
+        // Keep at least one complete anchored fact. Mark omitted material so
+        // the model knows this is a partial, not an exhaustive business report.
+        for(let retained=originalEvidence.length-1;retained>=1&&reservedBytes()>maxInput;retained--){
+          const compact={...parsed,evidence:originalEvidence.slice(0,retained),
+            omittedEvidenceCount:originalEvidence.length-retained};
+          request.input[index]={...item,output:JSON.stringify(compact)};
+        }
+      }
     }
     const result=await requestOpenAiResponse(settings,request,{signal,onDispatch,fetchImpl,budget});
     try{
