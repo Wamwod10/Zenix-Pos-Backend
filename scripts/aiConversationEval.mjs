@@ -14,9 +14,13 @@ const groups=[
  ['receipt','receipt_clarification',['Guruchdan 10 kilo kirim qilmoqchiman.','Kirim uchun yana nima kerak?','Tannarxni hozir bilmayman, nima qilaman?','Tasdiqlamasdan kirim bajariladimi?','Hozircha faqat nimani tayyorlash mumkin?']],
  ['latest','latest_sale',['Ohirgi savdo haqida malumot ber.','Охирги савдода нималар сотилган?','Bugun savdo bo‘lmasa ham oxirgi chekni toping.','O‘sha savdoning to‘lov usuli qanday?','Boshqa filialdagi oxirgi savdoni ko‘rish uchun doirani almashtirish kerakmi?']],
  ['ranking','quantity_vs_revenue',['Eng kop qaysi tovar sotilgan?','Miqdor bo‘yicha ayting, tushum bo‘yicha emas.','Quruq salfetka 100 dona nomidagi 100 sotilgan miqdormi?','Eng ko‘p tushum bergan mahsulot qaysi?','Eng yaxshi mahsulot deganda miqdor, tushum yoki foydani nazarda tutishimni aniqlashtiring.']],
+ ["growth","growth",["Biznesimni qanday rivojlantirsam bo‘ladi?","Oxirgi 7 kun savdosi oldingi 7 kundan qancha farq qiladi?","Bir kun savdo yo‘qligi biznesim pasayganini isbotlaydimi?","Mijozlarni jalb qilish uchun qanday kichik tajriba o‘tkazay?","Shu raqamlar sof foyda oshganini isbotlaydimi?"]],
+ ["debt","debt",["Mijozlar bizga jami qancha qarzdor?","Shu qarzlarning hammasi muddati o‘tganmi?","Ta’minotchi qarzi bilan mijoz qarzini qanday ajratamiz?","Qarzning muddati o‘tgan qismini qanday aniqlaymiz?","Qarzlarni undirishda qaysi to‘lov hujjatlarini tekshirish kerak?"]],
+ ["expenses","expenses",["Oxirgi haftada xarajat yozuvlari qancha?","Xarajat 0 bo‘lsa, demak sof foyda katta deganimi?","Mahsulot foydasi va korxona sof foydasi bir xilmi?","Tannarx ma’lum bo‘lmasa nimani hisoblab bo‘lmaydi?","Xarajatlarni tartibga solish uchun uch qadam ayting."]],
+ ["restock","restock",["Omborimizda qaysi mahsulotni birinchi to‘ldirish kerak?","Minimum qoldiqdagi 2 ta mahsulot darhol xarid qilinsinmi?","28 kunlik tarixdan 7 kunlik talabni aniq bashorat qilsa bo‘ladimi?","Yetkazib berish muddati noma’lum bo‘lsa nima qilamiz?","Hech narsa buyurtma qilmay turib kirim rejasini tushuntiring."]],
 ];
 export const AI_CONVERSATION_EVAL_CASES=Object.freeze(groups.flatMap(([conversation,capability,questions])=>questions.map((question,index)=>Object.freeze({id:conversation+'_'+(index+1),conversation,question,expectedCapabilities:[capability,...(index?['context_followup']:[])]}))));
-const topics=['inventory','sales','comparison','products','receipt','latest','ranking'];
+const topics=['inventory','sales','comparison','products','receipt','latest','ranking','growth','debt','expenses','restock'];
 const tools=[{type:'function',name:'read_synthetic_fixture',description:'Read synthetic test data only. inventory: total vs low stock; sales/comparison: dated reports; products: product stock; receipt: missing receipt fields, no execution.',strict:true,parameters:{type:'object',properties:{topic:{type:'string',enum:topics}},required:['topic'],additionalProperties:false}}];
 const report=(facts,notes=[],dates={})=>({kind:'report',report:{topic:'synthetic',from:'2026-10-15',to:'2026-10-15',storeId:null,facts,tables:[],notes,...dates}});
 const fact=(id,label,value,unit='count')=>({id,label,value,unit});
@@ -28,12 +32,28 @@ const fixtures={
  comparison:report([{...fact('current','Joriy davr sof savdosi',100000,'UZS'),from:'2026-10-01',to:'2026-10-07'},{...fact('prior','Taqqoslash davri sof savdosi',80000,'UZS'),from:'2026-09-24',to:'2026-09-30'},fact('difference','Joriy davr minus oldingi davr',20000,'UZS')],['Davrlar farqi sababni isbotlamaydi.'],{from:'2026-10-01',to:'2026-10-07',comparisonFrom:'2026-09-24',comparisonTo:'2026-09-30'}),
  products:{kind:'stock',productName:'Guruch (synthetic)',unit:'kg',locations:[{storeName:'Test filial',warehouseName:'Test ombor',quantity:'7.000'}]},
  receipt:{kind:'clarification',message:'Kirim kartasi uchun ombor va tannarxni aniqlashtiring. Hech qanday kirim bajarilmadi.'},
+
+ growth:report([{...fact('current_week','Joriy 7 kun sof savdosi','100000','UZS'),from:'2026-10-09',to:'2026-10-15'},
+  {...fact('previous_week','Oldingi 7 kun sof savdosi','80000','UZS'),from:'2026-10-02',to:'2026-10-08'},
+  fact('difference','Joriy − oldingi davr farqi','20000','UZS')],
+  ['Joriy va oldingi davr uzunligi teng. Qaytarishlar hisobga olingan. Bu farq sabab yoki korxona sof foydasi haqida dalil emas.'],
+  {from:'2026-10-09',to:'2026-10-15',comparisonFrom:'2026-10-02',comparisonTo:'2026-10-08'}),
+ debt:report([fact('customer_debt','Mijozlardan olinadigan joriy qarz','150000','UZS'),
+  fact('supplier_debt','Ta’minotchilarga to‘lanadigan joriy qarz','0','UZS')],
+  ['Muddati o‘tgan qarz ulushi aniqlanmagan. Mijoz va ta’minotchi balanslari har xil majburiyat; to‘lov muddati va hujjatlarni tekshirish kerak.']),
+ expenses:report([fact('expenses_week','Joriy haftada kiritilgan xarajat yozuvlari','0','UZS'),
+  fact('selected_product_profit','Tanlangan mahsulotning tarixiy tannarxga asoslangan foydasi','30000','UZS')],
+  ['Xarajat yozuvlarining nol bo‘lishi barcha xarajatlar nol ekanini yoki korxona sof foydasini isbotlamaydi. Bu mahsulot foydasi jami sof foyda emas.']),
+ restock:report([fact('low_stock_count','Minimum yoki undan past mahsulotlar','2','count'),
+  fact('observed_days','Sotilish tarixi uchun kuzatilgan kunlar','28','count'),
+  fact('planning_horizon','Taxminiy rejalash davri','7','count')],
+  ['Restock faqat read-only taxmin. Yetkazib berish muddati, birliklar va tarix tekshirilmagan. Xarid, buyurtma yoki kirim yaratilmagan.']),
 };
 const safeCodes=new Set(['AI_INVALID_RESPONSE','AI_EVIDENCE_INVALID','AI_PROVIDER_FAILURE','AI_TIMEOUT','AI_TOKEN_LIMIT','AI_COST_LIMIT','AI_UNAVAILABLE']);
 export async function runAiConversationEval({source=process.env,fetchImpl=fetch,write=console.log,cases=AI_CONVERSATION_EVAL_CASES}={}){
  if(source.ZENIX_AI_LIVE_EVAL!=='true')throw new Error('Synthetic eval requires explicit opt-in');
  if(!source.OPENAI_API_KEY?.trim())throw new Error('Synthetic eval requires server API key');
- if(!Array.isArray(cases)||cases.length>40)throw new Error('Synthetic eval case limit');
+ if(!Array.isArray(cases)||cases.length>60)throw new Error('Synthetic eval case limit');
  const settings={...aiSettings({OPENAI_API_KEY:source.OPENAI_API_KEY,ZENIX_AI_MODEL:source.ZENIX_AI_MODEL}),enabled:true,writesEnabled:false};
  const provider=createAiAgentProvider(settings,fetchImpl),maxTotalCostMicros=60000;
  const totals={inputTokens:0,outputTokens:0,costMicros:0,requests:0};
