@@ -3,7 +3,21 @@ import {withTransaction} from '../db/tx.js';
 import {HttpError} from '../lib/http.js';
 
 export function boundConversationMessages(messages,maxBytes=12000){
- const bounded=Array.isArray(messages)?messages.slice(-24).map(m=>({...m})):[];
+ // A completed assistant turn already carries a validated, identity-only
+ // memory snapshot. Full verified tool results are unnecessary for next-turn
+ // identity routing, and would persist stale sales, quantities and private
+ // report rows in the chat transcript. Strip them before sizing/storage.
+ // Historical summaries without an identity snapshot are left intact until
+ // they expire, so legacy follow-up identity resolution remains compatible.
+ const bounded=Array.isArray(messages)?messages.slice(-24).map(m=>{
+  if(m?.role!=='assistant'||typeof m.content!=='string')return {...m};
+  let summary;try{summary=JSON.parse(m.content)}catch{return {...m}}
+  if(!summary||typeof summary!=='object'||Array.isArray(summary)||
+     !summary.memory||typeof summary.memory!=='object'||Array.isArray(summary.memory)||
+     !Object.hasOwn(summary,'verifiedResults'))return {...m};
+  const {verifiedResults:_discarded,...safe}=summary;
+  return {...m,content:JSON.stringify(safe)};
+ }):[];
  while(bounded.length>2&&Buffer.byteLength(JSON.stringify(bounded))>maxBytes)bounded.splice(0,2);
  if(bounded.length&&Buffer.byteLength(JSON.stringify(bounded))>maxBytes){
   const last=bounded.at(-1);let summary;try{summary=JSON.parse(last.content)}catch{summary={answer:String(last.content||'')}}
