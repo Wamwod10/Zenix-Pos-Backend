@@ -77,9 +77,47 @@ export async function requestOpenAiResponse(settings,request,{signal,onDispatch,
   if(maxOutput<1)throw new HttpError(413,'AI token limiti','AI_TOKEN_LIMIT');
   const requestBody=JSON.stringify({...request,store:false,max_output_tokens:maxOutput});
   const requestBytes=Buffer.byteLength(requestBody);
-  // Reserve one token per serialized UTF-8 byte plus message framing headroom.
-  const inputTokenBound=requestBytes+256;
-  if(requestBytes>16000||inputTokenBound>maxInput)throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
+  // The 16 kB request ceiling is an independent privacy/memory guard. Never
+  // send unbounded input merely because a tokenizer might pack it efficiently.
+  if(requestBytes>16000||maxInput<16)
+    throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
+  // Output reservation is always charged at the worst-case output count,
+  // irrespective of the model's input-token estimate.
+  if(tokenCostMicros(0,maxOutput)>maxCost)
+    throw new HttpError(413,'AI xarajat limiti','AI_COST_LIMIT');
+  let inputTokenBound=requestBytes+256;
+  if(inputTokenBound>maxInput||tokenCostMicros(inputTokenBound,maxOutput)>maxCost){
+    // The serialized byte count is a strict but often extremely wasteful
+    // upper bound for Uzbek text, JSON fields and tool schemas. When it would
+    // reject a bounded request, ask the official Responses token-counter for
+    // the EXACT model input count using the same request payload.
+    // No inference is dispatched or charged until this preflight succeeds.
+    try{
+      signal?.throwIfAborted();
+      const counted=await fetchImpl('https://api.openai.com/v1/responses/input_tokens',{
+        method:'POST',redirect:'error',signal,
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${settings.apiKey}`},
+        body:requestBody,
+      });
+      if(!counted.ok){
+        await counted.body?.cancel().catch(()=>{});
+        throw new HttpError(503,'AI token tekshiruvi vaqtincha mavjud emas','AI_PROVIDER_FAILURE',
+          {stage:'preflight',reason:'count_unavailable',providerStatus:counted.status});
+      }
+      const result=await readSmallJson(counted);
+      if(result?.object!=='response.input_tokens'||!Number.isSafeInteger(result.input_tokens)||result.input_tokens<0)
+        throw new HttpError(503,'AI token tekshiruvi noto‘g‘ri','AI_PROVIDER_FAILURE',
+          {stage:'preflight',reason:'count_invalid'});
+      inputTokenBound=result.input_tokens;
+      signal?.throwIfAborted();
+    }catch(error){
+      if(error instanceof HttpError)throw error;
+      throw new HttpError(503,'AI token tekshiruvi vaqtincha mavjud emas',
+        signal?.aborted?'AI_TIMEOUT':'AI_PROVIDER_FAILURE',
+        {stage:'preflight',reason:signal?.aborted?'timeout':'count_network_error'});
+    }
+  }
+  if(inputTokenBound>maxInput)throw new HttpError(413,'AI ma’lumot hajmi katta','AI_TOKEN_LIMIT');
   if(tokenCostMicros(inputTokenBound,maxOutput)>maxCost)throw new HttpError(413,'AI xarajat limiti','AI_COST_LIMIT');
   try{
     signal?.throwIfAborted();
