@@ -72,9 +72,13 @@ test('abort during quota dispatch prevents upstream call',async()=>{
 for(const [name,limits,code] of [
   ['input budget',{maxInputTokens:256},'AI_TOKEN_LIMIT'],
   ['request spend',{maxRequestMicros:1},'AI_COST_LIMIT'],
-])test('preflight rejects insufficient '+name+' without dispatch',async()=>{
-  let calls=0,dispatches=0;
-  const fn=createAiProvider({...aiSettings(enabledEnv),...limits},async()=>{calls++;return mockedResponse(successful)});
+])test('preflight rejects insufficient '+name+' without billable generation',async()=>{
+  let countCalls=0,generationCalls=0,dispatches=0;
+  const fn=createAiProvider({...aiSettings(enabledEnv),...limits},async url=>{
+    if(url.endsWith('/input_tokens')){countCalls++;return mockedResponse({object:'response.input_tokens',input_tokens:800})}
+    generationCalls++;return mockedResponse(successful);
+  });
   await assert.rejects(fn(report,{onDispatch:async()=>{dispatches++}}),e=>e.code===code);
-  assert.equal(calls,0);assert.equal(dispatches,0);
+  assert.equal(countCalls,name==='input budget'?1:0);
+  assert.equal(generationCalls,0);assert.equal(dispatches,0);
 });
