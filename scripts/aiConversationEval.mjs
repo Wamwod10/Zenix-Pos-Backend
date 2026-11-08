@@ -21,7 +21,7 @@ const groups=[
 ];
 export const AI_CONVERSATION_EVAL_CASES=Object.freeze(groups.flatMap(([conversation,capability,questions])=>questions.map((question,index)=>Object.freeze({id:conversation+'_'+(index+1),conversation,question,expectedCapabilities:[capability,...(index?['context_followup']:[])]}))));
 const topics=['inventory','sales','comparison','products','receipt','latest','ranking','growth','debt','expenses','restock'];
-const tools=[{type:'function',name:'read_synthetic_fixture',description:'Read synthetic test data only. inventory: total vs low stock; sales/comparison: dated reports; products: product stock; receipt: missing receipt fields, no execution.',strict:true,parameters:{type:'object',properties:{topic:{type:'string',enum:topics}},required:['topic'],additionalProperties:false}}];
+const tools=[{type:'function',name:'read_synthetic_fixture',description:'Read fictional, synthetic POS test facts only. inventory: catalog and low stock; sales/comparison/growth: dated sales and refunds; products/latest/ranking: product and receipt facts; debt: customer receivables versus supplier payables, no due-date proof; expenses: recorded cost versus actual business profit; restock: low stock and uncertain 28-day history, never purchase; receipt: missing intake fields, no execution.',strict:true,parameters:{type:'object',properties:{topic:{type:'string',enum:topics}},required:['topic'],additionalProperties:false}}];
 const report=(facts,notes=[],dates={})=>({kind:'report',report:{topic:'synthetic',from:'2026-10-15',to:'2026-10-15',storeId:null,facts,tables:[],notes,...dates}});
 const fact=(id,label,value,unit='count')=>({id,label,value,unit});
 const fixtures={
