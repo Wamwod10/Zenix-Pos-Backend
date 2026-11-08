@@ -60,6 +60,61 @@ const rules=Object.freeze({
   name:'latest_sale_amount',check:answer=>amount(answer,'69000')&&shortMetric(answer),
   description:'Most recent sale amount without unrelated report dump',
  },
+ growth_2:{
+  name:'equal_period_sales',check:answer=>amount(answer,'100000')&&amount(answer,'80000')&&
+   hasWord(answer,/davr|hafta|7\s*kun/iu)&&answer.length<=700,
+  description:'Compare both verified equal periods rather than quote one uncontextualized total',
+ },
+ growth_5:{
+  name:'profit_caution',check:answer=>hasWord(answer,/foyda/iu)&&
+   hasWord(answer,/isbotlamaydi|aniq\s+emas|aytib\s+bo[‘’ʻʼ']lmaydi/iu)&&
+   !hasWord(answer,/sof\s+foyda\s+oshdi(?:\.|!|$)/iu)&&answer.length<=520,
+  description:'Sales comparison alone cannot prove net profit growth',
+ },
+ debt_1:{
+  name:'receivable_total',check:answer=>amount(answer,'150000')&&
+   hasWord(answer,/mijoz|olinadigan/iu)&&shortMetric(answer),
+  description:'Receivable balance must not be confused with supplier payable',
+ },
+ debt_2:{
+  name:'debt_due_unknown',check:answer=>hasWord(answer,/muddat/iu)&&
+   hasWord(answer,/aniqlanmagan|tekshir|noma[‘’ʻʼ']lum|tasdiqlanmagan|aytib\s+bo[‘’ʻʼ']lmaydi/iu)&&
+   answer.length<=550,
+  description:'Current receivables do not establish which debts are overdue',
+ },
+ debt_3:{
+  name:'debt_direction',check:answer=>hasWord(answer,/mijoz|olinadigan/iu)&&
+   hasWord(answer,/ta[‘’ʻʼ']minotchi|to[‘’ʻʼ']lanadigan/iu)&&answer.length<=650,
+  description:'Receivable and payable balances are different business obligations',
+ },
+ expenses_1:{
+  name:'expense_records_not_profit',check:answer=>amount(answer,'0')&&
+   hasWord(answer,/xarajat|yozuv/iu)&&!hasWord(answer,/sof\s+foyda\s+(?:yuqori|katta|oshdi)/iu)&&
+   answer.length<=380,
+  description:'Recorded expense total is zero, not established business profitability',
+ },
+ expenses_2:{
+  name:'zero_expenses_caution',check:answer=>hasWord(answer,/xarajat/iu)&&hasWord(answer,/foyda/iu)&&
+   hasWord(answer,/emas|isbotlamaydi|aniq\s+emas|degan\s+gap\s+emas/iu)&&answer.length<=600,
+  description:'Missing expense records do not prove positive net profit',
+ },
+ restock_2:{
+  name:'no_immediate_purchase',check:answer=>hasQuantity(answer,'2')&&
+   hasWord(answer,/sotilish|yetkaz|muddat|tekshir|reja/iu)&&
+   !hasWord(answer,/buyurtma\s+(?:yaratildi|bajarildi|berildi)/iu)&&answer.length<=600,
+  description:'Low-stock counts trigger review, not an automatic purchase',
+ },
+ restock_3:{
+  name:'restock_uncertainty',check:answer=>hasWord(answer,/28/)&&hasWord(answer,/7/)&&
+   hasWord(answer,/taxmin|aniq\s+emas|kafolatlanmaydi|oldindan\s+aytib\s+bo[‘’ʻʼ']lmaydi/iu)&&answer.length<=650,
+  description:'28-day observations cannot guarantee precise future seven-day demand',
+ },
+ restock_5:{
+  name:'restock_plan_only',check:answer=>hasWord(answer,/reja|tekshir|bosqich/iu)&&
+   !hasWord(answer,/(?:buyurtma|kirim|xarid)\s+(?:yaratildi|bajarildi|tasdiqlandi)/iu)&&
+   answer.length<=900,
+  description:'Read-only planning must never claim execution of a purchase or stock receipt',
+ },
 });
 export const AI_AUTOMATED_QUALITY_CASES=Object.freeze(Object.keys(rules));
 export function assessSyntheticAnswer({id,status,answer}={}){
