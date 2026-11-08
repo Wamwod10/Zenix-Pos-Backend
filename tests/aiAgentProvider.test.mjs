@@ -231,6 +231,34 @@ test('oversized historical evidence does not block a new turn or remove identity
  assert.equal(sent,undefined,'current-turn evidence must never be silently dropped or dispatched over budget');
 });
 
+test('agent compacts complete current report facts before rejecting a bounded final reply',async()=>{
+ const facts=Array.from({length:20},(_,i)=>({id:'f'+i,text:'Verified report line '+i+': '+('x'.repeat(420))}));
+ const original={kind:'report',topic:'business_overview',from:'2026-11-01',to:'2026-11-08',evidence:facts};
+ const outputItem={type:'function_call_output',call_id:call.call_id,output:JSON.stringify(original)};
+ const transcript=[...history,call,outputItem];
+ let sent,dispatches=0;
+ const p=agentModule.createAiAgentProvider(settings,async(_url,{body})=>{
+  sent=JSON.parse(body);
+  assert.ok(Buffer.byteLength(body)+256<=3800,'same strict byte reservation must still apply');
+  return Response.json(payload([message({kind:'advice',reply:'Tekshirilgan ma’lumotlarni taqqoslang.'})]));
+ });
+ const result=await p(transcript,{...options,evidence:facts,
+  budget:{inputTokens:3800,outputTokens:1200,cost:2000},onDispatch:async()=>dispatches++});
+ assert.equal(result.calls.length,0);
+ assert.equal(dispatches,1);
+ assert.deepEqual(sent.tools,[]);
+ assert.equal(sent.tool_choice,'none','no more tools after a compacted verified report');
+ assert.equal(sent.input[1].content,history[0].content);
+ assert.equal(sent.input[2].call_id,call.call_id);
+ const compact=JSON.parse(sent.input[3].output);
+ assert.equal(compact.kind,'report');
+ assert.equal(compact.from,original.from);assert.equal(compact.to,original.to);
+ assert.ok(compact.evidence.length>=1&&compact.evidence.length<facts.length);
+ assert.equal(compact.omittedEvidenceCount,facts.length-compact.evidence.length);
+ assert.deepEqual(compact.evidence,facts.slice(0,compact.evidence.length),'preserve exact complete grounded evidence strings');
+ assert.equal(JSON.parse(outputItem.output).evidence.length,20,'original transcript remains untouched');
+});
+
 test('business improvement prompt requests prioritized actions within real tool budgets',async()=>{
  const {toolsFor}=await import('../src/services/aiAgentRegistry.js');let sent;
  const p=provider([message()],async(_url,options)=>{sent=JSON.parse(options.body);return Response.json(payload([message()]))});
