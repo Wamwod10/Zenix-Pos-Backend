@@ -4,7 +4,7 @@ import {AI_AUTOMATED_QUALITY_CASES,assessSyntheticAnswer,summarizeQualityChecks}
 
 const grade=(id,answer,status='answered')=>assessSyntheticAnswer({id,answer,status}).status;
 test('only selected safe synthetic cases have strict automatic checks',()=>{
- assert.equal(AI_AUTOMATED_QUALITY_CASES.length,11);
+ assert.equal(AI_AUTOMATED_QUALITY_CASES.length,21);
  assert.ok(['inventory_1','inventory_2','inventory_3','sales_1','sales_2','comparison_3','products_2','latest_1','latest_2','ranking_1','receipt_4'].every(id=>AI_AUTOMATED_QUALITY_CASES.includes(id)));
  assert.equal(grade('comparison_1','The comparison was completed.'),'human_review');
  assert.equal(grade('sales_1',null,'error'),'fail');
@@ -57,4 +57,28 @@ test('latest sale items and top-seller must not confuse packaging with quantity'
 test('intake confirmation answer must not claim unauthorized execution',()=>{
  assert.equal(grade('receipt_4','Yo‘q, tasdiqsiz kirim bajarilmaydi.'),'pass');
  assert.equal(grade('receipt_4','Tasdiqlash kerak. Kirim bajarildi.'),'fail');
+});
+
+test('growth and debt rubrics preserve exact comparison amounts and avoid unsupported profit claims',()=>{
+ assert.equal(grade('growth_2','Joriy 7 kun davrida 100 000 so‘m, oldingi 7 kun davrida 80 000 so‘m sof savdo.'),'pass');
+ assert.equal(grade('growth_2','Davrda faqat 100 000 so‘m sotilgan.'),'fail');
+ assert.equal(grade('growth_5','Sof foyda oshganini bu raqamlar isbotlamaydi.'),'pass');
+ assert.equal(grade('growth_5','Sof foyda oshdi!'),'fail');
+ assert.equal(grade('debt_1','Mijozlardan olinadigan qarz 150 000 so‘m.'),'pass');
+ assert.equal(grade('debt_1','Ta’minotchi qarzi 150 000 so‘m.'),'fail');
+ assert.equal(grade('debt_2','Muddati o‘tgan qismi aniqlanmagan; hujjatlarni tekshiring.'),'pass');
+ assert.equal(grade('debt_2','Barcha qarz muddati o‘tgan.'),'fail');
+ assert.equal(grade('debt_3','Mijozlardan olinadigan qarz va ta’minotchilarga to‘lanadigan qarz har xil.'),'pass');
+});
+test('expenses and restock rules guard against fabricated net profit and unauthorized purchases',()=>{
+ assert.equal(grade('expenses_1','Kiritilgan xarajat yozuvlari: 0 so‘m.'),'pass');
+ assert.equal(grade('expenses_1','Sof foyda yuqori, xarajat nol.'),'fail');
+ assert.equal(grade('expenses_2','Xarajat 0 bo‘lsa ham korxona sof foydasi katta degani emas.'),'pass');
+ assert.equal(grade('expenses_2','Xarajat 0, sof foyda katta!'),'fail');
+ assert.equal(grade('restock_2','2 ta mahsulot uchun sotilish va yetkazish muddatini tekshiring.'),'pass');
+ assert.equal(grade('restock_2','2 ta mahsulotga buyurtma yaratildi.'),'fail');
+ assert.equal(grade('restock_3','28 kunlik tarixdan 7 kunlik talab faqat taxmin, aniq emas.'),'pass');
+ assert.equal(grade('restock_3','28 kunlik tarix 7 kunlik talabni aniq kafolatlaydi.'),'fail');
+ assert.equal(grade('restock_5','Avval sotilishni tekshiring va xarid rejasini tuzing.'),'pass');
+ assert.equal(grade('restock_5','Buyurtma yaratildi, endi kirim ham bajarildi.'),'fail');
 });
