@@ -55,11 +55,15 @@ test('agent drops only oldest complete conversation turns to fit the remaining i
  await p(input,{...options,budget:{inputTokens:6000,outputTokens:1200,cost:2000},onDispatch:async()=>dispatched++});
  assert.equal(dispatched,1);assert.equal(input.length,9);
 });
-test('agent preserves an oversized current turn and fails without dispatch',async()=>{
- let dispatched=0,network=0;
- const p=agentModule.createAiAgentProvider(settings,async()=>{network++;return Response.json(payload([message()]))});
+test('agent preserves an overbudget current turn and blocks inference after exact preflight',async()=>{
+ let dispatched=0,generation=0,countCalls=0;
+ const p=agentModule.createAiAgentProvider(settings,async url=>{
+  if(url.endsWith('/input_tokens')){countCalls++;return Response.json({object:'response.input_tokens',input_tokens:9000})}
+  generation++;return Response.json(payload([message()]));
+ });
  await assert.rejects(()=>p([{role:'user',content:'x'.repeat(7000)},call,{type:'function_call_output',call_id:call.call_id,output:'{}'}],{...options,onDispatch:async()=>dispatched++}),e=>e.status===413&&e.code==='AI_TOKEN_LIMIT');
- assert.equal(dispatched,0);assert.equal(network,0);
+ assert.equal(countCalls,1,'only the official token counter may inspect the bounded input');
+ assert.equal(dispatched,0);assert.equal(generation,0,'never send a billable model request over budget');
 });
 for(const [name,output] of [
 ['multiple calls',[call,{...call,call_id:'call_b'}]],
