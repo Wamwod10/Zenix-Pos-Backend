@@ -45,7 +45,7 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
  try{
   conversation=await measurePerformance('ai.conversationRead',()=>acquireConversation(user,{conversationId:input.conversationId,storeId,key,requestId:input.requestId,timeoutMs:settings.timeoutMs}));
   const history=[...conversation.messages,{role:'user',content:question}],toolResults=[],actions=[],ids=new Set(),readCache=new Map();
-  const priorResults=conversation.messages.filter(m=>m.role==='assistant').flatMap(m=>{try{return JSON.parse(m.content).verifiedResults||[]}catch{return []}}).slice(-8);
+  // Historical verified reports remain identity memory, never fresh evidence.
   let dispatched=false,reply=null,complete=false,repaired=false,fallback=null,forceFinal=false,initialReason=null;
   for(let step=0;step<MAX_STEPS;step++){
    signal.throwIfAborted();const current=await recheckAiActor(user,key);
@@ -55,11 +55,11 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
    for(;;){
     stage='provider';providerPending=true;callDispatched=false;progress('composing');
     try{
-     result=await timedProvider(history,{signal,businessDate:current.businessDate,memory:deriveAgentMemory(conversation.messages,toolResults,storeId),evidence:buildAgentEvidence([...toolResults,...priorResults]),tools:repairing||finalizing||step===MAX_STEPS-1?[]:toolsFor(settings),budget:{inputTokens:settings.maxInputTokens-inputTokens,outputTokens:settings.maxOutputTokens-outputTokens,cost:settings.maxRequestMicros-cost},onDispatch:async()=>{if(!dispatched){await markAiDispatched(user,input.requestId);dispatched=true}callDispatched=true}});
+     result=await timedProvider(history,{signal,businessDate:current.businessDate,memory:deriveAgentMemory(conversation.messages,toolResults,storeId),evidence:buildAgentEvidence(toolResults),tools:repairing||finalizing||step===MAX_STEPS-1?[]:toolsFor(settings),budget:{inputTokens:settings.maxInputTokens-inputTokens,outputTokens:settings.maxOutputTokens-outputTokens,cost:settings.maxRequestMicros-cost},onDispatch:async()=>{if(!dispatched){await markAiDispatched(user,input.requestId);dispatched=true}callDispatched=true}});
      if(!addUsage(result))throw new HttpError(502,'AI xarajat hisoboti noto‘g‘ri','AI_COST_LIMIT');
      providerPending=false;
      if((repairing||finalizing)&&result.calls?.length)throw new HttpError(403,'Yakuniy javobda tool chaqirish taqiqlangan','AI_TOOL_FORBIDDEN');
-     if(result.reply){const evidence=buildAgentEvidence([...toolResults,...priorResults]);renderAgentAnswer(result.reply,toolResults,{evidence});renderAgentBlocks(result.reply,evidence)}
+     if(result.reply){const evidence=buildAgentEvidence(toolResults);renderAgentAnswer(result.reply,toolResults,{evidence});renderAgentBlocks(result.reply,evidence)}
      break;
     }catch(error){
      // A follow-up model call can exhaust the remaining safe input budget
@@ -122,7 +122,7 @@ export async function aiAgentChat(user,body,{settings,provider,toolRunner=execut
   await recheckAiActor(user,key);signal.throwIfAborted();
   stage='evidence';progress('verifying');
   const report=toolResults.findLast(t=>t.result.kind==='report')?.result.report||null;
-  const evidence=buildAgentEvidence([...toolResults,...priorResults]);
+  const evidence=buildAgentEvidence(toolResults);
   const presentation=fallback?{...fallback,blocks:[]}:prioritizeVerifiedAnswer({
    question,report,answer:renderAgentAnswer(reply,toolResults,{evidence}),
    blocks:renderAgentBlocks(reply,evidence),toolResults,actions,

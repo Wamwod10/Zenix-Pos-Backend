@@ -24,6 +24,35 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
  const call=(name,args)=>{const callId=randomUUID();return {...final(),reply:null,calls:[{callId,name,args}],items:[{type:'function_call',status:'completed',name,call_id:callId,arguments:JSON.stringify(args)}]}};
  const providerFor=responses=>async(_history,{onDispatch})=>{await onDispatch();return responses.shift()};
  try{
+  await t.test('a later user turn cannot cite stale report numbers as fresh evidence',async()=>{
+   const f=await fixture();
+   const oldReport={kind:'report',report:{topic:'today_sales',from:'2026-11-06',to:'2026-11-06',storeId:f.store,
+    facts:[{id:'sales_count',label:'Savdo soni',value:'3',unit:'count'}],tables:[],notes:[]}};
+   let calls=0;
+   const first=await aiAgentChat(f.user,body('Savdoni tekshir',{storeId:f.store}),{
+    settings,provider:async(_history,{onDispatch})=>{
+     await onDispatch();calls++;
+     return calls===1?call('get_business_report',{topic:'today_sales',storeId:f.store}):final();
+    },toolRunner:async(_user,name)=>{
+     assert.equal(name,'get_business_report');
+     return oldReport;
+    },
+   });
+   assert.equal(calls,2);
+   let checked=false;
+   const next=await aiAgentChat(f.user,body('Oldingi hisobotni izohla',{storeId:f.store,conversationId:first.conversationId}),{
+    settings,provider:async(_history,{onDispatch,evidence,memory})=>{
+     await onDispatch();
+     checked=true;
+     assert.deepEqual(evidence,[],'historical numerical facts must not validate a new answer');
+     assert.equal(memory.period?.topic,'today_sales','server-verified topic memory should remain');
+     return final();
+    },
+    toolRunner:async()=>{throw new Error('new turn did not request a read tool')},
+   });
+   assert.equal(checked,true);
+   assert.equal(next.conversationId,first.conversationId);
+  });
   await t.test('business improvement question returns actionable advice or safe intent-aware recovery',async()=>{
    const question='Biznesimni qanday yaxshilasam bo‘ladi?';
    const report={kind:'report',report:{topic:'business_overview',storeId:null,facts:[{id:'supplier_debt_supplier_debt',label:'To‘lanadigan qarz',value:'125000',unit:'UZS'}],tables:[],notes:[]}};
@@ -322,11 +351,15 @@ test('agent conversations and quota preserve actor scope on disposable PostgreSQ
    const usage=(await pool.query('SELECT * FROM ai_monthly_usage WHERE organization_id=$1',[f.user.organizationId])).rows[0];
    assert.equal(usage.successes,0);assert.equal(usage.reserved,0);assert.equal(Number(usage.input_tokens),300);assert.equal(Number(usage.output_tokens),40);assert.equal(Number(usage.spent_micros),tokenCostMicros(300,40));
   });
-  await t.test('several tools produce a natural anchored reply and preserve evidence for follow-up',async()=>{
+  await t.test('verified answers retain conversation text without persisting report evidence for follow-up',async()=>{
    const f=await fixture();let stage=0;
    const result=await aiAgentChat(f.user,body('Omborda ko‘p mahsulot bo‘lsa, nega kamayganlar nol?'),{settings,provider:async(_h,{onDispatch,evidence})=>{await onDispatch();if(stage++===0)return call('get_business_report',{topic:'low_stock',storeId:null});assert.ok(evidence.length);return {...final(),reply:{kind:'results',reply:`Jami mahsulotlar bilan minimal qoldiq boshqa ko‘rsatkichlar. {{${evidence[0].id}}}`}}},toolRunner:async()=>({kind:'report',report:{from:'2026-10-15',to:'2026-10-15',facts:[{id:'low_stock_count',label:'Minimal qoldiqdagi mahsulotlar',value:'0',unit:'count'}],tables:[],notes:[]}})});
    assert.match(result.answer,/boshqa ko‘rsatkichlar/);assert.match(result.answer,/0 ta/);
-   await aiAgentChat(f.user,body('Nega?',{conversationId:result.conversationId}),{settings,provider:async(history,{onDispatch,evidence})=>{await onDispatch();assert.ok(history.some(m=>m.role==='assistant'));assert.ok(evidence.some(e=>e.text.includes('Minimal qoldiq')));return final()}});
+   const persisted=(await pool.query('SELECT messages FROM ai_conversations WHERE id=$1',[result.conversationId])).rows[0].messages;
+   assert.ok(persisted.some(m=>m.role==='assistant'));
+   assert.ok(persisted.filter(m=>m.role==='assistant').every(m=>!JSON.parse(m.content).verifiedResults),
+    'completed assistant summaries retain typed memory but not full report snapshots');
+   await aiAgentChat(f.user,body('Nega?',{conversationId:result.conversationId}),{settings,provider:async(history,{onDispatch,evidence})=>{await onDispatch();assert.ok(history.some(m=>m.role==='assistant'));assert.deepEqual(evidence,[],'historical full report facts are not copied into the next turn');return final()}});
   });
   await t.test('free conversation stores context, replay charges once, no client history',async()=>{
    const f=await fixture(),input=body('Biznesimni qanday yaxshilasam bo‘ladi?',{storeId:f.store});

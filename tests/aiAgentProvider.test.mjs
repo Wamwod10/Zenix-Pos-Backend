@@ -55,11 +55,15 @@ test('agent drops only oldest complete conversation turns to fit the remaining i
  await p(input,{...options,budget:{inputTokens:6000,outputTokens:1200,cost:2000},onDispatch:async()=>dispatched++});
  assert.equal(dispatched,1);assert.equal(input.length,9);
 });
-test('agent preserves an oversized current turn and fails without dispatch',async()=>{
- let dispatched=0,network=0;
- const p=agentModule.createAiAgentProvider(settings,async()=>{network++;return Response.json(payload([message()]))});
+test('agent preserves an overbudget current turn and blocks inference after exact preflight',async()=>{
+ let dispatched=0,generation=0,countCalls=0;
+ const p=agentModule.createAiAgentProvider(settings,async url=>{
+  if(url.endsWith('/input_tokens')){countCalls++;return Response.json({object:'response.input_tokens',input_tokens:9000})}
+  generation++;return Response.json(payload([message()]));
+ });
  await assert.rejects(()=>p([{role:'user',content:'x'.repeat(7000)},call,{type:'function_call_output',call_id:call.call_id,output:'{}'}],{...options,onDispatch:async()=>dispatched++}),e=>e.status===413&&e.code==='AI_TOKEN_LIMIT');
- assert.equal(dispatched,0);assert.equal(network,0);
+ assert.equal(countCalls,1,'only the official token counter may inspect the bounded input');
+ assert.equal(dispatched,0);assert.equal(generation,0,'never send a billable model request over budget');
 });
 for(const [name,output] of [
 ['multiple calls',[call,{...call,call_id:'call_b'}]],
@@ -91,15 +95,69 @@ test('transport caps output reservation and rejects exhausted budgets before dis
  }
  assert.equal(dispatched,1);assert.equal(network,1);
 });
-test('transport never dispatches oversized UTF-8 inputs or sends after dispatch abort',async()=>{
- let dispatched=0,network=0;const controller=new AbortController();
- const opts={signal:controller.signal,onDispatch:async()=>{dispatched++;controller.abort()},fetchImpl:async()=>{network++;return Response.json(payload([message()]))}};
+test('transport rejects excess UTF-8 tokens after exact preflight and never dispatches inference after abort',async()=>{
+ let dispatched=0,network=0,countCalls=0;const controller=new AbortController();
+ const opts={signal:controller.signal,onDispatch:async()=>{dispatched++;controller.abort()},fetchImpl:async url=>{
+  if(url.endsWith('/input_tokens')){countCalls++;return Response.json({object:'response.input_tokens',input_tokens:9000})}
+  network++;return Response.json(payload([message()]));
+ }};
  const request={model:settings.model,input:history,max_output_tokens:1200};
  await assert.rejects(()=>transport.requestOpenAiResponse(settings,{...request,input:[{role:'user',content:'é'.repeat(4000)}]},opts),e=>e.code==='AI_TOKEN_LIMIT');
- assert.equal(dispatched,0);
+ assert.equal(countCalls,1);assert.equal(dispatched,0);assert.equal(network,0);
  await assert.rejects(()=>transport.requestOpenAiResponse(settings,request,opts),e=>e.code==='AI_TIMEOUT');
  assert.equal(dispatched,1);assert.equal(network,0);
 });
+test('exact model input count rescues a JSON request that exceeds conservative UTF-8 byte reservation',async()=>{
+ const request={model:settings.model,input:[{role:'user',content:'O‘zbekcha savdo tahlili. '.repeat(450)}],
+  tools,max_output_tokens:1200,store:false,text:{format:{type:'text'}},
+  reasoning:{effort:'none'},tool_choice:'auto',parallel_tool_calls:false};
+ const bytes=Buffer.byteLength(JSON.stringify(request));
+ assert.ok(bytes+256>settings.maxInputTokens&&bytes<16000);
+ let countCalls=0,generationCalls=0,dispatched=0;
+ const result=await transport.requestOpenAiResponse(settings,request,{
+  onDispatch:async()=>dispatched++,
+  fetchImpl:async(url,{body})=>{
+   if(url.endsWith('/input_tokens')){
+    countCalls++;
+    const counted=JSON.parse(body);
+    assert.deepEqual(Object.keys(counted).sort(),['model','input','tools','text','reasoning','tool_choice','parallel_tool_calls'].sort());
+    assert.deepEqual(counted.input,request.input);
+    assert.deepEqual(counted.tools,request.tools);
+    assert.deepEqual(counted.text,request.text);
+    assert.equal(counted.tool_choice,'auto');
+    assert.equal(counted.parallel_tool_calls,false);
+    assert.equal(counted.max_output_tokens,undefined,'generation-only limits are not count endpoint fields');
+    assert.equal(counted.store,undefined,'generation-only storage setting is not count endpoint field');
+    assert.equal(dispatched,0,'model reservation not consumed by token-count preflight');
+    return Response.json({object:'response.input_tokens',input_tokens:4200});
+   }
+   assert.equal(url,'https://api.openai.com/v1/responses');generationCalls++;
+   const sent=JSON.parse(body);assert.equal(sent.store,false);assert.equal(sent.max_output_tokens,1200);
+   return Response.json({...payload([message()]),usage:{input_tokens:4200,output_tokens:20}});
+  },
+ });
+ assert.equal(countCalls,1);assert.equal(generationCalls,1);assert.equal(dispatched,1);
+ assert.equal(result.inputTokens,4200);assert.equal(result.outputTokens,20);
+});
+test('exact input-token preflight fails closed on provider errors and token budget excess',async()=>{
+ const request={model:settings.model,input:[{role:'user',content:'O‘zbekcha savdo tahlili. '.repeat(450)}],max_output_tokens:1200};
+ let generation=0,dispatched=0;
+ for(const [response,code] of [
+  [Response.json({object:'response.input_tokens',input_tokens:9000}),'AI_TOKEN_LIMIT'],
+  [Response.json({object:'response.input_tokens',input_tokens:'invalid'}),'AI_PROVIDER_FAILURE'],
+  [Response.json({error:{message:'do-not-leak'}},{status:503}),'AI_PROVIDER_FAILURE'],
+ ]){
+  await assert.rejects(()=>transport.requestOpenAiResponse(settings,request,{
+   onDispatch:async()=>dispatched++,
+   fetchImpl:async(url)=>{
+    if(url.endsWith('/input_tokens'))return response;
+    generation++;throw Error('generation must not start');
+   },
+  }),e=>e.code===code&&!e.message.includes('do-not-leak'));
+ }
+ assert.equal(dispatched,0);assert.equal(generation,0);
+});
+
 test('transport refuses malformed and excessive usage, excessive response streams and sanitized failures',async()=>{
  const request={model:settings.model,input:history,max_output_tokens:40};
  for(const usage of [undefined,{input_tokens:1.5,output_tokens:20},{input_tokens:100,output_tokens:41}]){
@@ -229,6 +287,34 @@ test('oversized historical evidence does not block a new turn or remove identity
  sent=undefined;
  await assert.rejects(()=>p([...history,call,{type:'function_call_output',call_id:call.call_id,output:'{}'}],{tools,evidence:[{id:'current_fact',text:'Current verified output '.repeat(900)}]}),e=>e.code==='AI_TOKEN_LIMIT');
  assert.equal(sent,undefined,'current-turn evidence must never be silently dropped or dispatched over budget');
+});
+
+test('agent compacts complete current report facts before rejecting a bounded final reply',async()=>{
+ const facts=Array.from({length:20},(_,i)=>({id:'f'+i,text:'Verified report line '+i+': '+('x'.repeat(420))}));
+ const original={kind:'report',topic:'business_overview',from:'2026-11-01',to:'2026-11-08',evidence:facts};
+ const outputItem={type:'function_call_output',call_id:call.call_id,output:JSON.stringify(original)};
+ const transcript=[...history,call,outputItem];
+ let sent,dispatches=0;
+ const p=agentModule.createAiAgentProvider(settings,async(_url,{body})=>{
+  sent=JSON.parse(body);
+  assert.ok(Buffer.byteLength(body)+256<=3800,'same strict byte reservation must still apply');
+  return Response.json(payload([message({kind:'advice',reply:'Tekshirilgan ma’lumotlarni taqqoslang.'})]));
+ });
+ const result=await p(transcript,{...options,evidence:facts,
+  budget:{inputTokens:3800,outputTokens:1200,cost:2000},onDispatch:async()=>dispatches++});
+ assert.equal(result.calls.length,0);
+ assert.equal(dispatches,1);
+ assert.deepEqual(sent.tools,[]);
+ assert.equal(sent.tool_choice,'none','no more tools after a compacted verified report');
+ assert.equal(sent.input[1].content,history[0].content);
+ assert.equal(sent.input[2].call_id,call.call_id);
+ const compact=JSON.parse(sent.input[3].output);
+ assert.equal(compact.kind,'report');
+ assert.equal(compact.from,original.from);assert.equal(compact.to,original.to);
+ assert.ok(compact.evidence.length>=1&&compact.evidence.length<facts.length);
+ assert.equal(compact.omittedEvidenceCount,facts.length-compact.evidence.length);
+ assert.deepEqual(compact.evidence,facts.slice(0,compact.evidence.length),'preserve exact complete grounded evidence strings');
+ assert.equal(JSON.parse(outputItem.output).evidence.length,20,'original transcript remains untouched');
 });
 
 test('business improvement prompt requests prioritized actions within real tool budgets',async()=>{
