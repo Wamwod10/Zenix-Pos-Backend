@@ -59,6 +59,15 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
    await pool.query(`INSERT INTO sale_items(sale_id,product_id,product_name,quantity,unit_price,line_total,metadata) VALUES($1,$2,'Rice',2,100,200,'{"unitCost":50}')`,[sale,a.products[0]]);
    const live=(await executeAgentTool(a.user,'get_business_overview',{storeId:a.store},context)).report;
    assert.equal(live.facts.find(f=>f.id==='today_sales_today_net').value,'200.00');
+   assert.equal(live.facts.find(f=>f.id==='trend_period_current_net').value,'200.00');
+   assert.equal(live.facts.find(f=>f.id==='trend_period_comparison_net').value,'0');
+   assert.equal(live.facts.find(f=>f.id==='trend_period_delta_net').value,'200.00');
+   const trendCurrent=live.facts.find(f=>f.id==='trend_period_current_net');
+   const trendPrevious=live.facts.find(f=>f.id==='trend_period_comparison_net');
+   assert.ok(trendCurrent.from&&trendCurrent.to&&trendPrevious.from&&trendPrevious.to);
+   assert.ok(trendPrevious.to<trendCurrent.from,'periods must not overlap');
+   assert.ok(live.notes.some(note=>note.includes('7 tadan kalendar biznes sanasi')));
+
    const profit=live.facts.find(f=>f.id==='profit_profit_0');assert.equal(profit.value,'100.00');assert.match(profit.label,/Rice/);assert.notEqual(profit.from,report.to);
    await assert.rejects(()=>executeAgentTool(a.user,'get_business_overview',{storeId:b.store},context),e=>e.code==='STORE_NOT_FOUND');
   });
@@ -93,7 +102,7 @@ test('read tools aggregate exact tenant, warehouse and seller scoped facts on di
    await pool.query("UPDATE users SET app_role='SALES' WHERE id=$1",[a.user.id]);
    const seller={...a.user,appRole:'SALES'};
    const overview=(await executeAgentTool(seller,'get_business_overview',{storeId:null},context)).report;
-   assert.equal(overview.sellerScoped,true);assert.equal(overview.storeId,a.store);assert.ok(overview.facts.every(f=>f.id.startsWith('today_sales_')));
+   assert.equal(overview.sellerScoped,true);assert.equal(overview.storeId,a.store);assert.ok(overview.facts.every(f=>f.id.startsWith('today_sales_')||f.id.startsWith('trend_period_')));assert.ok(overview.facts.some(f=>f.id==='trend_period_current_net'),'seller-scoped comparison uses permitted own sales only');
    await assert.rejects(()=>executeAgentTool(seller,'get_warehouse_summary',{storeId:null},context),e=>e.code==='AI_FORBIDDEN');
    await assert.rejects(()=>executeAgentTool(seller,'compare_sales_periods',{storeId:b.store,from:'2026-02-01',to:'2026-02-28',comparisonFrom:'2026-01-01',comparisonTo:'2026-01-31'},context),e=>e.code==='STORE_FORBIDDEN');
    const r=await executeAgentTool(seller,'get_product_sales_report',{storeId:null,ranking:'top',from:'2026-02-01',to:'2026-02-28'},context);assert.equal(r.report.sellerScoped,true);assert.equal(r.report.storeId,a.store);

@@ -18,12 +18,14 @@ const label=value=>String(value||'').replace(/[\u0000-\u001F\u007F-\u009F\u202A-
 const shift=(day,n)=>{const d=new Date(`${day}T12:00:00Z`);d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10)};
 
 // The caller must recheck the actor in the same transaction before entering here.
-export async function readAgentReport(db,user,name,input){
+export async function readAgentReport(db,user,name,input,{organization=null}={}){
  if(name==='get_restock_advice')authorizeTopic(user,'low_stock');
  authorizeTopic(user,name==='get_latest_sale'?'today_sales':name==='get_business_overview'?'recommendations':name==='get_warehouse_summary'?'low_stock':'top_products');
  const store=scopedStoreId(user,input.storeId),seller=['CASHIER','SALES'].includes(user.appRole)?user.id:null;
  if(store)await assertOrganizationStore(db,user.organizationId,store,{activeOnly:false});
- const org=(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
+ // Nested read-only overview comparisons reuse the trusted organization context.
+ // Permissions, branch scope and the existing comparison query are still enforced.
+ const org=organization||(await db.query('SELECT timezone,settings FROM organizations WHERE id=$1',[user.organizationId])).rows[0];
  const today=organizationBusinessDateISO(org),facts=[],tables=[],notes=[];
  const report={topic:name,from:input.from||today,to:input.to||today,storeId:store,sellerScoped:Boolean(seller),facts,tables,notes,eligibleInsights:[]};
  const fact=(id,text,value,unit='UZS')=>facts.push({id,label:text,value:value===null?null:String(value),unit});
@@ -77,6 +79,23 @@ export async function readAgentReport(db,user,name,input){
    const inventory=await readAgentReport(db,user,'get_warehouse_summary',{storeId:store});
    for(const f of inventory.facts)facts.push({...f,id:`inventory_${f.id}`,from:today,to:today});
    notes.push(...inventory.notes);
+  }
+  // A snapshot of today's sales alone cannot establish a trend. Enrich
+  // authorized growth advice using the SAME audited period-comparison report,
+  // without reproducing or changing the sales/refund calculations.
+  if(allowed.has('top_products')){
+   const from=shift(today,-6),comparisonTo=shift(today,-7),comparisonFrom=shift(today,-13);
+   const comparison=await readAgentReport(db,user,'compare_sales_periods',
+    {storeId:store,from,to:today,comparisonFrom,comparisonTo},{organization:org});
+   const needed=['period_current_net','period_comparison_net','period_delta_net'];
+   const values=needed.map(id=>comparison.facts.find(f=>f.id===id));
+   if(values.every(f=>f&&typeof f.value==='string'&&/^-?\d+(?:\.\d+)?$/.test(f.value))){
+    const trends=values.map(f=>({...f,id:'trend_'+f.id,from:f.from||from,to:f.to||today}));
+    const firstOther=facts.findIndex(f=>!f.id.startsWith('today_sales_'));
+    facts.splice(firstOther===-1?facts.length:firstOther,0,...trends);
+    notes.unshift('Sof savdo taqqoslanishi: '+from+' — '+today+' va '+comparisonFrom+' — '+comparisonTo+
+     '. Har ikkala davrda 7 tadan kalendar biznes sanasi bor. Qaytarishlar o‘z biznes sanasida hisoblangan. Farq sababni, foydani yoki kelajak talabini isbotlamaydi.');
+   }
   }
   notes.push('Faqat ruxsat etilgan bo‘limlar jamlangan. Savdo bugungi, mahsulot foydasi va xarajatlar haftalik, qarz va qoldiq joriy holatdir. Sabablar yoki kelajak talabi bu raqamlardan isbotlanmaydi.');
   return report;

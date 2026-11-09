@@ -4,12 +4,13 @@ import {AI_CONVERSATION_EVAL_CASES,runAiConversationEval} from '../scripts/aiCon
 const source={ZENIX_AI_LIVE_EVAL:'true',OPENAI_API_KEY:'test-only',ZENIX_AI_ENABLED:'true'};
 const payload=output=>Response.json({status:'completed',usage:{input_tokens:100,output_tokens:30},output});
 const message=reply=>({type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:JSON.stringify(reply)}]});
-test('corpus contains 40 Uzbek questions including typos, Cyrillic and contextual followups',()=>{
- assert.equal(AI_CONVERSATION_EVAL_CASES.length,40);
- assert.equal(new Set(AI_CONVERSATION_EVAL_CASES.map(c=>c.question)).size,40);
- assert.equal(new Set(AI_CONVERSATION_EVAL_CASES.map(c=>c.conversation)).size,8);
- assert.equal(AI_CONVERSATION_EVAL_CASES.filter(c=>c.expectedCapabilities.includes('context_followup')).length,32);
+test('corpus contains 60 Uzbek questions covering 12 multi-turn POS business scenarios',()=>{
+ assert.equal(AI_CONVERSATION_EVAL_CASES.length,60);
+ assert.equal(new Set(AI_CONVERSATION_EVAL_CASES.map(c=>c.question)).size,60);
+ assert.equal(new Set(AI_CONVERSATION_EVAL_CASES.map(c=>c.conversation)).size,12);
+ assert.equal(AI_CONVERSATION_EVAL_CASES.filter(c=>c.expectedCapabilities.includes('context_followup')).length,48);
  assert.ok(AI_CONVERSATION_EVAL_CASES.some(c=>/[А-Яа-я]/.test(c.question)));
+ assert.ok(['growth','debt','expenses','restock'].every(c=>AI_CONVERSATION_EVAL_CASES.filter(x=>x.conversation===c).length===5));
 });
 test('missing explicit optin/key prevents any network or output',async()=>{
  let network=0,writes=0;
