@@ -90,14 +90,23 @@ export async function requestOpenAiResponse(settings,request,{signal,onDispatch,
     // The serialized byte count is a strict but often extremely wasteful
     // upper bound for Uzbek text, JSON fields and tool schemas. When it would
     // reject a bounded request, ask the official Responses token-counter for
-    // the EXACT model input count using the same request payload.
+    // the EXACT model input count using only supported counting fields.
+    // Generation-only fields (store, max_output_tokens) are not valid here.
     // No inference is dispatched or charged until this preflight succeeds.
     try{
       signal?.throwIfAborted();
+      // The official token-count endpoint accepts model/context/tool options,
+      // not generation-only options such as store or max_output_tokens.
+      // Preserve all context-affecting fields so the count reflects inference.
+      const countFields=['model','input','instructions','tools','tool_choice',
+        'parallel_tool_calls','text','reasoning','truncation',
+        'previous_response_id','conversation'];
+      const countRequest=Object.fromEntries(countFields.filter(key=>Object.hasOwn(request,key))
+        .map(key=>[key,request[key]]));
       const counted=await fetchImpl('https://api.openai.com/v1/responses/input_tokens',{
         method:'POST',redirect:'error',signal,
         headers:{'Content-Type':'application/json','Authorization':`Bearer ${settings.apiKey}`},
-        body:requestBody,
+        body:JSON.stringify(countRequest),
       });
       if(!counted.ok){
         await counted.body?.cancel().catch(()=>{});
