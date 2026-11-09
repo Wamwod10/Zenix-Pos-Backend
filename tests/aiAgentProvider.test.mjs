@@ -109,15 +109,30 @@ test('transport rejects excess UTF-8 tokens after exact preflight and never disp
 });
 test('exact model input count rescues a JSON request that exceeds conservative UTF-8 byte reservation',async()=>{
  const request={model:settings.model,input:[{role:'user',content:'O‘zbekcha savdo tahlili. '.repeat(450)}],
-  tools,max_output_tokens:1200,store:false};
+  tools,max_output_tokens:1200,store:false,text:{format:{type:'text'}},
+  reasoning:{effort:'none'},tool_choice:'auto',parallel_tool_calls:false};
  const bytes=Buffer.byteLength(JSON.stringify(request));
  assert.ok(bytes+256>settings.maxInputTokens&&bytes<16000);
  let countCalls=0,generationCalls=0,dispatched=0;
  const result=await transport.requestOpenAiResponse(settings,request,{
   onDispatch:async()=>dispatched++,
   fetchImpl:async(url,{body})=>{
-   if(url.endsWith('/input_tokens')){countCalls++;assert.equal(JSON.parse(body).store,false);return Response.json({object:'response.input_tokens',input_tokens:4200})}
+   if(url.endsWith('/input_tokens')){
+    countCalls++;
+    const counted=JSON.parse(body);
+    assert.deepEqual(Object.keys(counted).sort(),['model','input','tools','text','reasoning','tool_choice','parallel_tool_calls'].sort());
+    assert.deepEqual(counted.input,request.input);
+    assert.deepEqual(counted.tools,request.tools);
+    assert.deepEqual(counted.text,request.text);
+    assert.equal(counted.tool_choice,'auto');
+    assert.equal(counted.parallel_tool_calls,false);
+    assert.equal(counted.max_output_tokens,undefined,'generation-only limits are not count endpoint fields');
+    assert.equal(counted.store,undefined,'generation-only storage setting is not count endpoint field');
+    assert.equal(dispatched,0,'model reservation not consumed by token-count preflight');
+    return Response.json({object:'response.input_tokens',input_tokens:4200});
+   }
    assert.equal(url,'https://api.openai.com/v1/responses');generationCalls++;
+   const sent=JSON.parse(body);assert.equal(sent.store,false);assert.equal(sent.max_output_tokens,1200);
    return Response.json({...payload([message()]),usage:{input_tokens:4200,output_tokens:20}});
   },
  });
