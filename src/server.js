@@ -24,7 +24,11 @@ const workerHandles = [];
 const server = app.listen(env.port, () => {
   console.log(`Zenix POS API listening on :${env.port}`);
   workerHandles.push(startAiMaintenance());
-  if (process.env.RUN_NOTIFICATION_WORKERS !== "false") {
+  // Log the effective worker owner state without exposing any credentials.
+  // The runtime flag remains unchanged; never auto-enable workers during an audit.
+  const notificationWorkersEnabled = process.env.RUN_NOTIFICATION_WORKERS !== "false";
+  console.log(`[runtime] api-notification-workers=${notificationWorkersEnabled ? "enabled" : "disabled"}`);
+  if (notificationWorkersEnabled) {
     workerHandles.push(startNotificationWorker(), startPaymentNotificationWorker(), startOutboxHealthMonitor());
   }
   configureTelegramWebhook()
