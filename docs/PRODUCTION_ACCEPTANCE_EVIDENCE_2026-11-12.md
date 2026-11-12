@@ -55,7 +55,7 @@ Read-only `neondb` queries after deploy and FK validation:
 
 ## 5. Render health-check configuration — MANUAL DASHBOARD ACTION still open
 
-Existing Render service `serviceDetails.healthCheckPath` is still **empty** (TCP-only); `buildCommand` is `npm install` even though repository `render.yaml` defines `/ready` and `npm ci`. The connected Render API tools do not include an update-service health-check setter. No Blueprint is associated with this particular existing service; **do not create another live service**.
+Existing Render service `serviceDetails.healthCheckPath` is still **empty** (TCP-only); `buildCommand` is `npm install` even though repository `render.yaml` defines `/ready` and `npm ci`. The connected Render API tools do not include an update-service health-check setter. The service readback exposes **no Blueprint ID**; this does not prove there is no Blueprint. **Do not create another live service**.
 
 Operator checklist, tracked in [backend issue #67](https://github.com/Wamwod10/Zenix-Pos-Backend/issues/67):
 
