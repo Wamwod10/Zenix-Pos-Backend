@@ -29,6 +29,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Audit production dependencies (moderate and higher)
+        run: npm audit --omit=dev --audit-level=moderate
       - run: npm run check
       - run: npm test
       - run: |
