@@ -47,6 +47,17 @@ const parseDatabaseUrl = (databaseUrl, isProduction) => {
   return parsed;
 };
 
+// Node-postgres currently treats require/verify-ca as verify-full and warns
+// these modes will be weaker in its next major. Preserve today's verified
+// hostname+certificate semantics explicitly rather than downgrading TLS.
+// This never changes the caller's DATABASE_URL or emits credentials.
+export const explicitVerifiedNeonTlsUrl = (parsedUrl, isProduction) => {
+  if (!isProduction || !parsedUrl) return parsedUrl?.href;
+  const secure = new URL(parsedUrl.href);
+  secure.searchParams.set("sslmode", "verify-full");
+  return secure.href;
+};
+
 export const createPoolConfig = ({
   databaseUrl,
   isProduction = false,
@@ -59,7 +70,7 @@ export const createPoolConfig = ({
 } = {}) => {
   const parsedUrl = parseDatabaseUrl(databaseUrl, isProduction);
   const config = {
-    connectionString: databaseUrl || undefined,
+    connectionString: isProduction ? explicitVerifiedNeonTlsUrl(parsedUrl,true) : databaseUrl || undefined,
     max: parsePoolMax(poolMax),
     idleTimeoutMillis: parseTimeout(idleTimeoutMs, "DB_IDLE_TIMEOUT_MS", 30_000, 300_000),
     connectionTimeoutMillis: parseTimeout(connectionTimeoutMs, "DB_CONNECTION_TIMEOUT_MS", 10_000, 60_000),
@@ -97,7 +108,7 @@ export const createMigrationPoolConfig = ({
     }
   }
   return {
-    connectionString: databaseUrl || undefined,
+    connectionString: isProduction ? explicitVerifiedNeonTlsUrl(parsedUrl,true) : databaseUrl || undefined,
     max: 1,
     idleTimeoutMillis: parseTimeout(idleTimeoutMs, "DB_IDLE_TIMEOUT_MS", 30_000, 300_000),
     connectionTimeoutMillis: parseTimeout(connectionTimeoutMs, "DB_CONNECTION_TIMEOUT_MS", 10_000, 60_000),

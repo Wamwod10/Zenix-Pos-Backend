@@ -28,10 +28,29 @@ test("production database config accepts a pooled Neon TLS URL with a small defa
     isProduction: true,
   });
 
-  assert.equal(config.connectionString, pooledUrl);
+  const url=new URL(config.connectionString);
+  assert.equal(url.searchParams.get('sslmode'),'verify-full');
+  assert.equal(url.searchParams.get('channel_binding'),'require');
+  assert.equal(url.hostname,'ep-example-pooler.eu-central-1.aws.neon.tech');
+  assert.equal(new URL(pooledUrl).searchParams.get('sslmode'),'require');
   assert.equal(config.max, 5);
   assert.equal(config.enableChannelBinding, true);
   assert.equal(Object.hasOwn(config, "ssl"), false);
+});
+
+test("production TLS avoids weaker future libpq modes without changing nonproduction URLs", () => {
+  const strict = pooledUrl.replace('sslmode=require','sslmode=verify-full');
+  assert.equal(configModule.createPoolConfig({databaseUrl:strict,isProduction:true}).connectionString,strict);
+  assert.equal(configModule.createPoolConfig({databaseUrl:pooledUrl,isProduction:false}).connectionString,pooledUrl);
+
+  const migration = configModule.createMigrationPoolConfig({
+    databaseUrl:pooledUrl.replace('-pooler.', '.'),isProduction:true,
+  });
+  assert.equal(new URL(migration.connectionString).searchParams.get('sslmode'),'verify-full');
+
+  const ca = pooledUrl.replace('sslmode=require','sslmode=verify-ca');
+  assert.equal(new URL(configModule.createPoolConfig({databaseUrl:ca,isProduction:true}).connectionString).searchParams.get('sslmode'),'verify-full');
+  assert.equal(new URL(configModule.createMigrationPoolConfig({databaseUrl:ca.replace('-pooler.', '.'),isProduction:true}).connectionString).searchParams.get('sslmode'),'verify-full');
 });
 
 test("production database config rejects direct Neon endpoints", () => {
