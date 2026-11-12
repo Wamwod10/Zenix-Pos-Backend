@@ -44,13 +44,13 @@ test("production TLS avoids weaker future libpq modes without changing nonproduc
   assert.equal(configModule.createPoolConfig({databaseUrl:pooledUrl,isProduction:false}).connectionString,pooledUrl);
 
   const migration = configModule.createMigrationPoolConfig({
-    databaseUrl:pooledUrl,isProduction:true,
+    databaseUrl:pooledUrl.replace('-pooler.', '.'),isProduction:true,
   });
   assert.equal(new URL(migration.connectionString).searchParams.get('sslmode'),'verify-full');
 
   const ca = pooledUrl.replace('sslmode=require','sslmode=verify-ca');
   assert.equal(new URL(configModule.createPoolConfig({databaseUrl:ca,isProduction:true}).connectionString).searchParams.get('sslmode'),'verify-full');
-  assert.equal(new URL(configModule.createMigrationPoolConfig({databaseUrl:ca,isProduction:true}).connectionString).searchParams.get('sslmode'),'verify-full');
+  assert.equal(new URL(configModule.createMigrationPoolConfig({databaseUrl:ca.replace('-pooler.', '.'),isProduction:true}).connectionString).searchParams.get('sslmode'),'verify-full');
 });
 
 test("production database config rejects direct Neon endpoints", () => {
