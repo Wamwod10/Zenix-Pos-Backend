@@ -19,3 +19,88 @@ Neon snapshots are DATABASE scope, covering every tenant on the selected branch.
 9. Record operator-reviewed evidence, unresolved limitations, rollback validation, and cleanup plan. Delete only explicitly verified disposable resources using the operator's own tooling. The application never exposes an automatic restore action.
 
 Live connection, snapshot creation, and isolated provider restore drill remain BLOCKED until a test-only project credential and operator execution evidence are supplied. Mock/contract tests prove adapter behavior, not provider backup availability or restore success.
+
+
+## 2026-10-30 incident prevention: connector preflight (no provider mutation)
+
+The 2026-10-30 incident (frontend issue #97) shows that restoring a snapshot
+to a **new** branch through the connected Neon tool can reassign the production
+compute **by default**. Original production branch and endpoint were restored
+after the incident, but transient API and authentication failures were possible.
+Do not perform a rehearsal restore without an approved change ticket, fresh
+provider readbacks, and the explicit non-finalizing option.
+
+**Important API distinction:**
+- ChatGPT/Neon connector tool restore_snapshot requires **finalize: false**.
+  Omitting it defaults to **true** for newly created branches.
+- Raw Neon HTTP API uses its own documented field
+  **finalize_restore: false** for a new nonproduction branch; verify the
+  currently published API contract before using raw HTTP.
+- The names are **not interchangeable**. Do not send the raw HTTP field to the
+  connector and do not rely on either default.
+- For rehearsal, never supply target_branch_id, call finalize_branch_restore,
+  move computes, switch branch names, or repoint any production endpoint.
+
+**Pinned production identity, read-only verified 2026-11-12:**
+
+- project ID: steep-wind-39440568
+- protected/default branch ID: br-small-dew-b197rvkz
+- active read-write endpoint ID: ep-patient-field-b1xbogfo
+
+An intentional identity change requires a separately reviewed baseline change,
+not an automatic safety bypass.
+
+### Static local preflight
+
+Obtain fresh read-only get_default_branch, list_postgres_endpoints, and
+list_snapshots results and record the snapshot source branch and compute
+mapping. Create a temporary local JSON file like this, substituting the latest
+snapshot ID and a genuine operator change approval reference:
+
+    {
+      "project_id": "steep-wind-39440568",
+      "approval_reference": "OPS-97-approved-change-reference",
+      "production_branch": {
+        "id": "br-small-dew-b197rvkz",
+        "project_id": "steep-wind-39440568",
+        "name": "production",
+        "default": true,
+        "protected": true,
+        "current_state": "ready"
+      },
+      "production_endpoint": {
+        "id": "ep-patient-field-b1xbogfo",
+        "branch_id": "br-small-dew-b197rvkz",
+        "type": "read_write",
+        "current_state": "active"
+      },
+      "snapshot": {
+        "id": "snap-REPLACE-WITH-REAL-SNAPSHOT",
+        "source_branch_id": "br-small-dew-b197rvkz"
+      },
+      "restore_request": {
+        "project_id": "steep-wind-39440568",
+        "snapshot_id": "snap-REPLACE-WITH-REAL-SNAPSHOT",
+        "name": "zenix-rehearsal-nonprod-20261112",
+        "finalize": false
+      }
+    }
+
+Command: node scripts/checkNeonRestorePlan.mjs /path/to/plan.json
+
+This **offline static validator** has no Neon API client, DB connection,
+restore, write or cleanup capability. Its output deliberately says
+providerReadbackAuthenticated: false and providerRestoreVerified: false:
+input JSON may be stale or spoofed. STATIC_PLAN_VALIDATED is **not** proof
+of live provider state or permission to execute a restore. Never commit
+tokens, database URLs or customer data in the plan or its logs.
+
+At the moment of separately approved execution, independently recheck the
+original production branch and endpoint mapping again. Immediately after any
+operator-executed restore, independently verify that original branch stays
+default/protected and that original production endpoint stays mapped to it,
+while the new restore branch remains nondefault and isolated. Any mismatch:
+**stop and follow the incident runbook** rather than attempting automatic
+remediation. Validate full financial and stock manifests using isolated
+exports, document actual RPO/RTO and cost, and obtain separate approval for
+cleanup. No provider restore is authorized by this document.
