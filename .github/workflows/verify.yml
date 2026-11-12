@@ -29,6 +29,53 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      # Read-only diagnostics on the one-off ops branch. Never apply npm audit fix
+      # to production or let an external production probe gate unrelated CI.
+      - name: Investigate deployed dependency advisories
+        if: github.ref_name == 'ops/production-readiness-probes-20261112'
+        shell: bash
+        run: |
+          npm audit --omit=dev --json > "${RUNNER_TEMP}/zenix-dependency-audit.json" || true
+          node --input-type=module <<'NODE'
+          import {readFileSync} from 'node:fs';
+          let report={};
+          try{report=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/zenix-dependency-audit.json','utf8'));}
+          catch{console.log('DEPENDENCY_AUDIT_UNAVAILABLE: invalid JSON');process.exit(0)}
+          const list=Object.entries(report.vulnerabilities||{}).map(([name,entry])=>({
+            name,severity:entry.severity,range:entry.range,fixAvailable:entry.fixAvailable,
+            via:(entry.via||[]).map(v=>typeof v==='string'?v:({name:v.name,source:v.source,title:v.title,range:v.range,severity:v.severity}))
+          }));
+          console.log('DEPENDENCY_AUDIT_RESULT '+JSON.stringify({
+            metadata:report.metadata?.vulnerabilities||null,error:report.error?{code:report.error.code,summary:report.error.summary}:null,advisories:list
+          }));
+          NODE
+      - name: Prepare minimal advisory fix in temporary CI workspace (no commit)
+        if: github.ref_name == 'ops/production-readiness-probes-20261112'
+        shell: bash
+        run: |
+          npm audit fix --package-lock-only --ignore-scripts --no-fund > "${RUNNER_TEMP}/audit-fix-output.txt" 2>&1 || true
+          node --input-type=module <<'NODE'
+          import {readFileSync} from 'node:fs';
+          import {execFileSync} from 'node:child_process';
+          const before=JSON.parse(execFileSync('git',['show','HEAD:package-lock.json'],{encoding:'utf8'}));
+          const after=JSON.parse(readFileSync('package-lock.json','utf8'));
+          const keys=[...new Set([...Object.keys(before.packages||{}),...Object.keys(after.packages||{})])].sort();
+          const changed=keys.filter(k=>JSON.stringify(before.packages[k])!==JSON.stringify(after.packages[k])).map(k=>({path:k,old:before.packages[k]||null,next:after.packages[k]||null}));
+          console.log('DEPENDENCY_LOCK_PROPOSAL '+JSON.stringify({changed,changes:changed.length}));
+          NODE
+          npm audit --omit=dev --json > "${RUNNER_TEMP}/zenix-audit-after-fix.json" || true
+          node --input-type=module <<'NODE'
+          import {readFileSync} from 'node:fs';
+          try {
+            const report=JSON.parse(readFileSync(process.env.RUNNER_TEMP+'/zenix-audit-after-fix.json','utf8'));
+            console.log('DEPENDENCY_AFTER_FIX '+JSON.stringify({vulnerabilities:report.metadata?.vulnerabilities,error:report.error?.code||null}));
+          }catch {console.log('DEPENDENCY_AFTER_FIX_UNAVAILABLE')}
+          NODE
+          # Restore the committed lock before normal test gates.
+          git checkout -- package-lock.json
+      - name: Public health observation (GET only, informational)
+        if: github.ref_name == 'ops/production-readiness-probes-20261112'
+        run: node scripts/probeProductionHealth.mjs || true
       - run: npm run check
       - run: npm test
       - run: |
