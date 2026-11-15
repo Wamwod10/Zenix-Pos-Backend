@@ -34,7 +34,7 @@ export async function requireAuth(req, _res, next) {
       rolePermissions:row.organization_settings?.rolePermissions || {}, organizationSettings:row.organization_settings||{},
       forcePasswordChange:Boolean(row.must_change_password),
     };
-    const passwordSafePaths=new Set(['/api/auth/me','/api/auth/logout','/api/users/me/password']);
+    const passwordSafePaths=new Set(['/api/auth/me','/api/auth/session','/api/auth/logout','/api/users/me/password']);
     if(req.user.forcePasswordChange&&!passwordSafePaths.has(String(req.originalUrl||'').split('?')[0]))throw new HttpError(403,'Avval yangi parol o‘rnating','PASSWORD_CHANGE_REQUIRED');
     if(req.user.organizationId&&isBusinessMutation(req.method,req.originalUrl)){
       let denied;requireActiveLicense(req,_res,error=>{denied=error});if(denied)throw denied;
