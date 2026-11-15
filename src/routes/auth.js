@@ -165,6 +165,12 @@ router.post("/logout",requireAuth,asyncRoute(async(req,res)=>{
   res.clearCookie(env.sessionCookieName,{...cookieOptions,maxAge:undefined});
   ok(res,{success:true});
 }));
+// Anonymous bootstrap is not an authorization grant: only an absent cookie
+// returns a 200/null response. A supplied token must still pass requireAuth.
+router.get("/session",(req,res,next)=>{
+  if(!req.cookies?.[env.sessionCookieName])return ok(res,{user:null});
+  return requireAuth(req,res,next);
+},asyncRoute(async(req,res)=>ok(res,{user:req.user})));
 router.get("/me",requireAuth,asyncRoute(async(req,res)=>ok(res,{user:req.user})));
 
 export default router;
