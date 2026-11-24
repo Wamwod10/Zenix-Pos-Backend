@@ -20,11 +20,11 @@ async function lockBalance(client,{orgId,storeId,productId}){
   return row;
 }
   const lineSchema=z.object({
-    productId:z.string().uuid().optional().nullable(),name:z.string().trim().max(240).default(""),sku:z.string().trim().max(120).default(""),barcode:z.string().trim().max(120).default(""),
+    productId:z.string().uuid().optional().nullable(),createNew:z.literal(true).optional(),name:z.string().trim().max(240).default(""),sku:z.string().trim().max(120).default(""),barcode:z.string().trim().max(120).default(""),
     category:z.string().trim().max(120).default(""),brand:z.string().trim().max(120).default(""),unit:z.string().trim().max(40).default("dona"),quantity:qty,
     costPrice:z.coerce.number().positive().refine(isMoneyInput,'Tannarx 0 dan 9000000000000 gacha, ko‘pi bilan 2 kasr xonali bo‘lsin'),sellPrice:z.coerce.number().min(0).refine(isMoneyInput).default(0),wholesalePrice:z.coerce.number().min(0).refine(isMoneyInput).default(0),minStock:z.coerce.number().min(0).max(999999999).default(0),
     batchNo:z.string().trim().max(120).default(""),expiryDate:z.string().date().optional().nullable(),manufacturedDate:z.string().date().optional().nullable(),serials:z.array(z.string().trim().min(1).max(180)).default([]),metadata:z.record(z.string(),z.any()).default({}).transform(validateProductMetadata),note:z.string().trim().max(500).default(""),
-  }).refine((line)=>Boolean(line.productId||line.name||line.barcode),{message:"Mahsulot ID yoki nomi kerak"});
+  }).refine((line)=>Boolean(line.productId||line.name||line.barcode),{message:"Mahsulot ID yoki nomi kerak"}).refine(line=>!line.createNew||(!line.productId&&Boolean(line.name&&line.barcode&&line.sku)),{message:"Yangi mahsulotga alohida nom, SKU va shtrix-kod kerak"});
   const inventoryReceiptSchema=z.object({
     storeId:z.string().uuid(),warehouseId:z.string().uuid().optional().nullable(),lines:z.array(lineSchema).min(1).max(250),supplierId:z.string().uuid().optional().nullable(),newSupplier:z.object({name:z.string().trim().min(2).max(180),phone:z.string().trim().max(40).default("")}).optional().nullable(),
     settlement:z.object({status:z.enum(["paid","partial","credit"]).default("paid"),paidAmount:z.union([z.string(),z.number()])
@@ -60,7 +60,8 @@ export async function receiveInventory(client,user,input){
       if(!product&&line.barcode){
         await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`product-barcode:${orgId}:${line.barcode}`]);
         product=(await client.query('SELECT * FROM products WHERE organization_id=$1 AND barcode=$2 FOR UPDATE',[orgId,line.barcode])).rows[0];
-        if(product?.archived)throw new HttpError(409,'Mahsulot arxivlangan. Avval tiklang','PRODUCT_ARCHIVED');
+        if(product&&line.createNew)throw new HttpError(409,'Bu shtrix-kod boshqa mahsulotga tegishli. Yangi kod yarating.','PRODUCT_BARCODE_EXISTS');
+         if(product?.archived)throw new HttpError(409,'Mahsulot arxivlangan. Avval tiklang','PRODUCT_ARCHIVED');
       }
       if(Object.prototype.hasOwnProperty.call(line.metadata||{},'imageKey'))await assertFileAssetBinding(client,{user,id:line.metadata.imageKey,purpose:'product',existingId:product?.metadata?.imageKey});
       if(!product){
