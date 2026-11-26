@@ -8,6 +8,7 @@ import { ORGANIZATION_CONFIGURABLE_ROLES, ROLES, isOrganizationPermissionKey } f
 import { writeAudit } from "../services/audit.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import {validateWorkspaceTimeSettings} from '../lib/workspaceTimeSettings.js';
+import {settingsRevision,assertSettingsRevision,validateWorkspaceValues} from '../lib/settingsRevision.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -21,6 +22,7 @@ router.get("/",asyncRoute(async(req,res)=>{
   const settings=org.settings||{};
   ok(res,{
     organization:{businessName:org.name||"",phone:org.phone||"",address:org.address||"",timezone:org.timezone||"Asia/Tashkent",currency:org.currency||"UZS",...(settings.workspaceSettings?.organization||{})},
+    revision:settingsRevision(org),
     workspaceSettings:settings.workspaceSettings||{},
     businessFeatures:settings.businessFeatures||{},
     rolePermissions:settings.rolePermissions||{},
@@ -30,6 +32,7 @@ router.get("/",asyncRoute(async(req,res)=>{
 }));
 
 export const workspaceSchema=z.object({
+  expectedRevision:z.string().regex(/^[a-f0-9]{64}$/).optional(),
   workspaceSettings:z.record(z.string(),z.any()).optional(),
   businessFeatures:z.record(z.string(),z.any()).optional(),
   // Permission values are booleans, never truthy JSON strings such as "false".
@@ -49,7 +52,10 @@ router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(re
   }
   const result=await withTransaction(async(client)=>{
     const current=(await client.query(`SELECT settings,name,phone,address,timezone,currency FROM organizations WHERE id=$1 FOR UPDATE`,[req.user.organizationId])).rows[0];
-    const currentSettings=current?.settings||{};
+    if(!current)throw new HttpError(404,'Tashkilot topilmadi','ORGANIZATION_NOT_FOUND');
+    assertSettingsRevision(input.expectedRevision,current);
+    const currentSettings=current.settings||{};
+    if(input.workspaceSettings)validateWorkspaceValues(input.workspaceSettings,currentSettings.workspaceSettings||{});
     const next={...currentSettings};
     if(input.workspaceSettings)next.workspaceSettings=input.workspaceSettings;
     if(input.businessFeatures)next.businessFeatures=input.businessFeatures;
@@ -59,9 +65,9 @@ router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(re
       req.user.organizationId,JSON.stringify(next),String(orgSettings.businessName||""),orgSettings.phone??null,orgSettings.address??null,orgSettings.timezone||null,orgSettings.currency||null,
     ])).rows[0];
     await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,action:"update",entityType:"settings",entityId:req.user.organizationId,title:"Sozlamalar yangilandi",description:input.rolePermissions?"Rol ruxsatlari va ish maydoni sozlamalari yangilandi":"Ish maydoni sozlamalari yangilandi",before:{organization:{name:current?.name,phone:current?.phone,address:current?.address,timezone:current?.timezone,currency:current?.currency},settings:currentSettings},after:{organization:updated,settings:next}});
-    return next;
+    return {settings:next,revision:settingsRevision({...updated,settings:next})};
   });
-  ok(res,{success:true,settings:result});
+  ok(res,{success:true,...result});
 }));
 
 const prefSchema=z.object({uiPreferences:z.record(z.string(),z.any()).optional(),selectedStoreId:z.string().uuid().nullable().optional()});
