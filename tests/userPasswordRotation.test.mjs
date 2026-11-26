@@ -10,7 +10,7 @@ import {errorHandler} from '../src/middleware/error.js';
 test('forced password rotation rejects reusing the current password and preserves sessions on rejection',async()=>{
  const originalQuery=pool.query,originalConnect=pool.connect;
  const userId='11111111-1111-4111-8111-111111111111',orgId='22222222-2222-4222-8222-222222222222';
- let passwordHash=await bcrypt.hash('OldPassword123!',4),forced=true,writes=0,sessionRevocations=0,actorRole='CASHIER';
+ let passwordHash=await bcrypt.hash('OldPassword123!',4),forced=true,writes=0,sessionRevocations=0,actorRole='CASHIER',attempts=0;
  const app=express();app.use(express.json());
  app.use((req,_res,next)=>{req.cookies={[env.sessionCookieName]:'fake-session'};next()});
  app.use('/api/users',users);app.use(errorHandler);
@@ -20,6 +20,8 @@ test('forced password rotation rejects reusing the current password and preserve
  };
  pool.connect=async()=>({release(){},async query(sql,args){
   if(sql.includes('subscription_can_write'))return {rows:[{writable:true}]};
+  if(sql.includes('FROM auth_login_attempts'))return {rows:[{failures:attempts}]};
+  if(sql.includes('INSERT INTO auth_login_attempts')){attempts++;return {rows:[],rowCount:1};}
   if(sql.includes('SELECT * FROM users WHERE id='))return {rows:[{id:userId,organization_id:orgId,password_hash:passwordHash,must_change_password:forced}]};
   if(sql.startsWith('UPDATE users SET password_hash')){writes++;passwordHash=args[2];forced=false;return {rowCount:1,rows:[]};}
   if(sql.startsWith('UPDATE auth_sessions SET revoked_at')){sessionRevocations++;return {rowCount:1,rows:[]};}
@@ -43,6 +45,14 @@ test('forced password rotation rejects reusing the current password and preserve
   assert.equal(sessionRevocations,1);
   assert.equal(forced,false);
   assert.equal(await bcrypt.compare('NewPassword456!',passwordHash),true);
+  assert.equal(attempts,2);
+  const invalid=await change('wrong','AnotherPassword789!');
+  assert.equal(invalid.status,400);assert.equal(attempts,3);
+  attempts=8;
+  const throttled=await change('NewPassword456!','AnotherPassword789!');
+  assert.equal(throttled.status,429);assert.equal(writes,1);
+  const long=await change('NewPassword456!','a'.repeat(73));
+  assert.equal(long.status,400);assert.equal(writes,1);
   // A privileged OWNER must use /me/password for self-rotation; the staff
   // reset route cannot bypass verification of the current credential.
   actorRole='OWNER';

@@ -1,3 +1,4 @@
+import {newPasswordSchema} from '../lib/passwordPolicy.js';
 import { Router } from "express";
 import { env } from "../config/env.js";
 import {sendAdminChannelSmoke} from "../../scripts/smokeTelegramAdminChannel.mjs";
@@ -131,7 +132,7 @@ router.post('/organizations/:orgId/users/:userId/reset-token',asyncRoute(async(r
 }));
 router.post("/organizations/:orgId/users/:userId/reset-password",asyncRoute(async(req,res)=>{
  const orgId=z.string().uuid().parse(req.params.orgId),userId=z.string().uuid().parse(req.params.userId);
- const body=z.object({password:z.string().min(12).max(128),reason:z.string().trim().min(10).max(500),identityVerified:z.literal(true)}).strict().parse(req.body);
+ const body=z.object({password:newPasswordSchema(12),reason:z.string().trim().min(10).max(500),identityVerified:z.literal(true)}).strict().parse(req.body);
  const hash=await bcrypt.hash(body.password,12);
  await withTransaction(async(client)=>{
    await client.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE",[orgId]);
