@@ -1,3 +1,4 @@
+import {newPasswordSchema} from '../lib/passwordPolicy.js';
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -24,7 +25,7 @@ export function trialPeriod(organization,now=new Date()){
 const router=Router();
 const cookieOptions={httpOnly:true,secure:env.isProduction,sameSite:env.isProduction?"none":"lax",path:"/",maxAge:env.sessionTtlDays*86400000};
 const loginSchema=z.object({username:z.string().trim().min(1).max(120),password:z.string().min(1).max(300)});
-export const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().max(40).refine(value=>/^998\d{9}$/.test(value.replace(/\D/g,'')),'Telefon raqamini to‘liq kiriting'),username:z.string().trim().min(3).max(120),password:z.string().min(8).max(300),planCode:z.enum(['START','BUSINESS','PREMIUM']).optional(),startOption:z.enum(["TRIAL","PAID","MONTHLY","ANNUAL"]).default("TRIAL"),registrationToken:z.string().max(100).optional()}).superRefine((input,ctx)=>{
+export const registerSchema=z.object({businessName:z.string().trim().min(2).max(160),ownerName:z.string().trim().min(2).max(160),phone:z.string().trim().max(40).refine(value=>/^998\d{9}$/.test(value.replace(/\D/g,'')),'Telefon raqamini to‘liq kiriting'),username:z.string().trim().min(3).max(120),password:newPasswordSchema(8),planCode:z.enum(['START','BUSINESS','PREMIUM']).optional(),startOption:z.enum(["TRIAL","PAID","MONTHLY","ANNUAL"]).default("TRIAL"),registrationToken:z.string().max(100).optional()}).superRefine((input,ctx)=>{
   if(input.planCode&&!['TRIAL','PAID'].includes(input.startOption))ctx.addIssue({code:'custom',path:['startOption'],message:'To‘lov davrini checkout bosqichida tanlang'});
 });
 
@@ -150,7 +151,7 @@ router.post("/login",asyncRoute(async(req,res)=>{
 }));
 
 router.post('/reset-password',asyncRoute(async(req,res)=>{
-  const input=z.object({token:z.string().regex(/^[A-Za-z0-9_-]{43}$/),password:z.string().min(12).max(128)}).strict().parse(req.body);
+  const input=z.object({token:z.string().regex(/^[A-Za-z0-9_-]{43}$/),password:newPasswordSchema(12)}).strict().parse(req.body);
   const ip=requestIp(req),key=`password-reset:${ip}`;
   await assertLoginAllowed(pool,key,ip);
   // Count attempts before work so parallel invalid tokens cannot bypass limits.
