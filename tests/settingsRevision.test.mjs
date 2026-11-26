@@ -17,3 +17,8 @@ test('global and branch settings reject invalid values without removing unknown 
  assert.doesNotThrow(()=>validateWorkspaceValues({receipt:{width:'58',copies:2},pos:{discountLimit:0},businessDay:{warnBeforeCloseMinutes:0},storeOverrides:{a:{receipt:{width:'80'}}},extensions:{future:true}}));
  assert.doesNotThrow(()=>validateWorkspaceValues({receipt:{width:80,copies:2}},{receipt:{width:80}}));
 });
+
+test('premium receipt options are validated at both organization and branch scope',()=>{
+ assert.doesNotThrow(()=>validateWorkspaceValues({receipt:{template:'compact',showPhone:true,showAddress:false},storeOverrides:{a:{receipt:{template:'large'}}}}));
+ for(const bad of [{receipt:{template:'custom-css'}},{receipt:{showPhone:'true'}},{storeOverrides:{a:{receipt:{showAddress:1}}}}])assert.throws(()=>validateWorkspaceValues(bad),e=>e.status===400&&e.code==='INVALID_WORKSPACE_SETTING');
+});

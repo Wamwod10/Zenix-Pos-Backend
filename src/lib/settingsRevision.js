@@ -28,7 +28,7 @@ const fields={
  pos:{defaultPayment:oneOf('cash','card','transfer','split','credit'),discountLimit:range(0,100),barcodeAutoAdd:bool,enterAddsProduct:bool,autoPrintReceipt:bool,saleConfirmation:bool,blockNegativeStock:bool,cashierDiscountAllowed:bool,holdCartEnabled:bool,paymentMethods:v=>record(v)&&Object.values(v).every(bool)},
  inventory:{defaultLowStock:range(0,1e12),blockNegativeStock:bool,transferApproval:bool,countApproval:bool},
  businessDay:{startTime:time,closeTime:time,maxShiftHours:range(1,48),warnBeforeCloseMinutes:range(0,240)},
- receipt:{width:oneOf('58','80'),copies:range(1,3,true),showLogo:bool,showCashier:bool,showPaymentBreakdown:bool,footer:str(1000)},
+ receipt:{width:oneOf('58','80'),template:oneOf('classic','compact','large'),copies:range(1,3,true),showLogo:bool,showCashier:bool,showPhone:bool,showAddress:bool,showPaymentBreakdown:bool,footer:str(1000)},
  notifications:{lowStock:bool,outOfStock:bool,shift:bool,approvals:bool,billing:bool,supplierDebt:bool}
 };
 function checkSections(value,previous,prefix){
