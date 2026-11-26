@@ -9,6 +9,7 @@ import { writeAudit } from "../services/audit.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import {validateWorkspaceTimeSettings} from '../lib/workspaceTimeSettings.js';
 import {settingsRevision,assertSettingsRevision,validateWorkspaceValues} from '../lib/settingsRevision.js';
+import {redactSettingsAuditLogo} from '../lib/thermalLogo.js';
 
 const router=Router();
 router.use(requireAuth,requireOrganization);
@@ -64,7 +65,7 @@ router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(re
     const updated=(await client.query(`UPDATE organizations SET settings=$2::jsonb,name=COALESCE(NULLIF($3,''),name),phone=COALESCE($4,phone),address=COALESCE($5,address),timezone=COALESCE(NULLIF($6,''),timezone),currency=COALESCE(NULLIF($7,''),currency),updated_at=now() WHERE id=$1 RETURNING name,phone,address,timezone,currency`,[
       req.user.organizationId,JSON.stringify(next),String(orgSettings.businessName||""),orgSettings.phone??null,orgSettings.address??null,orgSettings.timezone||null,orgSettings.currency||null,
     ])).rows[0];
-    await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,action:"update",entityType:"settings",entityId:req.user.organizationId,title:"Sozlamalar yangilandi",description:input.rolePermissions?"Rol ruxsatlari va ish maydoni sozlamalari yangilandi":"Ish maydoni sozlamalari yangilandi",before:{organization:{name:current?.name,phone:current?.phone,address:current?.address,timezone:current?.timezone,currency:current?.currency},settings:currentSettings},after:{organization:updated,settings:next}});
+    await writeAudit(client,{organizationId:req.user.organizationId,userId:req.user.id,action:"update",entityType:"settings",entityId:req.user.organizationId,title:"Sozlamalar yangilandi",description:input.rolePermissions?"Rol ruxsatlari va ish maydoni sozlamalari yangilandi":"Ish maydoni sozlamalari yangilandi",before:{organization:{name:current?.name,phone:current?.phone,address:current?.address,timezone:current?.timezone,currency:current?.currency},settings:redactSettingsAuditLogo(currentSettings)},after:{organization:updated,settings:redactSettingsAuditLogo(next)}});
     return {settings:next,revision:settingsRevision({...updated,settings:next})};
   });
   ok(res,{success:true,...result});
