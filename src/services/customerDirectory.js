@@ -6,8 +6,8 @@ export const customerTodaySQL="(now() AT TIME ZONE COALESCE((SELECT NULLIF(timez
 
 const querySchema=z.object({
   q:z.string().trim().max(100).default(''),
-  filter:z.enum(['all','debtors','overdue','vip','regular','active','inactive']).default('all'),
-  sort:z.enum(['name','spend','debt','overdue','latest','newest','frequency']).default('name'),
+  filter:z.enum(['all','debtors','overdue','vip','regular','active','inactive','wholesale','tier-standard','tier-silver','tier-gold','tier-vip','loyalty-points']).default('all'),
+  sort:z.enum(['name','spend','debt','overdue','latest','newest','frequency','points']).default('name'),
   direction:z.enum(['asc','desc']).default('asc'),
   limit:z.coerce.number().int().min(1).max(100).default(30),
   offset:z.coerce.number().int().min(0).max(1000000).default(0),
@@ -30,8 +30,8 @@ export const customerFinancialJoin=`
   LEFT JOIN (SELECT customer_id,sum(points) loyalty_points FROM customer_loyalty_ledger
     WHERE organization_id=$1 GROUP BY customer_id) lp ON lp.customer_id=c.id`;
 
-const filters={all:'true',debtors:'c.balance>0',overdue:'c.overdue>0',vip:"c.customer_type='VIP'",regular:"c.customer_type='REGULAR'",active:'c.archived=false',inactive:'c.archived=true'};
-const sorts={name:'lower(c.name)',spend:'c.total_purchases',debt:'c.balance',overdue:'c.overdue',latest:'c.last_purchase_at',newest:'c.created_at',frequency:'c.sale_count'};
+const filters={all:'true',debtors:'c.balance>0',overdue:'c.overdue>0',vip:"c.customer_type='VIP'",regular:"c.customer_type='REGULAR'",active:'c.archived=false',inactive:'c.archived=true',wholesale:"c.customer_type='WHOLESALE'",'tier-standard':"c.loyalty_tier='STANDARD'",'tier-silver':"c.loyalty_tier='SILVER'",'tier-gold':"c.loyalty_tier='GOLD'",'tier-vip':"c.loyalty_tier='VIP'",'loyalty-points':'c.loyalty_points>0'};
+const sorts={name:'lower(c.name)',spend:'c.total_purchases',debt:'c.balance',overdue:'c.overdue',latest:'c.last_purchase_at',newest:'c.created_at',frequency:'c.sale_count',points:'c.loyalty_points'};
 
 export function buildCustomerPageQuery(input){
   const {organizationId,...rawQuery}=input;
