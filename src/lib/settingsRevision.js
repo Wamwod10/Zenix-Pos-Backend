@@ -30,6 +30,7 @@ const fields={
  inventory:{defaultLowStock:range(0,1e12),blockNegativeStock:bool,transferApproval:bool,countApproval:bool},
  businessDay:{startTime:time,closeTime:time,maxShiftHours:range(1,48),warnBeforeCloseMinutes:range(0,240)},
  receipt:{width:oneOf('58','80'),template:oneOf('classic','compact','large'),copies:range(1,3,true),showLogo:bool,logoData:validThermalLogo,showCashier:bool,showPhone:bool,showAddress:bool,showPaymentBreakdown:bool,footer:str(1000)},
+ loyalty:{enabled:bool,spendPerPoint:range(1000,1000000,true)},
  notifications:{lowStock:bool,outOfStock:bool,shift:bool,approvals:bool,billing:bool,supplierDebt:bool}
 };
 function checkSections(value,previous,prefix){
