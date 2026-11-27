@@ -36,7 +36,7 @@ export async function lockStoreTradingAuthorization(client, input, legacyStoreId
   // Preserve the existing internal call signature while adopting the input contract.
   const {organizationId,storeId,now}=typeof input==='object'?input:{organizationId:input,storeId:legacyStoreId};
   // Billing review, branch lifecycle and admin holds all lock this org row.
-  const org = (await client.query('SELECT id,settings,store_limit,timezone,license_status,expiry_date,plan_code,pricing_version,legacy_store_bonus,subscription_can_write(id) AS subscription_writable FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
+  const org = (await client.query('SELECT id,settings,currency,store_limit,timezone,license_status,expiry_date,plan_code,pricing_version,legacy_store_bonus,subscription_can_write(id) AS subscription_writable FROM organizations WHERE id=$1 FOR UPDATE',[organizationId])).rows[0];
   if (!org) throw new HttpError(404,'Tashkilot topilmadi','ORGANIZATION_NOT_FOUND');
   // Capture the date AFTER the lock wait and from the newly locked timezone.
   // License dates retain their inclusive local-calendar contract; extra passes
