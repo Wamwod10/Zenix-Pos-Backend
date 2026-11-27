@@ -218,7 +218,7 @@ async function enqueueScheduledDailyReports(){
     if(target.store_id && (await pool.query('SELECT 1 FROM business_days WHERE organization_id=$1 AND store_id=$2 AND business_date=$3 LIMIT 1',[target.organization_id,target.store_id,date])).rowCount)continue;
     const summary=await scheduledDailySummary(pool,{organizationId:target.organization_id,storeId:target.store_id,date});
     const storeName=target.store_id?(await pool.query("SELECT name FROM stores WHERE id=$1 AND organization_id=$2",[target.store_id,target.organization_id])).rows[0]?.name||'Filial':'Barcha filiallar';
-    await pool.query(`INSERT INTO notification_outbox(organization_id,store_id,event_type,event_id,payload) VALUES($1,$2,'daily.report',$3,$4) ON CONFLICT DO NOTHING`,[target.organization_id,target.store_id,eventId,{businessDate:date,storeName,reportKind:"interim",saleCount:Number(summary?.sale_count||0),total:Number(summary?.total||0),cash:Number(summary?.cash||0),card:Number(summary?.card||0),transfer:Number(summary?.transfer||0)}]);
+    await pool.query(`INSERT INTO notification_outbox(organization_id,store_id,event_type,event_id,payload) VALUES($1,$2,'daily.report',$3,$4) ON CONFLICT DO NOTHING`,[target.organization_id,target.store_id,eventId,{businessDate:date,storeName,reportKind:"interim",saleCount:Number(summary?.sale_count||0),total:Number(summary?.total||0),cash:Number(summary?.cash||0),card:Number(summary?.card||0),transfer:Number(summary?.transfer||0),...(Number(summary?.loyalty||0)?{loyalty:Number(summary.loyalty)}:{})}]);
   }
 }
 
@@ -274,17 +274,19 @@ export async function scheduledDailySummary(db,{organizationId,storeId=null,date
         SELECT sp.method,sum(sp.amount)::numeric amount FROM sale_payments sp JOIN scoped s ON s.id=sp.sale_id GROUP BY sp.method
       )
       , day_returns AS (
-        SELECT amount,metadata FROM sale_returns s WHERE s.organization_id=$1 AND s.business_date=$2${storeSql}
+        SELECT sale_id,amount,metadata FROM sale_returns s WHERE s.organization_id=$1 AND s.business_date=$2${storeSql}
       ), refund_totals AS (
         SELECT COALESCE(sum(amount),0) total,
           COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'cash')::numeric,0)),0) cash,
           COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'card')::numeric,0)),0) card,
-          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer
+          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer,
+          COALESCE(sum(CASE WHEN jsonb_typeof(metadata->'loyaltyRefund'->'amount')='number' AND EXISTS(SELECT 1 FROM sale_payments lp WHERE lp.sale_id=day_returns.sale_id AND lp.method='loyalty') THEN (metadata->'loyaltyRefund'->>'amount')::numeric ELSE 0 END),0) loyalty
         FROM day_returns
       )
       SELECT (SELECT count(*)::int FROM scoped) AS sale_count,
         COALESCE((SELECT sum(total) FROM scoped),0)-(SELECT total FROM refund_totals) AS total,
         COALESCE((SELECT amount FROM payment_totals WHERE method='cash'),0)-(SELECT cash FROM refund_totals) AS cash,
         COALESCE((SELECT amount FROM payment_totals WHERE method='card'),0)-(SELECT card FROM refund_totals) AS card,
-        COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)-(SELECT transfer FROM refund_totals) AS transfer` ,params)).rows[0];
+        COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)-(SELECT transfer FROM refund_totals) AS transfer,
+        COALESCE((SELECT amount FROM payment_totals WHERE method='loyalty'),0)-(SELECT loyalty FROM refund_totals) AS loyalty` ,params)).rows[0];
 }
