@@ -79,5 +79,38 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    const page=status(await request(`/api/sales/page?storeId=${storeId}`,null,token),200).items.find(s=>s.id===saved.id);assert.deepEqual(page.items.map(p=>p.unit).sort(),['kg','l']);
    const paid=(await pool.query('SELECT method,amount FROM sale_payments WHERE sale_id=$1 ORDER BY method',[saved.id])).rows;assert.deepEqual(paid.map(p=>[p.method,Number(p.amount)]),[['card',5000],['cash',7000]]);assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[milk])).rows[0].quantity),8.5);
   });
+
+  await t.test('loyalty tender debit, replay, proportional returns and cash reconciliation',async()=>{
+   const settings={workspaceSettings:{pos:{cashierDiscountAllowed:true,discountLimit:20},loyalty:{enabled:true,spendPerPoint:10000,redemption:{enabled:true,valuePerPoint:1000,maxShareBps:5000}}}};
+   await pool.query("UPDATE organizations SET settings=$2,currency='UZS' WHERE id=$1",[org,settings]);
+   const customerId=(await pool.query("INSERT INTO customers(organization_id,name) VALUES($1,'Loyalty test') RETURNING id",[org])).rows[0].id;
+   await pool.query("INSERT INTO customer_loyalty_ledger(organization_id,customer_id,entry_type,points,note) VALUES($1,$2,'ADJUSTMENT',10,'test seed')",[org,customerId]);
+   const item=(await pool.query("INSERT INTO products(organization_id,name,unit,sell_price) VALUES($1,'Loyalty item','dona',10000) RETURNING id",[org])).rows[0].id;
+   await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,10)',[org,storeId,item]);
+   const points=async()=>Number((await pool.query('SELECT sum(points) n FROM customer_loyalty_ledger WHERE organization_id=$1 AND customer_id=$2',[org,customerId])).rows[0].n);
+   const summary=async()=>status(await request(`/api/sales/pos-pro/summary?storeId=${storeId}`,null,token),200);
+   const before=await summary();
+   const quote=status(await request(`/api/sales/loyalty-quote?storeId=${storeId}&customerId=${customerId}&total=20000&points=5`,null,token),200).quote;
+   assert.equal(quote.amount,5000);assert.equal(quote.remaining,15000);
+   status(await request(`/api/sales/loyalty-quote?storeId=${otherStore}&customerId=${customerId}&total=20000`,null,token),403);
+   const packet={storeId,shiftId,customerId,clientReference:'loyalty-'+suffix,items:[{productId:item,quantity:2,unitPrice:10000,metadata:{originalUnitPrice:10000}}],payments:[{method:'cash',amount:15000}],loyaltyRedemption:{points:5,amount:5000},metadata:{source:'pos-pro',cashTendered:15000}};
+   status(await request('/api/sales',{...packet,clientReference:'invalid-'+suffix,loyaltyRedemption:{points:5,amount:4999}},token),409);
+   assert.equal(await points(),10);
+   const pair=await Promise.all([request('/api/sales',packet,token),request('/api/sales',packet,token)]);
+   const saved=status(pair[0],201).sale;assert.equal(status(pair[1],201).sale.id,saved.id);
+   assert.equal(await points(),6);
+   const captured=(await pool.query('SELECT method,amount FROM sale_payments WHERE sale_id=$1 ORDER BY method',[saved.id])).rows;
+   assert.deepEqual(captured.map(p=>[p.method,Number(p.amount)]),[['cash',15000],['loyalty',5000]]);
+   const after=await summary();assert.equal(after.total-before.total,20000);assert.equal(after.cash-before.cash,15000);
+   const ret={productId:item,quantity:1,reason:'Loyalty return',refundMethod:'original',refundShiftId:shiftId,clientReference:'loyalty-return1-'+suffix};
+   status(await request(`/api/sales/${saved.id}/returns`,{...ret,refundMethod:'cash'},token),409);
+   const first=status(await request(`/api/sales/${saved.id}/returns`,ret,token),201).return;
+   assert.equal(first.refundBreakdown.cash,7500);assert.deepEqual(first.loyaltyRefund,{amount:2500,points:2.5});assert.equal(await points(),8.5);
+   status(await request(`/api/sales/${saved.id}/returns`,ret,token),201);assert.equal(await points(),8.5);
+   const second=status(await request(`/api/sales/${saved.id}/returns`,{...ret,clientReference:'loyalty-return2-'+suffix},token),201).return;
+   assert.equal(second.refundBreakdown.cash,7500);assert.equal(await points(),10);
+   const final=await summary();assert.equal(final.total,before.total);assert.equal(final.cash,before.cash);
+   assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[item])).rows[0].quantity),10);
+  });
  }finally{await new Promise(r=>server.close(r));await pool.end()}
 });
