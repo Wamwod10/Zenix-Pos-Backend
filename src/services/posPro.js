@@ -13,7 +13,7 @@ export async function readPosProSummary(client,user,query){
  const {storeId,shiftId}=z.object({storeId:z.string().uuid(),shiftId:z.string().uuid().optional()}).strict().parse(query);
  assertStoreScope(user,storeId);await assertOrganizationStore(client,user.organizationId,storeId);
  const shift=(await client.query("SELECT id,status,cashier_id FROM shifts WHERE organization_id=$1 AND store_id=$2 AND status='open' AND ($3::uuid IS NULL OR id=$3) ORDER BY opened_at DESC LIMIT 1",[user.organizationId,storeId,shiftId||null])).rows[0];
- if(!shift)return {shift:null,count:0,total:0,cash:0,card:0,transfer:0,recent:[],popular:[]};
+ if(!shift)return {shift:null,count:0,total:0,cash:0,card:0,transfer:0,loyalty:0,recent:[],popular:[]};
  // A single SQL statement gives mutually consistent aggregate and recent-sale snapshots.
  const row=(await client.query(`WITH scoped AS (
   SELECT id,total,sale_number,created_at FROM sales WHERE organization_id=$1 AND store_id=$2 AND shift_id=$3
@@ -21,7 +21,8 @@ export async function readPosProSummary(client,user,query){
  refunds AS (SELECT COALESCE(sum(r.amount),0) total,
   COALESCE(sum(COALESCE((r.metadata->'refundBreakdown'->>'cash')::numeric,0)),0) cash,
   COALESCE(sum(COALESCE((r.metadata->'refundBreakdown'->>'card')::numeric,0)),0) card,
-  COALESCE(sum(COALESCE((r.metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer
+  COALESCE(sum(COALESCE((r.metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer,
+  COALESCE(sum(CASE WHEN jsonb_typeof(r.metadata->'loyaltyRefund'->'amount')='number' AND EXISTS(SELECT 1 FROM sale_payments lp WHERE lp.sale_id=r.sale_id AND lp.method='loyalty') THEN (r.metadata->'loyaltyRefund'->>'amount')::numeric ELSE 0 END),0) loyalty
   FROM sale_returns r JOIN sales original ON original.id=r.sale_id AND original.organization_id=r.organization_id
   WHERE r.organization_id=$1 AND r.store_id=$2 AND COALESCE(NULLIF(r.metadata->>'refundShiftId','')::uuid,original.shift_id)=$3)
  SELECT (SELECT count(*)::int FROM scoped) count,
@@ -29,7 +30,8 @@ export async function readPosProSummary(client,user,query){
  COALESCE((SELECT amount FROM pay WHERE method='cash'),0)-(SELECT cash FROM refunds) cash,
  COALESCE((SELECT amount FROM pay WHERE method='card'),0)-(SELECT card FROM refunds) card,
  COALESCE((SELECT amount FROM pay WHERE method='transfer'),0)-(SELECT transfer FROM refunds) transfer,
+ COALESCE((SELECT amount FROM pay WHERE method='loyalty'),0)-(SELECT loyalty FROM refunds) loyalty,
  COALESCE((SELECT jsonb_agg(r) FROM (SELECT * FROM scoped ORDER BY created_at DESC LIMIT 5) r),'[]'::jsonb) recent,
  COALESCE((SELECT jsonb_agg(r) FROM (SELECT si.product_id,sum(si.quantity) quantity FROM sale_items si JOIN scoped s ON s.id=si.sale_id GROUP BY si.product_id ORDER BY sum(si.quantity) DESC LIMIT 12) r),'[]'::jsonb) popular`,[user.organizationId,storeId,shift.id])).rows[0];
- return {...row,shift,...Object.fromEntries(['count','total','cash','card','transfer'].map(k=>[k,Number(row?.[k]||0)]))};
+ return {...row,shift,...Object.fromEntries(['count','total','cash','card','transfer','loyalty'].map(k=>[k,Number(row?.[k]||0)]))};
 }
