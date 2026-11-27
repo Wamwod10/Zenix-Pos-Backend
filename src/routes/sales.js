@@ -235,25 +235,27 @@ router.post("/business-days/close",requirePermission("closeBusinessDay"),asyncRo
         FROM sale_payments sp JOIN day_sales ds ON ds.id=sp.sale_id
         GROUP BY sp.method
       ), day_returns AS (
-        SELECT amount,metadata FROM sale_returns
+        SELECT sale_id,amount,metadata FROM sale_returns
         WHERE organization_id=$1 AND store_id=$2 AND business_date=$3
       ), refund_totals AS (
         SELECT
           COALESCE(sum(amount),0) total,
           COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'cash')::numeric,0)),0) cash,
           COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'card')::numeric,0)),0) card,
-          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer
+          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer,
+          COALESCE(sum(CASE WHEN jsonb_typeof(metadata->'loyaltyRefund'->'amount')='number' AND EXISTS(SELECT 1 FROM sale_payments lp WHERE lp.sale_id=day_returns.sale_id AND lp.method='loyalty') THEN (metadata->'loyaltyRefund'->>'amount')::numeric ELSE 0 END),0) loyalty
         FROM day_returns
       )
       SELECT (SELECT count(*)::int FROM day_sales) sale_count,
              COALESCE((SELECT sum(total) FROM day_sales),0)-(SELECT total FROM refund_totals) total,
              COALESCE((SELECT amount FROM payment_totals WHERE method='cash'),0)-(SELECT cash FROM refund_totals) cash,
              COALESCE((SELECT amount FROM payment_totals WHERE method='card'),0)-(SELECT card FROM refund_totals) card,
-             COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)-(SELECT transfer FROM refund_totals) transfer`,[orgId,input.storeId,input.businessDate])).rows[0];
+             COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)-(SELECT transfer FROM refund_totals) transfer,
+             COALESCE((SELECT amount FROM payment_totals WHERE method='loyalty'),0)-(SELECT loyalty FROM refund_totals) loyalty`,[orgId,input.storeId,input.businessDate])).rows[0];
     const row=(await client.query(`INSERT INTO business_days(organization_id,store_id,business_date,total,cash,card,transfer,sale_count,metadata,closed_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[orgId,input.storeId,input.businessDate,Number(totals.total||0),Number(totals.cash||0),Number(totals.card||0),Number(totals.transfer||0),Number(totals.sale_count||0),input.metadata,req.user.id])).rows[0];
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[orgId,input.storeId,input.businessDate,Number(totals.total||0),Number(totals.cash||0),Number(totals.card||0),Number(totals.transfer||0),Number(totals.sale_count||0),{...input.metadata,loyalty:Number(totals.loyalty||0)},req.user.id])).rows[0];
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.storeId,action:"close",entityType:"business_day",entityId:row.id,title:"Kunlik savdo yakunlandi",description:`${row.sale_count} ta tranzaksiya`});
-    await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"daily.report",eventId:row.id,payload:{reportKind:"final",businessDate:input.businessDate,storeName:store.name,saleCount:Number(row.sale_count||0),total:Number(row.total||0),cash:Number(row.cash||0),card:Number(row.card||0),transfer:Number(row.transfer||0)}});
+    await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"daily.report",eventId:row.id,payload:{reportKind:"final",businessDate:input.businessDate,storeName:store.name,saleCount:Number(row.sale_count||0),total:Number(row.total||0),cash:Number(row.cash||0),card:Number(row.card||0),transfer:Number(row.transfer||0),loyalty:Number(totals.loyalty||0)}});
     return row;
   });
   ok(res,{day});
