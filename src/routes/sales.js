@@ -1,3 +1,4 @@
+import {catalogPromotion,resolveSalePromotion,promotionQuoteSchema} from '../services/promotionPolicy.js';
 import {earnSaleLoyalty,reverseReturnedLoyalty} from '../services/customerLoyalty.js';
 import { Router } from "express";
 import { z } from "zod";
@@ -87,7 +88,7 @@ const saleQuantity=z.union([z.number(),z.string()])
   .transform(Number);
 const saleItemSchema=z.object({
   productId:z.string().uuid(),quantity:saleQuantity,unitPrice:z.coerce.number().min(0).max(9000000000000),
-  discountPercent:z.coerce.number().min(0).max(100).default(0),metadata:z.record(z.string(),z.any()).default({}),
+  discountPercent:z.coerce.number().min(0).max(100).default(0),promotionQuote:promotionQuoteSchema.optional(),metadata:z.record(z.string(),z.any()).default({}),
 });
 const validBusinessCalendarDate=(value)=>{
   if(typeof value!=="string"||!/^(?!0000)\d{4}-\d{2}-\d{2}$/.test(value))return false;
@@ -157,6 +158,14 @@ router.get('/page',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
   const organization=(await pool.query('SELECT timezone,settings FROM organizations WHERE id=$1',[req.user.organizationId])).rows[0];
   const page=await salesPage(pool,{...query,organizationId:req.user.organizationId,businessDate:organizationBusinessDateISO(organization,new Date(),query.storeId),timeZone:organization?.timezone});
   ok(res,page);
+}));
+
+router.get('/promotion-quote',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
+ const input=z.object({storeId:z.string().uuid(),productId:z.string().uuid(),quantity:z.coerce.number().int().min(1).max(1000000)}).strict().parse(req.query);
+ assertStoreScope(req.user,input.storeId);const orgId=req.user.organizationId;await assertOrganizationStore(pool,orgId,input.storeId);
+ const [org,product]=await Promise.all([pool.query('SELECT settings FROM organizations WHERE id=$1',[orgId]),pool.query('SELECT id,unit,sell_price FROM products WHERE id=$1 AND organization_id=$2 AND archived=false',[input.productId,orgId])]);
+ if(!product.rows[0])throw new HttpError(404,'Mahsulot topilmadi');
+ ok(res,{quote:catalogPromotion({product:product.rows[0],quantity:input.quantity,storeId:input.storeId,settings:org.rows[0]?.settings,now:new Date().toISOString()})});
 }));
 
 router.get('/pos-pro/summary',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
@@ -270,7 +279,7 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open' FOR UPDATE",[input.shiftId,orgId,input.storeId])).rows[0];
       assertSharedOpenShift(shift,{organizationId:orgId,storeId:input.storeId,actorId:req.user.id});
     }
-    const normalized=[];let subtotal=0,total=0;
+    const normalized=[];let subtotal=0,total=0;const promotionNow=new Date().toISOString();
     for(const line of [...input.items].sort((a,b)=>a.productId.localeCompare(b.productId))){
       const product=(await client.query("SELECT * FROM products WHERE id=$1 AND organization_id=$2 AND archived=false",[line.productId,orgId])).rows[0];
       if(!product)throw new HttpError(404,"Mahsulot topilmadi");
@@ -281,9 +290,11 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       const quantity=Number(line.quantity),before=exactDecimalNumber(balance.quantity),after=sumExactDecimals([balance.quantity,`-${quantity}`]);
       if(after<0)throw new HttpError(409,`${product.name} uchun qoldiq yetarli emas`,`INSUFFICIENT_STOCK`);
       const tracking=await planSaleTracking(client,{organizationId:orgId,storeId:input.storeId,productId:line.productId,quantity,stock:before,metadata:line.metadata});
-      const pricing=normalizedLinePricing({product,line,posRules,user:req.user});
+      const standardPricing=normalizedLinePricing({product,line,posRules,user:req.user});
+      const pricing=resolveSalePromotion({product,line,storeId:input.storeId,settings:organization.settings,now:promotionNow,pricing:standardPricing});
+      const {promotion:ignoredPromotion,...clientLineMetadata}=line.metadata||{};
       subtotal=sumMoney([subtotal,pricing.gross]);total=sumMoney([total,pricing.lineTotal]);
-      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:{...(line.metadata||{}),...(pricing.packaging?{packaging:pricing.packaging,baseUnitPrice:pricing.unitPrice}: {})},tracking,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
+      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:{...clientLineMetadata,...(pricing.promotion?{promotion:pricing.promotion}:{}),...(pricing.packaging?{packaging:pricing.packaging,baseUnitPrice:pricing.unitPrice}: {})},tracking,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
     }
     const paymentTotal=sumMoney(input.payments.map(p=>p.amount));
     const creditAmount=Number(input.creditAmount||0);
