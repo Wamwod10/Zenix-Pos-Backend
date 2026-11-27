@@ -15,3 +15,13 @@ export function allocateLoyaltyRefund({total,loyaltyAmount,previousReturned,retu
  const before=p*l/t,after=(p+a)*l/t,noncash=after-before,cash=a-noncash;
  return {loyaltyAmount:asMoney(noncash),monetaryAmount:asMoney(cash),cumulativeLoyaltyAmount:asMoney(after),cumulativeMonetaryAmount:asMoney(p+a-after)};
 }
+
+// Ledger has two decimal places. Round down cumulative restored points, not
+// each refund: residual sub-hundredths carry forward and a full return is exact.
+export function restoredLoyaltyPoints({originalPoints,loyaltyAmount,cumulativeLoyaltyAmount}){
+ if(!Number.isSafeInteger(originalPoints)||originalPoints<=0||originalPoints>999999999999)throw new RangeError('Invalid original points');
+ const l=toCents(loyaltyAmount),c=toCents(cumulativeLoyaltyAmount);
+ if(l===0n||c>l)throw new RangeError('Invalid loyalty refund amount');
+ const units=BigInt(originalPoints)*100n*c/l;
+ return `${units/100n}.${String(units%100n).padStart(2,'0')}`;
+}
