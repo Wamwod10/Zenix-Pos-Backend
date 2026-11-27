@@ -101,7 +101,8 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    assert.equal(await points(),6);
    const captured=(await pool.query('SELECT method,amount FROM sale_payments WHERE sale_id=$1 ORDER BY method',[saved.id])).rows;
    assert.deepEqual(captured.map(p=>[p.method,Number(p.amount)]),[['cash',15000],['loyalty',5000]]);
-   const after=await summary();assert.equal(after.total-before.total,20000);assert.equal(after.cash-before.cash,15000);
+   const after=await summary();assert.equal(after.total-before.total,20000);assert.equal(after.cash-before.cash,15000);assert.equal(after.loyalty-before.loyalty,5000);
+   const {financeReport}=await import('../src/services/financeReport.js');const report=await financeReport(pool,{organizationId:org,storeId});assert.equal(report.aggregate.loyaltyTender.captured,5000);assert.equal(report.aggregate.loyaltyTender.net,5000);
    const ret={productId:item,quantity:1,reason:'Loyalty return',refundMethod:'original',refundShiftId:shiftId,clientReference:'loyalty-return1-'+suffix};
    status(await request(`/api/sales/${saved.id}/returns`,{...ret,refundMethod:'cash'},token),409);
    const first=status(await request(`/api/sales/${saved.id}/returns`,ret,token),201).return;
@@ -109,7 +110,8 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    status(await request(`/api/sales/${saved.id}/returns`,ret,token),201);assert.equal(await points(),8.5);
    const second=status(await request(`/api/sales/${saved.id}/returns`,{...ret,clientReference:'loyalty-return2-'+suffix},token),201).return;
    assert.equal(second.refundBreakdown.cash,7500);assert.equal(await points(),10);
-   const final=await summary();assert.equal(final.total,before.total);assert.equal(final.cash,before.cash);
+   const final=await summary();assert.equal(final.total,before.total);assert.equal(final.cash,before.cash);assert.equal(final.loyalty,before.loyalty);
+   const refundedReport=await financeReport(pool,{organizationId:org,storeId});assert.deepEqual(refundedReport.aggregate.loyaltyTender,{captured:5000,refunded:5000,net:0});
    assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[item])).rows[0].quantity),10);
   });
  }finally{await new Promise(r=>server.close(r));await pool.end()}
