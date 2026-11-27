@@ -69,6 +69,12 @@ export function buildCustomerHistoryQuery({organizationId,customerId,storeId=nul
  const values=[organizationId,customerId,storeId,page.limit+1,page.offset];
  if(kind==='sales')return {text:`SELECT s.* FROM sales s WHERE s.organization_id=$1 AND s.customer_id=$2 AND ($3::uuid IS NULL OR s.store_id=$3) ORDER BY s.created_at DESC,s.id DESC LIMIT $4 OFFSET $5`,values};
  if(kind==='returns')return {text:`SELECT r.*,s.sale_number,p.name product_name FROM sale_returns r JOIN sales s ON s.id=r.sale_id AND s.organization_id=r.organization_id LEFT JOIN products p ON p.id=r.product_id AND p.organization_id=r.organization_id WHERE r.organization_id=$1 AND s.customer_id=$2 AND ($3::uuid IS NULL OR s.store_id=$3) ORDER BY r.created_at DESC,r.id DESC LIMIT $4 OFFSET $5`,values};
+ // Branch-restricted actors see only loyalty events attached to a sale in their
+ // branch. Unassigned/manual events are visible only to org-wide readers.
+ if(kind==='loyalty')return {text:`SELECT l.id,l.entry_type,l.points,l.created_at,s.sale_number FROM customer_loyalty_ledger l
+ LEFT JOIN sales s ON s.id=l.sale_id AND s.organization_id=l.organization_id AND s.customer_id=l.customer_id
+ WHERE l.organization_id=$1 AND l.customer_id=$2 AND ($3::uuid IS NULL OR s.store_id=$3)
+ ORDER BY l.created_at DESC,l.id DESC LIMIT $4 OFFSET $5`,values};
  if(!['ledger','open-credits'].includes(kind))throw new Error('Unknown customer history');
  return {text:`SELECT cl.*,COALESCE(a.allocated,0) allocated FROM customer_ledger cl LEFT JOIN (SELECT credit_ledger_id,sum(amount) allocated FROM customer_payment_allocations WHERE organization_id=$1 AND customer_id=$2 GROUP BY credit_ledger_id) a ON a.credit_ledger_id=cl.id WHERE cl.organization_id=$1 AND cl.customer_id=$2 AND ($3::uuid IS NULL OR cl.store_id=$3) ${kind==='open-credits'?"AND cl.entry_type='CREDIT_SALE' AND cl.amount-COALESCE(a.allocated,0)>0":''} ORDER BY cl.created_at DESC,cl.id DESC LIMIT $4 OFFSET $5`,values};
 }
