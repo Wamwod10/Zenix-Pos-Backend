@@ -114,5 +114,23 @@ test('POS Pro real HTTP/PostgreSQL uses shared inventory, payments, shifts, hold
    const refundedReport=await financeReport(pool,{organizationId:org,storeId});assert.deepEqual(refundedReport.aggregate.loyaltyTender,{captured:5000,refunded:5000,net:0});
    assert.equal(Number((await pool.query('SELECT quantity FROM inventory_balances WHERE product_id=$1',[item])).rows[0].quantity),10);
   });
+
+  await t.test('combined promotion and loyalty tender uses authoritative net, replay and original refunds',async()=>{
+   const item=(await pool.query("INSERT INTO products(organization_id,name,unit,sell_price) VALUES($1,'Combined offer','dona',10000) RETURNING id",[org])).rows[0].id;
+   await pool.query('INSERT INTO inventory_balances(organization_id,store_id,product_id,quantity) VALUES($1,$2,$3,9)',[org,storeId,item]);
+   const customerId=(await pool.query("INSERT INTO customers(organization_id,name) VALUES($1,'Combined customer') RETURNING id",[org])).rows[0].id;
+   await pool.query("INSERT INTO customer_loyalty_ledger(organization_id,customer_id,entry_type,points,note) VALUES($1,$2,'ADJUSTMENT',10,'test seed')",[org,customerId]);
+   const ruleId=randomUUID(),settings={workspaceSettings:{pos:{cashierDiscountAllowed:false,discountLimit:10},loyalty:{enabled:true,spendPerPoint:10000,redemption:{enabled:true,valuePerPoint:1000,maxShareBps:5000}},promotions:{enabled:true,rules:[{id:ruleId,enabled:true,productId:item,storeIds:[storeId],startsAt:'2020-01-01T00:00:00Z',endsAt:'2099-01-01T00:00:00Z',kind:'BUY_GET',buy:2,free:1,maxGroups:2}]}}};
+   await pool.query("UPDATE organizations SET settings=$2,currency='UZS' WHERE id=$1",[org,settings]);
+   const q=status(await request('/api/sales/promotion-quotes',{storeId,items:[{productId:item,quantity:3}]},token),200).quotes[0];
+   assert.equal(q.net,20000);assert.equal(q.ruleId,ruleId);
+   const packet={storeId,shiftId,customerId,clientReference:'combined-'+suffix,items:[{productId:item,quantity:3,unitPrice:10000,promotionQuote:{ruleId,net:20000},metadata:{originalUnitPrice:10000}}],payments:[{method:'cash',amount:15000}],loyaltyRedemption:{points:5,amount:5000},metadata:{source:'pos-pro',cashTendered:15000}};
+   status(await request('/api/sales',{...packet,clientReference:'stale-combined-'+suffix,items:[{...packet.items[0],promotionQuote:{ruleId,net:19000}}]},token),409);
+   const saved=status(await request('/api/sales',packet,token),201).sale;
+   assert.equal(Number(saved.total),20000);assert.equal(Number(saved.subtotal),30000);assert.equal(saved.items[0].metadata.promotion.ruleId,ruleId);
+   const result=status(await request(`/api/sales/${saved.id}/returns`,{productId:item,quantity:3,reason:'Combined full refund',refundMethod:'original',refundShiftId:shiftId,clientReference:'combined-return-'+suffix},token),201).return;
+   assert.equal(result.refundBreakdown.cash,15000);assert.equal(result.loyaltyRefund.points,5);
+   assert.equal(Number((await pool.query('SELECT sum(points) n FROM customer_loyalty_ledger WHERE organization_id=$1 AND customer_id=$2',[org,customerId])).rows[0].n),10);
+  });
  }finally{await new Promise(r=>server.close(r));await pool.end()}
 });
