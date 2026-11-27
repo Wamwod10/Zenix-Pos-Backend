@@ -1,12 +1,12 @@
 import {databaseDateISO} from '../lib/businessDate.js';
 export const saleView=(row,timeZone='Asia/Tashkent')=>{
  const payments=row.payments||[],mix={cash:0,card:0,transfer:0};
- for(const payment of payments)if(Object.hasOwn(mix,payment.method))mix[payment.method]+=Number(payment.amount||0);
+ for(const payment of payments)if(Object.hasOwn(mix,payment.method)||payment.method==='loyalty')mix[payment.method]=(mix[payment.method]||0)+Number(payment.amount||0);
  const methods=Object.keys(mix).filter(method=>mix[method]>0),total=Number(row.total),returnedTotal=Number(row.returned_amount||0);
  const date=new Date(row.created_at);
  return {id:row.id,saleNumber:row.sale_number,storeId:row.store_id,shiftId:row.shift_id,sellerId:row.seller_id,sellerName:row.seller_name,customer:row.customer,customerId:row.customer_id,
   total,saleTotal:total,originalTotal:total,returnedTotal,netTotal:Math.max(0,total-returnedTotal),returnStatus:returnedTotal<=0?'none':returnedTotal>=total?'returned':'partial_returned',
-  paymentMethod:row.metadata?.paymentMethod==='credit'?'credit':methods.length>1?'split':methods[0]||'credit',payments,paymentBreakdown:mix,
+  paymentMethod:row.metadata?.paymentMethod==='credit'?'credit':methods.length>1?'split':methods[0]||'credit',payments,paymentBreakdown:mix,...(mix.loyalty>0?{loyaltyRedemption:row.metadata?.loyaltyRedemption}:{}),
   items:(row.items||[]).map(item=>({...item,quantity:Number(item.quantity),returnedQty:Number(item.returnedQty||0),finalPrice:Number(item.quantity)?Number(item.lineTotal)/Number(item.quantity):0})),
   businessDateISO:databaseDateISO(row.business_date),dateISO:databaseDateISO(row.business_date),createdAt:row.created_at,time:date.toLocaleTimeString('uz-UZ',{timeZone,hour:'2-digit',minute:'2-digit'}),date:date.toLocaleDateString('uz-UZ',{timeZone})};
 };
