@@ -160,6 +160,17 @@ router.get('/page',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
   ok(res,page);
 }));
 
+// Quote an entire POS basket in one read, without trusting client prices.
+router.post('/promotion-quotes',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
+ const input=z.object({storeId:z.string().uuid(),items:z.array(z.object({productId:z.string().uuid(),quantity:z.number().int().min(1).max(1000000)}).strict()).max(500)}).strict().parse(req.body);
+ assertStoreScope(req.user,input.storeId);const orgId=req.user.organizationId;await assertOrganizationStore(pool,orgId,input.storeId);
+ const ids=input.items.map(x=>x.productId);if(new Set(ids).size!==ids.length)throw new HttpError(400,'Takroriy mahsulot','DUPLICATE_PRODUCT');
+ const [org,products]=await Promise.all([pool.query('SELECT settings FROM organizations WHERE id=$1',[orgId]),pool.query('SELECT id,unit,sell_price FROM products WHERE organization_id=$1 AND id=ANY($2::uuid[]) AND archived=false',[orgId,ids])]);
+ const byId=new Map(products.rows.map(p=>[p.id,p])),now=new Date().toISOString();
+ const quotes=input.items.flatMap(line=>{const product=byId.get(line.productId);if(!product)return [];const quote=catalogPromotion({product,quantity:line.quantity,storeId:input.storeId,settings:org.rows[0]?.settings,now});return quote?[{productId:line.productId,...quote}]:[]});
+ ok(res,{quotes});
+}));
+
 router.get('/promotion-quote',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
  const input=z.object({storeId:z.string().uuid(),productId:z.string().uuid(),quantity:z.coerce.number().int().min(1).max(1000000)}).strict().parse(req.query);
  assertStoreScope(req.user,input.storeId);const orgId=req.user.organizationId;await assertOrganizationStore(pool,orgId,input.storeId);
