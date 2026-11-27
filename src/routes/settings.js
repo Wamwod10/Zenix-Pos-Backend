@@ -9,6 +9,7 @@ import { writeAudit } from "../services/audit.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import {validateWorkspaceTimeSettings} from '../lib/workspaceTimeSettings.js';
 import {settingsRevision,assertSettingsRevision,validateWorkspaceValues} from '../lib/settingsRevision.js';
+import {promotionPolicySchema,assertPromotionCatalog} from '../services/promotionPolicy.js';
 import {redemptionPolicySchema} from '../services/loyaltyRedemptionPolicy.js';
 import {redactSettingsAuditLogo} from '../lib/thermalLogo.js';
 
@@ -59,6 +60,13 @@ router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(re
     const currentSettings=current.settings||{};
     if(input.workspaceSettings){
       validateWorkspaceValues(input.workspaceSettings,currentSettings.workspaceSettings||{});
+      const priorPromotion=currentSettings.workspaceSettings?.promotions,nextPromotion=input.workspaceSettings.promotions;
+      if(JSON.stringify(priorPromotion)!==JSON.stringify(nextPromotion)){
+        if(req.user.appRole!==ROLES.OWNER)throw new HttpError(403,'Aksiyani faqat tashkilot egasi sozlaydi','PROMOTION_ADMIN_REQUIRED');
+        if(!input.expectedRevision)throw new HttpError(409,'Aksiya sozlamalarini qayta yuklang','SETTINGS_CONFLICT');
+        if(nextPromotion!==undefined){const parsed=promotionPolicySchema.parse(nextPromotion);await assertPromotionCatalog(client,req.user.organizationId,parsed)}
+      }
+      if(Object.values(input.workspaceSettings.storeOverrides||{}).some(v=>v&&Object.hasOwn(v,'promotions')))throw new HttpError(400,'Aksiya filiallari umumiy qoidada belgilanadi','PROMOTION_SCOPE_INVALID');
       const prior=currentSettings.workspaceSettings?.loyalty?.redemption,nextPolicy=input.workspaceSettings.loyalty?.redemption;
       if(JSON.stringify(prior)!==JSON.stringify(nextPolicy)){
         if(req.user.appRole!==ROLES.OWNER)throw new HttpError(403,'Bonus sarflashni faqat tashkilot egasi sozlaydi','LOYALTY_ADMIN_REQUIRED');
