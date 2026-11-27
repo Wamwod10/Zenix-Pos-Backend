@@ -1,3 +1,7 @@
+import {catalogPromotion,resolveSalePromotion,promotionQuoteSchema} from '../services/promotionPolicy.js';
+import {readCustomerRedemptionQuote} from '../services/loyaltyRedemptionPolicy.js';
+import {debitSaleRedemption,restoreSaleRedemption} from '../services/loyaltyRedemptionLedger.js';
+import {allocateLoyaltyRefund} from '../services/loyaltyRefundAllocation.js';
 import {earnSaleLoyalty,reverseReturnedLoyalty} from '../services/customerLoyalty.js';
 import { Router } from "express";
 import { z } from "zod";
@@ -87,7 +91,7 @@ const saleQuantity=z.union([z.number(),z.string()])
   .transform(Number);
 const saleItemSchema=z.object({
   productId:z.string().uuid(),quantity:saleQuantity,unitPrice:z.coerce.number().min(0).max(9000000000000),
-  discountPercent:z.coerce.number().min(0).max(100).default(0),metadata:z.record(z.string(),z.any()).default({}),
+  discountPercent:z.coerce.number().min(0).max(100).default(0),promotionQuote:promotionQuoteSchema.optional(),metadata:z.record(z.string(),z.any()).default({}),
 });
 const validBusinessCalendarDate=(value)=>{
   if(typeof value!=="string"||!/^(?!0000)\d{4}-\d{2}-\d{2}$/.test(value))return false;
@@ -106,7 +110,7 @@ const saleSchema=z.object({
       seen.add(item.productId);
     });
   }),
-  payments:z.array(paymentSchema).default([]),customer:z.record(z.string(),z.any()).default({}),customerId:z.string().uuid().optional().nullable(),creditAmount:moneyValue.default(0),creditDueDate:z.string().refine(isValidCalendarDateISO,{message:"Nasiya muddati haqiqiy kalendar sana bo‘lishi kerak"}).optional().nullable(),metadata:z.record(z.string(),z.any()).default({}),
+  payments:z.array(paymentSchema).default([]),loyaltyRedemption:z.object({points:z.number().int().min(1).max(999999999999),amount:moneyValue}).strict().optional(),customer:z.record(z.string(),z.any()).default({}),customerId:z.string().uuid().optional().nullable(),creditAmount:moneyValue.default(0),creditDueDate:z.string().refine(isValidCalendarDateISO,{message:"Nasiya muddati haqiqiy kalendar sana bo‘lishi kerak"}).optional().nullable(),metadata:z.record(z.string(),z.any()).default({}),
 });
 
 async function restoreInventoryBatches(client,{organizationId,storeId,productId,tracking,returnStart,returnEnd}){
@@ -157,6 +161,33 @@ router.get('/page',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
   const organization=(await pool.query('SELECT timezone,settings FROM organizations WHERE id=$1',[req.user.organizationId])).rows[0];
   const page=await salesPage(pool,{...query,organizationId:req.user.organizationId,businessDate:organizationBusinessDateISO(organization,new Date(),query.storeId),timeZone:organization?.timezone});
   ok(res,page);
+}));
+
+// Quote an entire POS basket in one read, without trusting client prices.
+router.post('/promotion-quotes',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
+ const input=z.object({storeId:z.string().uuid(),items:z.array(z.object({productId:z.string().uuid(),quantity:z.number().int().min(1).max(1000000)}).strict()).max(500)}).strict().parse(req.body);
+ assertStoreScope(req.user,input.storeId);const orgId=req.user.organizationId;await assertOrganizationStore(pool,orgId,input.storeId);
+ const ids=input.items.map(x=>x.productId);if(new Set(ids).size!==ids.length)throw new HttpError(400,'Takroriy mahsulot','DUPLICATE_PRODUCT');
+ const [org,products]=await Promise.all([pool.query('SELECT settings FROM organizations WHERE id=$1',[orgId]),pool.query('SELECT id,unit,sell_price FROM products WHERE organization_id=$1 AND id=ANY($2::uuid[]) AND archived=false',[orgId,ids])]);
+ const byId=new Map(products.rows.map(p=>[p.id,p])),now=new Date().toISOString();
+ const quotes=input.items.flatMap(line=>{const product=byId.get(line.productId);if(!product)return [];const quote=catalogPromotion({product,quantity:line.quantity,storeId:input.storeId,settings:org.rows[0]?.settings,now});return quote?[{productId:line.productId,...quote}]:[]});
+ ok(res,{quotes});
+}));
+
+router.get('/promotion-quote',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
+ const input=z.object({storeId:z.string().uuid(),productId:z.string().uuid(),quantity:z.coerce.number().int().min(1).max(1000000)}).strict().parse(req.query);
+ assertStoreScope(req.user,input.storeId);const orgId=req.user.organizationId;await assertOrganizationStore(pool,orgId,input.storeId);
+ const [org,product]=await Promise.all([pool.query('SELECT settings FROM organizations WHERE id=$1',[orgId]),pool.query('SELECT id,unit,sell_price FROM products WHERE id=$1 AND organization_id=$2 AND archived=false',[input.productId,orgId])]);
+ if(!product.rows[0])throw new HttpError(404,'Mahsulot topilmadi');
+ ok(res,{quote:catalogPromotion({product:product.rows[0],quantity:input.quantity,storeId:input.storeId,settings:org.rows[0]?.settings,now:new Date().toISOString()})});
+}));
+
+router.get('/loyalty-quote',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
+ const input=z.object({storeId:z.string().uuid(),customerId:z.string().uuid(),total:moneyValue,points:z.coerce.number().int().min(0).max(999999999999).default(0)}).strict().parse(req.query);
+ assertStoreScope(req.user,input.storeId);const organizationId=req.user.organizationId;
+ await assertOrganizationStore(pool,organizationId,input.storeId);
+ const org=(await pool.query('SELECT settings,currency FROM organizations WHERE id=$1',[organizationId])).rows[0];
+ ok(res,{quote:await readCustomerRedemptionQuote(pool,{organizationId,customerId:input.customerId,settings:org?.settings,currency:org?.currency,total:input.total,requestedPoints:input.points})});
 }));
 
 router.get('/pos-pro/summary',requirePermission('moduleSales'),asyncRoute(async(req,res)=>{
@@ -224,25 +255,27 @@ router.post("/business-days/close",requirePermission("closeBusinessDay"),asyncRo
         FROM sale_payments sp JOIN day_sales ds ON ds.id=sp.sale_id
         GROUP BY sp.method
       ), day_returns AS (
-        SELECT amount,metadata FROM sale_returns
+        SELECT sale_id,amount,metadata FROM sale_returns
         WHERE organization_id=$1 AND store_id=$2 AND business_date=$3
       ), refund_totals AS (
         SELECT
           COALESCE(sum(amount),0) total,
           COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'cash')::numeric,0)),0) cash,
           COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'card')::numeric,0)),0) card,
-          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer
+          COALESCE(sum(COALESCE((metadata->'refundBreakdown'->>'transfer')::numeric,0)),0) transfer,
+          COALESCE(sum(CASE WHEN jsonb_typeof(metadata->'loyaltyRefund'->'amount')='number' AND EXISTS(SELECT 1 FROM sale_payments lp WHERE lp.sale_id=day_returns.sale_id AND lp.method='loyalty') THEN (metadata->'loyaltyRefund'->>'amount')::numeric ELSE 0 END),0) loyalty
         FROM day_returns
       )
       SELECT (SELECT count(*)::int FROM day_sales) sale_count,
              COALESCE((SELECT sum(total) FROM day_sales),0)-(SELECT total FROM refund_totals) total,
              COALESCE((SELECT amount FROM payment_totals WHERE method='cash'),0)-(SELECT cash FROM refund_totals) cash,
              COALESCE((SELECT amount FROM payment_totals WHERE method='card'),0)-(SELECT card FROM refund_totals) card,
-             COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)-(SELECT transfer FROM refund_totals) transfer`,[orgId,input.storeId,input.businessDate])).rows[0];
+             COALESCE((SELECT amount FROM payment_totals WHERE method='transfer'),0)-(SELECT transfer FROM refund_totals) transfer,
+             COALESCE((SELECT amount FROM payment_totals WHERE method='loyalty'),0)-(SELECT loyalty FROM refund_totals) loyalty`,[orgId,input.storeId,input.businessDate])).rows[0];
     const row=(await client.query(`INSERT INTO business_days(organization_id,store_id,business_date,total,cash,card,transfer,sale_count,metadata,closed_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[orgId,input.storeId,input.businessDate,Number(totals.total||0),Number(totals.cash||0),Number(totals.card||0),Number(totals.transfer||0),Number(totals.sale_count||0),input.metadata,req.user.id])).rows[0];
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[orgId,input.storeId,input.businessDate,Number(totals.total||0),Number(totals.cash||0),Number(totals.card||0),Number(totals.transfer||0),Number(totals.sale_count||0),{...input.metadata,loyalty:Number(totals.loyalty||0)},req.user.id])).rows[0];
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.storeId,action:"close",entityType:"business_day",entityId:row.id,title:"Kunlik savdo yakunlandi",description:`${row.sale_count} ta tranzaksiya`});
-    await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"daily.report",eventId:row.id,payload:{reportKind:"final",businessDate:input.businessDate,storeName:store.name,saleCount:Number(row.sale_count||0),total:Number(row.total||0),cash:Number(row.cash||0),card:Number(row.card||0),transfer:Number(row.transfer||0)}});
+    await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"daily.report",eventId:row.id,payload:{reportKind:"final",businessDate:input.businessDate,storeName:store.name,saleCount:Number(row.sale_count||0),total:Number(row.total||0),cash:Number(row.cash||0),card:Number(row.card||0),transfer:Number(row.transfer||0),loyalty:Number(totals.loyalty||0)}});
     return row;
   });
   ok(res,{day});
@@ -270,7 +303,8 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open' FOR UPDATE",[input.shiftId,orgId,input.storeId])).rows[0];
       assertSharedOpenShift(shift,{organizationId:orgId,storeId:input.storeId,actorId:req.user.id});
     }
-    const normalized=[];let subtotal=0,total=0;
+    const normalized=[];let subtotal=0,total=0;const promotionNow=new Date().toISOString();
+    if(input.items.some(x=>x.promotionQuote)&&new Set(input.items.map(x=>x.productId)).size!==input.items.length)throw new HttpError(400,'Takroriy aksiya mahsuloti','DUPLICATE_PRODUCT');
     for(const line of [...input.items].sort((a,b)=>a.productId.localeCompare(b.productId))){
       const product=(await client.query("SELECT * FROM products WHERE id=$1 AND organization_id=$2 AND archived=false",[line.productId,orgId])).rows[0];
       if(!product)throw new HttpError(404,"Mahsulot topilmadi");
@@ -281,14 +315,22 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       const quantity=Number(line.quantity),before=exactDecimalNumber(balance.quantity),after=sumExactDecimals([balance.quantity,`-${quantity}`]);
       if(after<0)throw new HttpError(409,`${product.name} uchun qoldiq yetarli emas`,`INSUFFICIENT_STOCK`);
       const tracking=await planSaleTracking(client,{organizationId:orgId,storeId:input.storeId,productId:line.productId,quantity,stock:before,metadata:line.metadata});
-      const pricing=normalizedLinePricing({product,line,posRules,user:req.user});
+      const standardPricing=normalizedLinePricing({product,line,posRules,user:req.user});
+      const pricing=resolveSalePromotion({product,line,storeId:input.storeId,settings:organization.settings,now:promotionNow,pricing:standardPricing});
+      const {promotion:ignoredPromotion,...clientLineMetadata}=line.metadata||{};
       subtotal=sumMoney([subtotal,pricing.gross]);total=sumMoney([total,pricing.lineTotal]);
-      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:{...(line.metadata||{}),...(pricing.packaging?{packaging:pricing.packaging,baseUnitPrice:pricing.unitPrice}: {})},tracking,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
+      normalized.push({product,balance,before,after,quantity,unitPrice:pricing.unitPrice,discountPercent:pricing.discountPercent,lineTotal:pricing.lineTotal,metadata:{...clientLineMetadata,...(pricing.promotion?{promotion:pricing.promotion}:{}),...(pricing.packaging?{packaging:pricing.packaging,baseUnitPrice:pricing.unitPrice}: {})},tracking,effectiveDiscount:pricing.effectiveDiscount,finalUnitPrice:pricing.finalUnitPrice});
     }
     const paymentTotal=sumMoney(input.payments.map(p=>p.amount));
     const creditAmount=Number(input.creditAmount||0);
     if(creditAmount>0&&posRules.paymentMethods?.credit===false)throw new HttpError(403,'Nasiya ushbu filialda o‘chirilgan','CREDIT_PAYMENT_DISABLED');
-    if(sumMoney([paymentTotal,creditAmount,-total])!==0)throw new HttpError(409,"To‘lov va nasiya summasi savdo jami bilan mos emas","PAYMENT_MISMATCH");
+    let loyaltyQuote=null;
+    if(input.loyaltyRedemption){
+      if(!input.customerId||!input.clientReference||creditAmount!==0)throw new HttpError(409,'Bonus uchun mijoz va savdo identifikatori kerak; nasiya mumkin emas','LOYALTY_CHECKOUT_INVALID');
+      loyaltyQuote=await readCustomerRedemptionQuote(client,{organizationId:orgId,customerId:input.customerId,settings:organization.settings,currency:organization.currency,total,requestedPoints:input.loyaltyRedemption.points,lockCustomer:true});
+      if(!loyaltyQuote.enabled||loyaltyQuote.points!==input.loyaltyRedemption.points||loyaltyQuote.amount!==input.loyaltyRedemption.amount)throw new HttpError(409,'Bonus hisobi o‘zgardi','LOYALTY_QUOTE_CHANGED');
+    }
+    if(sumMoney([paymentTotal,creditAmount,loyaltyQuote?.amount||0,-total])!==0)throw new HttpError(409,"To‘lov va nasiya summasi savdo jami bilan mos emas","PAYMENT_MISMATCH");
     let creditCustomer=null;
     if(creditAmount>0){
       if(!input.customerId)throw new HttpError(409,"Nasiya savdo uchun mijozni tanlang","CREDIT_CUSTOMER_REQUIRED");
@@ -302,7 +344,8 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
     }
     const {saleNumber,businessDate}=await nextSaleIdentity(client,orgId,input.storeId);
     await lockBusinessDay(client,{organizationId:orgId,storeId:input.storeId,businessDate});
-    const saleMetadata={...input.metadata,requestFingerprint:requestFingerprint(input),clientBusinessDate:input.businessDate||null};
+    const {loyaltyRedemption:ignoredRedemption,...safeMetadata}=input.metadata;
+    const saleMetadata={...safeMetadata,...(loyaltyQuote?{loyaltyRedemption:{points:loyaltyQuote.points,amount:loyaltyQuote.amount}}:{}),requestFingerprint:requestFingerprint(input),clientBusinessDate:input.businessDate||null};
     const sale=(await client.query(`INSERT INTO sales(organization_id,store_id,shift_id,seller_id,sale_number,client_reference,subtotal,discount_amount,total,customer,business_date,metadata,customer_id)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,[orgId,input.storeId,input.shiftId,req.user.id,saleNumber,input.clientReference,subtotal,subtotal-total,total,input.customer,businessDate,saleMetadata,input.customerId||null])).rows[0];
     for(const line of normalized){
@@ -317,12 +360,13 @@ router.post("/",requirePermission("moduleSales"),asyncRoute(async(req,res)=>{
       await client.query(`INSERT INTO stock_movements(organization_id,store_id,product_id,type,quantity,before_quantity,after_quantity,unit_cost,reference_type,reference_id,created_by,metadata) VALUES($1,$2,$3,'sale',$4,$5,$6,$7,'sale',$8,$9,$10::jsonb)`,[orgId,input.storeId,line.product.id,-line.quantity,line.before,line.after,unitCost,sale.id,req.user.id,JSON.stringify({tracking:authoritativeTracking})]);
     }
     for(const payment of input.payments)await client.query("INSERT INTO sale_payments(sale_id,method,amount,metadata) VALUES($1,$2,$3,$4)",[sale.id,payment.method,payment.amount,payment.metadata||{}]);
+    if(loyaltyQuote){await debitSaleRedemption(client,{organizationId:orgId,saleId:sale.id,actorId:req.user.id,customerId:input.customerId,settings:organization.settings,currency:organization.currency,requestedPoints:loyaltyQuote.points,expectedAmount:loyaltyQuote.amount});await client.query("INSERT INTO sale_payments(sale_id,method,amount,metadata) VALUES($1,'loyalty',$2,$3)",[sale.id,loyaltyQuote.amount,{points:loyaltyQuote.points}]);}
     if(creditAmount>0)await client.query(`INSERT INTO customer_ledger(organization_id,customer_id,store_id,sale_id,entry_type,amount,due_date,reference,note,created_by) VALUES($1,$2,$3,$4,'CREDIT_SALE',$5,$6,$7,$8,$9)`,[orgId,input.customerId,input.storeId,sale.id,creditAmount,input.creditDueDate,saleNumber,String(input.metadata?.note||""),req.user.id]);
     await earnSaleLoyalty(client,{organizationId:orgId,saleId:sale.id,actorId:req.user.id,settings:organization.settings,creditAmount,customerId:input.customerId});
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:input.storeId,action:"create",entityType:"sale",entityId:sale.id,title:"Savdo amalga oshirildi",description:`${saleNumber} · ${total}`});
-    await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"sale.completed",eventId:sale.id,payload:{saleId:sale.id,saleNumber,total,storeId:input.storeId,storeName:store.name,sellerId:req.user.id,sellerName:req.user.name,itemCount:normalized.reduce((sum,line)=>sum+Number(line.quantity||0),0),lineCount:normalized.length,quantityByUnit:Object.entries(normalized.reduce((units,line)=>{const unit=line.product.unit||"dona";units[unit]=(units[unit]||0)+Number(line.quantity);return units},{})).map(([unit,quantity])=>`${Number(quantity.toFixed(3))} ${unit}`).join(", "),paymentMethods:input.payments.map((payment)=>payment.method)}});
+    await enqueueNotification(client,{organizationId:orgId,storeId:input.storeId,eventType:"sale.completed",eventId:sale.id,payload:{saleId:sale.id,saleNumber,total,storeId:input.storeId,storeName:store.name,sellerId:req.user.id,sellerName:req.user.name,itemCount:normalized.reduce((sum,line)=>sum+Number(line.quantity||0),0),lineCount:normalized.length,quantityByUnit:Object.entries(normalized.reduce((units,line)=>{const unit=line.product.unit||"dona";units[unit]=(units[unit]||0)+Number(line.quantity);return units},{})).map(([unit,quantity])=>`${Number(quantity.toFixed(3))} ${unit}`).join(", "),paymentMethods:[...input.payments.map((payment)=>payment.method),...(loyaltyQuote?['loyalty']:[])]}});
     const savedItems=(await client.query(`SELECT product_id,product_name,sku,barcode,quantity,unit_price,discount_percent,line_total,metadata FROM sale_items WHERE sale_id=$1 ORDER BY id`,[sale.id])).rows;
-    return {...sale,items:savedItems.map((item)=>({productId:item.product_id,name:item.product_name,sku:item.sku,barcode:item.barcode,quantity:Number(item.quantity),unitPrice:Number(item.unit_price),finalPrice:Number(item.unit_price)*(1-Number(item.discount_percent)/100),discountPercent:Number(item.discount_percent),lineTotal:Number(item.line_total),metadata:item.metadata||{},tracking:item.metadata?.tracking||null})),payments:input.payments};
+    return {...sale,items:savedItems.map((item)=>({productId:item.product_id,name:item.product_name,sku:item.sku,barcode:item.barcode,quantity:Number(item.quantity),unitPrice:Number(item.unit_price),finalPrice:Number(item.unit_price)*(1-Number(item.discount_percent)/100),discountPercent:Number(item.discount_percent),lineTotal:Number(item.line_total),metadata:item.metadata||{},tracking:item.metadata?.tracking||null})),payments:[...input.payments,...(loyaltyQuote?[{method:'loyalty',amount:loyaltyQuote.amount,metadata:{points:loyaltyQuote.points}}]:[])]};
   });
   ok(res,{sale:result},201);
 }));
@@ -357,6 +401,13 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
       const locked=(await client.query("SELECT id FROM customers WHERE id=$1 AND organization_id=$2 FOR UPDATE",[sale.customer_id,orgId])).rows[0];
       if(!locked)throw new HttpError(409,"Mijoz topilmadi","CUSTOMER_NOT_FOUND");
     }
+    const loyaltyTender=(await client.query("SELECT amount FROM sale_payments WHERE sale_id=$1 AND method='loyalty'",[sale.id])).rows;
+    if(loyaltyTender.length>1)throw new HttpError(409,'Bonus to‘lovini tekshiring','LOYALTY_REFUND_REVIEW');
+    let loyaltyRefund=null;
+    if(loyaltyTender.length){
+      if(input.refundMethod!=='original'||!input.clientReference||!sale.customer_id)throw new HttpError(409,'Bonusli savdo faqat asl to‘lov usuliga qaytariladi','LOYALTY_REFUND_ORIGINAL_REQUIRED');
+      loyaltyRefund=amount>0?allocateLoyaltyRefund({total:sale.total,loyaltyAmount:loyaltyTender[0].amount,previousReturned:sale.returned_amount,returnAmount:amount}):null;
+    }
     let breakdown=null;
     let creditReduction=0;
     let creditLedgerId=null;
@@ -388,7 +439,7 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
       for(const row of captured)available[row.method]=sumMoney([available[row.method],row.amount||0]);
       for(const row of refunded)for(const method of Object.keys(available))available[method]=sumMoney([available[method],-Number(row.breakdown?.[method]||0)]);
       for(const method of Object.keys(available))available[method]=Math.max(0,available[method]);
-      const payable=Math.max(0,sumMoney([amount,-creditReduction]));
+      const payable=Math.max(0,sumMoney([amount,-creditReduction,-(loyaltyRefund?.loyaltyAmount||0)]));
       breakdown={cash:0,card:0,transfer:0};
       if(input.refundBreakdown){
         breakdown={...input.refundBreakdown};
@@ -424,7 +475,7 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
       breakdown={cash:input.refundMethod==="cash"?amount:0,card:input.refundMethod==="card"?amount:0,transfer:input.refundMethod==="transfer"?amount:0};
     }
     const breakdownTotal=sumMoney(Object.values(breakdown));
-    if(sumMoney([breakdownTotal,creditReduction,-amount])!==0)throw new HttpError(409,"Qaytarish to‘lov taqsimoti summaga mos emas","REFUND_MISMATCH");
+    if(sumMoney([breakdownTotal,creditReduction,loyaltyRefund?.loyaltyAmount||0,-amount])!==0)throw new HttpError(409,"Qaytarish to‘lov taqsimoti summaga mos emas","REFUND_MISMATCH");
     if(Number(breakdown.cash||0)>0){
       if(!input.refundShiftId)throw new HttpError(409,"Naqd qaytarish uchun ochiq smena kerak","SHIFT_REQUIRED");
       const shift=(await client.query("SELECT * FROM shifts WHERE id=$1 AND organization_id=$2 AND store_id=$3 AND status='open' FOR UPDATE",[input.refundShiftId,orgId,sale.store_id])).rows[0];
@@ -436,7 +487,9 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     assertInventoryAddition(balance,input.quantity,item.unit_cost);
     const before=exactDecimalNumber(balance.quantity),after=sumExactDecimals([balance.quantity,input.quantity]);
     if(before<0)throw new HttpError(409,'Manfiy qoldiq tannarxini tekshirish kerak','NEGATIVE_COST_BALANCE');
-      const ret=(await client.query(`INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,reason,refund_method,business_date,metadata,created_by,client_reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[orgId,sale.id,sale.store_id,input.productId,input.quantity,amount,input.reason,input.refundMethod,returnBusinessDate,{...input.metadata,requestFingerprint:requestFingerprint(input),refundBreakdown:breakdown,unitCost:item.unit_cost,creditReduction,refundShiftId:input.refundShiftId||null},req.user.id,input.clientReference||null])).rows[0];
+      const restoredPoints=loyaltyRefund?await restoreSaleRedemption(client,{organizationId:orgId,saleId:sale.id,actorId:req.user.id,customerId:sale.customer_id,cumulativeLoyaltyAmount:loyaltyRefund.cumulativeLoyaltyAmount}):0;
+    const {loyaltyRefund:ignoredRefund,...safeReturnMetadata}=input.metadata;
+    const ret=(await client.query(`INSERT INTO sale_returns(organization_id,sale_id,store_id,product_id,quantity,amount,reason,refund_method,business_date,metadata,created_by,client_reference) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[orgId,sale.id,sale.store_id,input.productId,input.quantity,amount,input.reason,input.refundMethod,returnBusinessDate,{...safeReturnMetadata,...(loyaltyRefund?{loyaltyRefund:{amount:loyaltyRefund.loyaltyAmount,points:restoredPoints}}:{}),requestFingerprint:requestFingerprint(input),refundBreakdown:breakdown,unitCost:item.unit_cost,creditReduction,refundShiftId:input.refundShiftId||null},req.user.id,input.clientReference||null])).rows[0];
     if(creditReduction>0&&sale.customer_id&&creditLedgerId){const refundLedger=(await client.query(`INSERT INTO customer_ledger(organization_id,customer_id,store_id,sale_id,entry_type,amount,reference,note,created_by,metadata) VALUES($1,$2,$3,$4,'REFUND',$5,$6,$7,$8,$9) RETURNING id`,[orgId,sale.customer_id,sale.store_id,sale.id,-creditReduction,sale.sale_number,`Qaytarish: ${input.reason}`,req.user.id,{returnId:ret.id}])).rows[0];await client.query(`INSERT INTO customer_payment_allocations(organization_id,customer_id,payment_ledger_id,credit_ledger_id,amount) VALUES($1,$2,$3,$4,$5)`,[orgId,sale.customer_id,refundLedger.id,creditLedgerId,creditReduction]);}
     const returnedBalance=(await client.query("UPDATE inventory_balances SET avg_cost=((quantity*avg_cost)+($4::numeric*$5::numeric))/(quantity+$4::numeric),quantity=quantity+$4::numeric,version=version+1,updated_at=now() WHERE organization_id=$1 AND store_id=$2 AND product_id=$3 RETURNING quantity",[orgId,sale.store_id,input.productId,input.quantity,item.unit_cost])).rows[0];
     await client.query("UPDATE sales SET returned_amount=returned_amount+$2 WHERE id=$1",[sale.id,amount]);
@@ -462,7 +515,7 @@ router.post("/:id/returns",requirePermission("returns"),asyncRoute(async(req,res
     const store=await assertOrganizationStore(client,orgId,sale.store_id);
     await writeAudit(client,{organizationId:orgId,userId:req.user.id,storeId:sale.store_id,action:"return",entityType:"sale",entityId:ret.id,title:"Qaytarish qilindi",description:`${sale.sale_number} · ${item.product_name||input.productId} · ${input.quantity} · ${amount}`,metadata:{saleId:sale.id,saleNumber:sale.sale_number,productId:input.productId,productName:item.product_name||"",quantity:input.quantity,amount,refundBreakdown:breakdown,reason:input.reason}});
     await enqueueNotification(client,{organizationId:orgId,storeId:sale.store_id,eventType:"sale.returned",eventId:ret.id,payload:{returnId:ret.id,saleId:sale.id,saleNumber:sale.sale_number,amount,quantity:input.quantity,unit:item.metadata?.unit||"",storeName:store.name,userName:req.user.name,reason:input.reason}});
-    return {...ret,amount,refundBreakdown:breakdown};
+    return {...ret,amount,refundBreakdown:breakdown,...(loyaltyRefund?{loyaltyRefund:{amount:loyaltyRefund.loyaltyAmount,points:restoredPoints}}:{})};
   });
   ok(res,{return:result},201);
 }));

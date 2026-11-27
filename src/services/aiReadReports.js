@@ -47,7 +47,7 @@ export async function readAgentReport(db,user,name,input,{organization=null}={})
   report.latestSale={id:sale.id,storeId:sale.store_id,saleNumber:label(sale.sale_number),businessDate:sale.business_date};
   report.sale={createdAt:sale.created_at instanceof Date?sale.created_at.toISOString():String(sale.created_at),businessDate:sale.business_date,total:sale.total,returnedAmount:sale.returned_amount,status:label(sale.status),
    hasMoreItems:items.length>50,items:items.slice(0,50).map(r=>({name:label(r.product_name),unit:label(r.unit),quantity:r.quantity,unitPrice:r.unit_price,lineTotal:r.line_total})),
-   payments:payments.map(r=>({method:['cash','card','transfer','credit'].includes(r.method)?r.method:'other',amount:r.amount}))};
+   payments:payments.map(r=>({method:['cash','card','transfer','credit','loyalty'].includes(r.method)?r.method:'other',amount:r.amount}))};
   fact('latest_sale_total','Oxirgi savdo jami',sale.total);
   fact('latest_sale_returned_amount','Oxirgi savdo qaytarilgan summasi',sale.returned_amount);
   fact('latest_sale_number','Savdo hujjati raqami',report.latestSale.saleNumber,'text');

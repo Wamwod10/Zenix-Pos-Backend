@@ -9,6 +9,9 @@ import { writeAudit } from "../services/audit.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import {validateWorkspaceTimeSettings} from '../lib/workspaceTimeSettings.js';
 import {settingsRevision,assertSettingsRevision,validateWorkspaceValues} from '../lib/settingsRevision.js';
+import {promotionPolicySchema,assertPromotionCatalog} from '../services/promotionPolicy.js';
+import {redemptionPolicySchema} from '../services/loyaltyRedemptionPolicy.js';
+import {assertCommerceOfferActivation} from '../services/commerceOfferRelease.js';
 import {redactSettingsAuditLogo} from '../lib/thermalLogo.js';
 
 const router=Router();
@@ -56,7 +59,26 @@ router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(re
     if(!current)throw new HttpError(404,'Tashkilot topilmadi','ORGANIZATION_NOT_FOUND');
     assertSettingsRevision(input.expectedRevision,current);
     const currentSettings=current.settings||{};
-    if(input.workspaceSettings)validateWorkspaceValues(input.workspaceSettings,currentSettings.workspaceSettings||{});
+    if(input.workspaceSettings){
+      validateWorkspaceValues(input.workspaceSettings,currentSettings.workspaceSettings||{});
+      const priorPromotion=currentSettings.workspaceSettings?.promotions,nextPromotion=input.workspaceSettings.promotions;
+      if(JSON.stringify(priorPromotion)!==JSON.stringify(nextPromotion)){
+        assertCommerceOfferActivation(priorPromotion,nextPromotion);
+        if(req.user.appRole!==ROLES.OWNER)throw new HttpError(403,'Aksiyani faqat tashkilot egasi sozlaydi','PROMOTION_ADMIN_REQUIRED');
+        if(!input.expectedRevision)throw new HttpError(409,'Aksiya sozlamalarini qayta yuklang','SETTINGS_CONFLICT');
+        if(nextPromotion!==undefined){const parsed=promotionPolicySchema.parse(nextPromotion);await assertPromotionCatalog(client,req.user.organizationId,parsed)}
+      }
+      if(Object.values(input.workspaceSettings.storeOverrides||{}).some(v=>v&&Object.hasOwn(v,'promotions')))throw new HttpError(400,'Aksiya filiallari umumiy qoidada belgilanadi','PROMOTION_SCOPE_INVALID');
+      const prior=currentSettings.workspaceSettings?.loyalty?.redemption,nextPolicy=input.workspaceSettings.loyalty?.redemption;
+      if(JSON.stringify(prior)!==JSON.stringify(nextPolicy)){
+        assertCommerceOfferActivation(prior,nextPolicy);
+        if(req.user.appRole!==ROLES.OWNER)throw new HttpError(403,'Bonus sarflashni faqat tashkilot egasi sozlaydi','LOYALTY_ADMIN_REQUIRED');
+        if(!input.expectedRevision)throw new HttpError(409,'Sozlamalarni qayta yuklang','SETTINGS_CONFLICT');
+        if(nextPolicy!==undefined)redemptionPolicySchema.parse(nextPolicy);
+      }
+      if(nextPolicy?.enabled===true&&(input.workspaceSettings.organization?.currency||current.currency)!=='UZS')throw new HttpError(409,'Bonus sarflash faqat UZS uchun','LOYALTY_CURRENCY_UNSUPPORTED');
+      if(Object.values(input.workspaceSettings.storeOverrides||{}).some(v=>v?.loyalty?.redemption!==undefined))throw new HttpError(400,'Bonus sarflash umumiy sozlama','LOYALTY_SCOPE_INVALID');
+    }
     const next={...currentSettings};
     if(input.workspaceSettings)next.workspaceSettings=input.workspaceSettings;
     if(input.businessFeatures)next.businessFeatures=input.businessFeatures;
