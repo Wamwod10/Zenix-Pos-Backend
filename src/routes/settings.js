@@ -9,6 +9,7 @@ import { writeAudit } from "../services/audit.js";
 import { isBranchLocked } from "../lib/storeScope.js";
 import {validateWorkspaceTimeSettings} from '../lib/workspaceTimeSettings.js';
 import {settingsRevision,assertSettingsRevision,validateWorkspaceValues} from '../lib/settingsRevision.js';
+import {promotionPolicySchema,assertPromotionCatalog} from '../services/promotionPolicy.js';
 import {redactSettingsAuditLogo} from '../lib/thermalLogo.js';
 
 const router=Router();
@@ -56,7 +57,16 @@ router.patch("/workspace",requirePermission("settingsWrite"),asyncRoute(async(re
     if(!current)throw new HttpError(404,'Tashkilot topilmadi','ORGANIZATION_NOT_FOUND');
     assertSettingsRevision(input.expectedRevision,current);
     const currentSettings=current.settings||{};
-    if(input.workspaceSettings)validateWorkspaceValues(input.workspaceSettings,currentSettings.workspaceSettings||{});
+    if(input.workspaceSettings){
+      validateWorkspaceValues(input.workspaceSettings,currentSettings.workspaceSettings||{});
+      const prior=currentSettings.workspaceSettings?.promotions,nextPolicy=input.workspaceSettings.promotions;
+      if(JSON.stringify(prior)!==JSON.stringify(nextPolicy)){
+        if(req.user.appRole!==ROLES.OWNER)throw new HttpError(403,'Aksiyani faqat tashkilot egasi sozlaydi','PROMOTION_ADMIN_REQUIRED');
+        if(!input.expectedRevision)throw new HttpError(409,'Aksiya sozlamalarini qayta yuklang','SETTINGS_CONFLICT');
+        if(nextPolicy!==undefined){const parsed=promotionPolicySchema.parse(nextPolicy);await assertPromotionCatalog(client,req.user.organizationId,parsed)}
+      }
+      if(Object.values(input.workspaceSettings.storeOverrides||{}).some(v=>v&&Object.hasOwn(v,'promotions')))throw new HttpError(400,'Aksiya filiallari umumiy qoidada belgilanadi','PROMOTION_SCOPE_INVALID');
+    }
     const next={...currentSettings};
     if(input.workspaceSettings)next.workspaceSettings=input.workspaceSettings;
     if(input.businessFeatures)next.businessFeatures=input.businessFeatures;
